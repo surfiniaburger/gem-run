@@ -1,0 +1,227 @@
+import requests
+import json
+import random
+import pandas as pd
+from google import genai
+from google.genai import types
+import os
+from historical_games import fetch_historical_games, get_team_stats
+
+def generate_highlight(game_data):
+    """Generates a highlight summary using Gemini 2.0, incorporating actual game details and team stats."""
+    home_team = game_data['teams']['home']['team_id']  # Make sure we're using team_id
+    away_team = game_data['teams']['away']['team_id']
+    home_team_name = game_data['teams']['home']['team_name']
+    away_team_name = game_data['teams']['away']['team_name']
+    home_score = game_data['teams']['home']['score']
+    away_score = game_data['teams']['away']['score']
+    game_date = game_data['game_date']
+    year = int(game_date.split('-')[0])  # Extract year from game_date
+
+    # Fetch historical games first
+    games = fetch_historical_games(start_year=year)
+    
+    if not games:
+        print(f"No games found for year {year}")
+        return
+
+    # Get team stats for both teams
+    home_team_stats = get_team_stats(home_team, games)
+    away_team_stats = get_team_stats(away_team, games)
+
+    # Check for errors in stats
+    if "error" in home_team_stats or "error" in away_team_stats:
+        print("Error fetching team stats")
+        return
+
+    # Create stats context string
+    stats_context = f"""
+Team Statistics:
+{home_team_name}:
+- Overall Record: {home_team_stats['overall']['wins']}-{home_team_stats['overall']['losses']}
+- Win Percentage: {home_team_stats['overall']['wins']/(home_team_stats['overall']['games_played'])*100:.1f}%
+- Run Differential: {home_team_stats['overall']['run_differential']}
+- Home Record: {home_team_stats['home']['wins']}-{home_team_stats['home']['losses']}
+- Away Record: {home_team_stats['away']['wins']}-{home_team_stats['away']['losses']}
+
+{away_team_name}:
+- Overall Record: {away_team_stats['overall']['wins']}-{away_team_stats['overall']['losses']}
+- Win Percentage: {away_team_stats['overall']['wins']/(away_team_stats['overall']['games_played'])*100:.1f}%
+- Run Differential: {away_team_stats['overall']['run_differential']}
+- Home Record: {away_team_stats['home']['wins']}-{away_team_stats['home']['losses']}
+- Away Record: {away_team_stats['away']['wins']}-{away_team_stats['away']['losses']}
+"""
+
+    prompt_text = f"""Provide a captivating highlight summary for the baseball game between the {home_team_name} and the {away_team_name} on {game_date}. The final score was {home_score} - {away_score}.
+
+Here are the current season statistics for both teams:
+{stats_context}
+
+Please generate an engaging recap, covering:
+1. Who won and the final outcome, considering the teams' current season performance.
+2. Key pivotal moments in the game - including specific plays, who made them, and why they were important.
+3. Notable performances by specific players, including their names and the impact they had on the game.
+4. Any historical or contextual information that provides depth to the game's significance, incorporating how this game affects their season statistics.
+Aim for a summary that's detailed yet concise, approximately 4-5 sentences long.
+"""
+
+    # Rest of your existing generate_highlight function code remains the same
+    client = genai.Client(
+        vertexai=True,
+        project="gem-creation",
+        location="us-central1"
+    )
+
+    text_part = types.Part.from_text(prompt_text)
+    
+    contents = [
+        types.Content(
+            role="user",
+            parts=[text_part]
+        )
+    ]
+
+    tools = [
+        types.Tool(google_search=types.GoogleSearch())
+    ]
+
+    system_instruction = types.Part.from_text("""You are an expert MLB analyst combining the storytelling flair of Vin Scully, 
+the statistical insight of Baseball Savant, and the historical knowledge of Baseball Reference. Your role is to:
+
+1. Capture the drama and excitement of baseball's key moments, similar to how legendary broadcasters paint a picture with words
+2. Weave in relevant statistical context that shows deep understanding of the game's analytics
+3. Connect games to historical significance and team storylines when relevant
+4. Balance technical baseball terminology with accessible explanations
+5. Maintain the poetic rhythm that makes baseball storytelling special - from perfect games to walk-off wins
+6. Consider the emotional impact for the fanbase while maintaining journalistic objectivity
+
+Your tone should blend:
+- The romance of baseball's oral tradition
+- Modern analytical insight
+- The gravity of crucial moments
+- The joy and heartbreak that makes baseball America's pastime""")
+
+    generate_content_config = types.GenerateContentConfig(
+        temperature=1,
+        top_p=0.95,
+        max_output_tokens=8192,
+        response_modalities=["TEXT"],
+        safety_settings=[
+            types.SafetySetting(
+                category="HARM_CATEGORY_HATE_SPEECH",
+                threshold="OFF"
+            ),
+            types.SafetySetting(
+                category="HARM_CATEGORY_DANGEROUS_CONTENT",
+                threshold="OFF"
+            ),
+            types.SafetySetting(
+                category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                threshold="OFF"
+            ),
+            types.SafetySetting(
+                category="HARM_CATEGORY_HARASSMENT",
+                threshold="OFF"
+            )
+        ],
+        tools=tools,
+        system_instruction=[types.Part.from_text("""You are an expert MLB analyst and storyteller, akin to a blend of Vin Scully, Baseball Savant, and Baseball Reference. Your role is to:
+
+1.  Capture the dramatic essence of baseball's defining moments with vivid descriptions and evocative language like a seasoned sports broadcaster.
+2.  Incorporate relevant statistical context that enhances the storytelling and demonstrates analytical understanding of the game.
+3.  Relate games to historical significance or team storylines whenever relevant to provide depth and context.
+4.  Use both technical baseball language and accessible explanations to cater to a wide range of fans.
+5.  Craft a narrative that resonates with the emotion and passion of baseball, from the thrill of victory to the agony of defeat, maintaining an engaging rhythm.
+6.  Focus on the impact of game events on the fan base while maintaining journalistic integrity.
+7.  Make sure to include player names in the summary and their significant contributions.
+
+Your tone should blend:
+- The romantic and poetic nature of baseball's oral tradition
+- Modern analytical insights that are easily understood
+- The gravity and importance of crucial plays and situations
+- The joy, excitement and heartbreak that defines baseball as a beloved sport
+- A sense of passion and enthusiasm, like a game being announced on TV or the radio.
+""")],
+    )
+
+    response_text = ""
+    for chunk in client.models.generate_content_stream(
+        model="gemini-2.0-flash-exp",
+        contents=contents,
+        config=generate_content_config,
+    ):
+        if chunk.candidates and chunk.candidates[0].content.parts:
+            for part in chunk.candidates[0].content.parts:
+                if part.text:
+                    response_text += part.text # Add ONLY the text part
+    
+    return response_text.strip()
+
+# Main execution flow
+teams_endpoint_url = 'https://statsapi.mlb.com/api/v1/teams?sportId=1'
+
+def process_endpoint_url(endpoint_url, pop_key=None):
+    """Fetches data from a URL, parses JSON, and optionally pops a key."""
+    try:
+        response = requests.get(endpoint_url)
+        response.raise_for_status()
+        data = response.json()
+        if pop_key:
+            df_result = pd.json_normalize(data.pop(pop_key), sep='_')
+        else:
+            df_result = pd.json_normalize(data)
+        return df_result
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching URL: {e}")
+        return None
+    except json.JSONDecodeError as e:
+        print(f"Error decoding JSON: {e}")
+        return None
+    except KeyError as e:
+        print(f"KeyError: {e} not found in JSON response.")
+        return None
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+        return None
+
+def main():
+    teams_data = process_endpoint_url(teams_endpoint_url, 'teams')
+
+    if teams_data is None:
+        print("Failed to retrieve team data. Exiting.")
+        return
+
+    # Select a random team
+    selected_team = random.choice(teams_data['name'].tolist())
+    selected_team_id = teams_data[teams_data['name'] == selected_team]['id'].iloc[0]
+
+    print(f"Selected team: {selected_team} (ID: {selected_team_id})")
+
+    # Fetch historical games
+    historical_games = fetch_historical_games(start_year=2024)
+    if not historical_games:
+        print("Failed to fetch historical games. Exiting.")
+        return
+    
+    # Filter games for the selected team
+    team_games = [game for game in historical_games 
+                  if (game['teams']['home']['team_id'] == selected_team_id or 
+                      game['teams']['away']['team_id'] == selected_team_id)]
+
+    if not team_games:
+        print(f"No games found for {selected_team}")
+        return
+
+    # Select a random game from the team's games
+    random_game = random.choice(team_games)
+
+    # Generate highlight using Gemini 2.0
+    highlight = generate_highlight(random_game)
+    print("\nGame Highlight:")
+    print(highlight)
+
+if __name__ == "__main__":
+    main()
+
+
+
