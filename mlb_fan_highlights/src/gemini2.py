@@ -4,8 +4,46 @@ import random
 import pandas as pd
 from google import genai
 from google.genai import types
-import os
+import base64
 from historical_games import fetch_historical_games, get_team_stats
+
+class MLBHighlightGenerator:
+    def __init__(self):
+        self.teams_endpoint_url = 'https://statsapi.mlb.com/api/v1/teams?sportId=1'
+        self.client = genai.Client(
+            vertexai=True,
+            project="gem-creation",
+            location="us-central1"
+        )
+    
+    def get_teams_data(self):
+        """Fetches and returns all MLB teams data"""
+        try:
+            response = requests.get(self.teams_endpoint_url)
+            response.raise_for_status()
+            data = response.json()
+            return pd.json_normalize(data.pop('teams'), sep='_')
+        except Exception as e:
+            print(f"Error fetching teams data: {e}")
+            return None
+
+    def get_team_games(self, team_id, year=2024):
+        """Fetches games for a specific team"""
+        historical_games = fetch_historical_games(start_year=year)
+        if not historical_games:
+            return None
+        
+        team_games = [game for game in historical_games 
+                     if (game['teams']['home']['team_id'] == team_id or 
+                         game['teams']['away']['team_id'] == team_id)]
+        return team_games
+
+    def generate_highlight(self, game_data):
+        """Your existing generate_highlight function here"""
+        # Copy your existing generate_highlight function here
+        # No changes needed to this part
+        pass
+
 
 def generate_highlight(game_data):
     """Generates a highlight summary using Gemini 2.0, incorporating actual game details and team stats."""
@@ -65,7 +103,7 @@ Please generate an engaging recap, covering:
 Aim for a summary that's detailed yet concise, approximately 4-5 sentences long.
 """
 
-    # Rest of your existing generate_highlight function code remains the same
+    
     client = genai.Client(
         vertexai=True,
         project="gem-creation",
@@ -85,21 +123,6 @@ Aim for a summary that's detailed yet concise, approximately 4-5 sentences long.
         types.Tool(google_search=types.GoogleSearch())
     ]
 
-    system_instruction = types.Part.from_text("""You are an expert MLB analyst combining the storytelling flair of Vin Scully, 
-the statistical insight of Baseball Savant, and the historical knowledge of Baseball Reference. Your role is to:
-
-1. Capture the drama and excitement of baseball's key moments, similar to how legendary broadcasters paint a picture with words
-2. Weave in relevant statistical context that shows deep understanding of the game's analytics
-3. Connect games to historical significance and team storylines when relevant
-4. Balance technical baseball terminology with accessible explanations
-5. Maintain the poetic rhythm that makes baseball storytelling special - from perfect games to walk-off wins
-6. Consider the emotional impact for the fanbase while maintaining journalistic objectivity
-
-Your tone should blend:
-- The romance of baseball's oral tradition
-- Modern analytical insight
-- The gravity of crucial moments
-- The joy and heartbreak that makes baseball America's pastime""")
 
     generate_content_config = types.GenerateContentConfig(
         temperature=1,
