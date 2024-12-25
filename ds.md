@@ -640,3 +640,839 @@ Below are a few other resources related to the hackathon or MLB in general that 
 *   [MLB Glossary](https://www.mlb.com/glossary)
 *   ["MLB-StatsAPI" Python library to wrap MLB Stats API](https://pypi.org/project/MLB-StatsAPI/)
 *   ["baseballR" R library to wrap MLB Stats API](https://cran.r-project.org/web/packages/baseballr/index.html)
+
+
+# Copyright 2024 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# Using Gemini Function Calling to Get Real-Time Company News and Insights
+
+<table align="left">
+  <td style="text-align: center">
+    <a href="https://colab.research.google.com/github/GoogleCloudPlatform/generative-ai/blob/main/gemini/function-calling/use_case_company_news_and_insights.ipynb">
+      <img src="https://cloud.google.com/ml-engine/images/colab-logo-32px.png" alt="Google Colaboratory logo"><br> Open in Colab
+    </a>
+  </td>
+  <td style="text-align: center">
+    <a href="https://console.cloud.google.com/vertex-ai/colab/import/https:%2F%2Fraw.githubusercontent.com%2FGoogleCloudPlatform%2Fgenerative-ai%2Fmain%2Fgemini%2Ffunction-calling%2Fuse_case_company_news_and_insights.ipynb">
+      <img width="32px" src="https://lh3.googleusercontent.com/JmcxdQi-qOpctIvWKgPtrzZdJJK-J3sWE1RsfjZNwshCFgE_9fULcNpuXYTilIR2hjwN" alt="Google Cloud Colab Enterprise logo"><br> Open in Colab Enterprise
+    </a>
+  </td>    
+  <td style="text-align: center">
+    <a href="https://console.cloud.google.com/vertex-ai/workbench/deploy-notebook?download_url=https://raw.githubusercontent.com/GoogleCloudPlatform/generative-ai/main/gemini/function-calling/use_case_company_news_and_insights.ipynb">
+      <img src="https://lh3.googleusercontent.com/UiNooY4LUgW_oTvpsNhPpQzsstV5W8F7rYgxgGBD85cWJoLmrOzhVs_ksK_vgx40SHs7jCqkTkCk=e14-rj-sc0xffffff-h130-w32" alt="Vertex AI logo"><br> Open in Workbench
+    </a>
+  </td>
+  <td style="text-align: center">
+    <a href="https://github.com/GoogleCloudPlatform/generative-ai/blob/main/gemini/function-calling/use_case_company_news_and_insights.ipynb">
+      <img src="https://cloud.google.com/ml-engine/images/github-logo-32px.png" alt="GitHub logo"><br> View on GitHub
+    </a>
+  </td>
+</table>
+
+<div style="clear: both;"></div>
+
+<b>Share to:</b>
+
+<a href="https://www.linkedin.com/sharing/share-offsite/?url=https%3A//github.com/GoogleCloudPlatform/generative-ai/blob/main/gemini/function-calling/use_case_company_news_and_insights.ipynb" target="_blank">
+  <img width="20px" src="https://upload.wikimedia.org/wikipedia/commons/8/81/LinkedIn_icon.svg" alt="LinkedIn logo">
+</a>
+
+<a href="https://bsky.app/intent/compose?text=https%3A//github.com/GoogleCloudPlatform/generative-ai/blob/main/gemini/function-calling/use_case_company_news_and_insights.ipynb" target="_blank">
+  <img width="20px" src="https://upload.wikimedia.org/wikipedia/commons/7/7a/Bluesky_Logo.svg" alt="Bluesky logo">
+</a>
+
+<a href="https://twitter.com/intent/tweet?url=https%3A//github.com/GoogleCloudPlatform/generative-ai/blob/main/gemini/function-calling/use_case_company_news_and_insights.ipynb" target="_blank">
+  <img width="20px" src="https://upload.wikimedia.org/wikipedia/commons/5/53/X_logo_2023_original.svg" alt="X logo">
+</a>
+
+<a href="https://reddit.com/submit?url=https%3A//github.com/GoogleCloudPlatform/generative-ai/blob/main/gemini/function-calling/use_case_company_news_and_insights.ipynb" target="_blank">
+  <img width="20px" src="https://redditinc.com/hubfs/Reddit%20Inc/Brand/Reddit_Logo.png" alt="Reddit logo">
+</a>
+
+<a href="https://www.facebook.com/sharer/sharer.php?u=https%3A//github.com/GoogleCloudPlatform/generative-ai/blob/main/gemini/function-calling/use_case_company_news_and_insights.ipynb" target="_blank">
+  <img width="20px" src="https://upload.wikimedia.org/wikipedia/commons/5/51/Facebook_f_logo_%282019%29.svg" alt="Facebook logo">
+</a>            
+| | |
+|-|-|
+| Author(s) | [Ishana Shinde](https://github.com/ishana7), [Kristopher Overholt](https://github.com/koverholt) |
+## Function Calling in Gemini
+
+Gemini is a family of generative AI models developed by Google DeepMind that is designed for multimodal use cases. [Function Calling in Gemini](https://cloud.google.com/vertex-ai/generative-ai/docs/multimodal/function-calling) lets developers create a description of a function in their code, then pass that description to a language model in a request. The response from the model includes the name of a function that matches the description and the arguments to call it with.
+
+## Overview
+
+Meet Jane. She's a busy investor who's always on the lookout for the latest market trends and financial news. She needs information quickly and accurately, but sifting through endless articles and reports is time-consuming.
+
+Jane discovers [Function Calling](https://cloud.google.com/vertex-ai/generative-ai/docs/multimodal/function-calling), which is a powerful tool that uses the Gemini model to predict function calls to external systems and synthesizes information in natural language. Now Jane can get instant insights on companies and breaking news, all within her familiar coding environment. She can even build a web app on top of these APIs and functions so that her coworkers can benefit from this approach without writing any code!
+### Define functions and parameter descriptions
+
+Define function declarations that will be used as tools for Gemini by specifying the function details as a dictionary in accordance with the [OpenAPI JSON schema](https://spec.openapis.org/oas/v3.0.3#schemawr).
+
+You'll define four tools to fetch various company and financial information, including stock prices, company overviews, news for a given company, and news sentiment for a given topic:
+get_stock_price = FunctionDeclaration(
+    name="get_stock_price",
+    description="Fetch the current stock price of a given company",
+    parameters={
+        "type": "object",
+        "properties": {
+            "ticker": {
+                "type": "string",
+                "description": "Stock ticker symbol for a company",
+            }
+        },
+    },
+)
+
+get_company_overview = FunctionDeclaration(
+    name="get_company_overview",
+    description="Get company details and other financial data",
+    parameters={
+        "type": "object",
+        "properties": {
+            "ticker": {
+                "type": "string",
+                "description": "Stock ticker symbol for a company",
+            }
+        },
+    },
+)
+
+get_company_news = FunctionDeclaration(
+    name="get_company_news",
+    description="Get the latest news headlines for a given company.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "tickers": {
+                "type": "string",
+                "description": "Stock ticker symbol for a company",
+            }
+        },
+    },
+)
+
+get_news_with_sentiment = FunctionDeclaration(
+    name="get_news_with_sentiment",
+    description="Gets live and historical market news and sentiment data",
+    parameters={
+        "type": "object",
+        "properties": {
+            "news_topic": {
+                "type": "string",
+                "description": """News topic to learn about. Supported topics
+                               include blockchain, earnings, ipo,
+                               mergers_and_acquisitions, financial_markets,
+                               economy_fiscal, economy_monetary, economy_macro,
+                               energy_transportation, finance, life_sciences,
+                               manufacturing, real_estate, retail_wholesale,
+                               and technology""",
+            },
+        },
+    },
+)
+### Wrap function declarations in a tool
+
+Now, you can define a tool that will allow Gemini to select from the set of functions we've defined:
+company_insights_tool = Tool(
+    function_declarations=[
+        get_stock_price,
+        get_company_overview,
+        get_company_news,
+        get_news_with_sentiment,
+    ],
+)
+### Company and financial information API
+
+Alpha Vantage provides real-time and historical financial market data through a set of data APIs. In this tutorial, you'll use the Alpha Vantage API to get stock prices, company information, and news about different industries.
+
+You can register for a free developer API key at [Alpha Vantage](https://www.alphavantage.co/). Once you have an API key, paste it into the cell below:
+# API key for company and financial information
+API_KEY = "PASTE_YOUR_API_KEY_HERE"
+You'll use this API key throughout the rest of this notebook to make API requests and get information about various companies and industries.
+### Define Python functions and a function handler
+Define Python functions that you'll invoke to fetch data from an external API:
+def get_stock_price_from_api(content):
+    url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={content['ticker']}&apikey={API_KEY}"
+    api_request = requests.get(url)
+    return api_request.text
+
+
+def get_company_overview_from_api(content):
+    url = f"https://www.alphavantage.co/query?function=OVERVIEW&symbol={content['ticker']}&apikey={API_KEY}"
+    api_response = requests.get(url)
+    return api_response.text
+
+
+def get_company_news_from_api(content):
+    url = f"https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers={content['tickers']}&limit=20&sort=RELEVANCE&apikey={API_KEY}"
+    api_response = requests.get(url)
+    return api_response.text
+
+
+def get_news_with_sentiment_from_api(content):
+    url = f"https://www.alphavantage.co/query?function=NEWS_SENTIMENT&topics={content['news_topic']}&limit=20&sort=RELEVANCE&apikey={API_KEY}"
+    api_request = requests.get(url)
+    return api_request.text
+Define a function handler that maps function call names (from your function declarations) to actual Python functions that call APIs:
+function_handler = {
+    "get_stock_price": get_stock_price_from_api,
+    "get_company_overview": get_company_overview_from_api,
+    "get_company_news": get_company_news_from_api,
+    "get_news_with_sentiment": get_news_with_sentiment_from_api,
+}
+### Initialize model
+
+Initialize the Gemini model with the desired model parameters and `Tool` that we defined earlier:
+gemini_model = GenerativeModel(
+    "gemini-1.5-pro-002",
+    generation_config=GenerationConfig(temperature=0),
+    tools=[company_insights_tool],
+)
+### Initialize chat session
+chat = gemini_model.start_chat()
+### Define a helper function to send chat messages and handle function calls & responses
+
+Before you start chatting with the Gemini model and making function calls, recall that Gemini Function Calling predicts a function call from a set of functions then returns structured information about which function to call and which parameters to use.
+
+Rather than having to manually inspect the predicted function names and function parameters and then repeatedly invoking API calls, the following helper function automates the process of handling API calls and responses to and from the Gemini model:
+def send_chat_message(prompt):
+    display(Markdown("#### Prompt"))
+    print(prompt, "\n")
+    prompt += """
+    Give a concise, high-level summary. Only use information that you learn from 
+    the API responses. 
+    """
+
+    # Send a chat message to the Gemini API
+    response = chat.send_message(prompt)
+
+    # Handle cases with multiple chained function calls
+    function_calling_in_process = True
+    while function_calling_in_process:
+        # Extract the function call response
+        function_call = response.candidates[0].content.parts[0].function_call
+
+        # Check for a function call or a natural language response
+        if function_call.name in function_handler.keys():
+            # Extract the function call name
+            function_name = function_call.name
+            display(Markdown("#### Predicted function name"))
+            print(function_name, "\n")
+
+            # Extract the function call parameters
+            params = {key: value for key, value in function_call.args.items()}
+            display(Markdown("#### Predicted function parameters"))
+            print(params, "\n")
+
+            # Invoke a function that calls an external API
+            function_api_response = function_handler[function_name](params)[
+                :20000
+            ]  # Stay within the input token limit
+            display(Markdown("#### API response"))
+            print(function_api_response[:500], "...", "\n")
+
+            # Send the API response back to Gemini, which will generate a natural language summary or another function call
+            response = chat.send_message(
+                Part.from_function_response(
+                    name=function_name,
+                    response={"content": function_api_response},
+                ),
+            )
+        else:
+            function_calling_in_process = False
+
+    # Show the final natural language summary
+    display(Markdown("#### Natural language response"))
+    display(Markdown(response.text.replace("$", "\\\\$")))
+In the above helper function, the `while` loop handles cases in which the Gemini model predicts two or more chained Function Calls. The code within the `if` statement handles the invocation of function calls and API requests and responses. And the line of code in the `else` statement stops the Function Calling logic in the event that Gemini generates a natural language summary.
+
+### Ask questions about various companies and topics
+
+Now that you've defined your functions, initialized the Gemini model, and started a chat session, you're ready to ask questions!
+
+### Sample prompt related to stock price
+
+Start with a simple prompt that asks about a stock price:
+send_chat_message("What is the current stock price for Google?")
+#### How it works
+
+Nice work! The output includes a concise summary of the real-time stock price for Alphabet, Inc.
+
+Let's walk through the step-by-step end process that your application code went through, from the input prompt to the output summary:
+
+1. Gemini used information within your prompt and predicted the `get_stock_price()` function along with the ticker symbol `GOOG`.
+1. Your helper function then invoked an API call to retrieve the latest stock ticker information about Alphabet Inc.
+1. Once you returned the API response to Gemini, it used this information to generate a natural language summary with the stock price of Alphabet Inc.
+
+### Sample prompt related to company information
+send_chat_message("Give me a company overview of Google")
+#### How it works
+
+For this prompt, Gemini predicted the `get_company_overview()` function along with the ticker symbol `GOOG`. The logic within your helper function handled the API call, and the natural language response generated by Gemini includes information about financial metrics, a company description, and stock details.
+
+### Sample prompt for information about multiple companies
+
+Now, see what happens what you ask about two different companies:
+send_chat_message("Give me a company overview of Walmart and The Home Depot")
+#### How it works
+
+Great! This time, Gemini predicted the use of two subsequent function calls to `get_company_overview()`, one for each ticker symbol. The logic within your helper function handled the chained function calls, and the natural language response generated by Gemini includes information about both companies.
+
+### Sample prompt related to company news
+
+Ask a question about the latest news related to a particular company:
+send_chat_message("What's the latest news about Google?")
+#### How it works
+
+For this prompt, Gemini predicted the `get_company_news()` function. The logic within your helper function handled the API call, and the natural language response generated by Gemini includes the latest news related to Google.
+
+### Sample prompt related to industry news
+
+Now, try sending a prompt about news for a particular industry:
+send_chat_message("Has there been any exciting news related to real estate recently?")
+#### How it works
+
+This time, Gemini predicted the `get_news_with_sentiment()` function along with the function parameter `real_estate` as defined in your `FunctionDeclaration`. The logic within your helper function handled the API call, and the natural language response generated by Gemini includes the latest news and sentiment in the real estate industry.
+
+### Summary
+
+This tutorial highlights how Gemini Function Calling helps bridge the gap between raw data and actionable insights. This functionality empowers users to ask questions in natural language, our application code makes API calls to retrieve the latest relevant information, then the Gemini model summarizes the results from one or more API calls.
+
+We're excited to see how you'll use Gemini Function calling to build generative AI applications that can help users make informed decisions, whether they are investors like Jane, or anyone who's looking to combine the power of generative AI models with reliable and up-to-date information from external data sources.
+
+Feel free to try sending additional prompts, editing the function declarations, or even adding your own. Happy Function Calling!
+
+# Copyright 2024 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# Multimodal Function Calling with the Gemini API & Python SDK
+
+<table align="left">
+  <td style="text-align: center">
+    <a href="https://colab.research.google.com/github/GoogleCloudPlatform/generative-ai/blob/main/gemini/function-calling/multimodal_function_calling.ipynb">
+      <img src="https://cloud.google.com/ml-engine/images/colab-logo-32px.png" alt="Google Colaboratory logo"><br> Run in Colab
+    </a>
+  </td>
+  <td style="text-align: center">
+    <a href="https://console.cloud.google.com/vertex-ai/colab/import/https:%2F%2Fraw.githubusercontent.com%2FGoogleCloudPlatform%2Fgenerative-ai%2Fmain%2Fgemini%2Ffunction-calling%2Fmultimodal_function_calling.ipynb">
+      <img width="32px" src="https://lh3.googleusercontent.com/JmcxdQi-qOpctIvWKgPtrzZdJJK-J3sWE1RsfjZNwshCFgE_9fULcNpuXYTilIR2hjwN" alt="Google Cloud Colab Enterprise logo"><br> Run in Colab Enterprise
+    </a>
+  </td>      
+  <td style="text-align: center">
+    <a href="https://github.com/GoogleCloudPlatform/generative-ai/blob/main/gemini/function-calling/multimodal_function_calling.ipynb">
+      <img src="https://cloud.google.com/ml-engine/images/github-logo-32px.png" alt="GitHub logo"><br> View on GitHub
+    </a>
+  </td>
+  <td style="text-align: center">
+    <a href="https://console.cloud.google.com/vertex-ai/workbench/deploy-notebook?download_url=https://raw.githubusercontent.com/GoogleCloudPlatform/generative-ai/main/gemini/function-calling/multimodal_function_calling.ipynb">
+      <img src="https://lh3.googleusercontent.com/UiNooY4LUgW_oTvpsNhPpQzsstV5W8F7rYgxgGBD85cWJoLmrOzhVs_ksK_vgx40SHs7jCqkTkCk=e14-rj-sc0xffffff-h130-w32" alt="Vertex AI logo"><br> Open in Vertex AI Workbench
+    </a>
+  </td>
+</table>
+
+<div style="clear: both;"></div>
+
+<b>Share to:</b>
+
+<a href="https://www.linkedin.com/sharing/share-offsite/?url=https%3A//github.com/GoogleCloudPlatform/generative-ai/blob/main/gemini/function-calling/multimodal_function_calling.ipynb" target="_blank">
+  <img width="20px" src="https://upload.wikimedia.org/wikipedia/commons/8/81/LinkedIn_icon.svg" alt="LinkedIn logo">
+</a>
+
+<a href="https://bsky.app/intent/compose?text=https%3A//github.com/GoogleCloudPlatform/generative-ai/blob/main/gemini/function-calling/multimodal_function_calling.ipynb" target="_blank">
+  <img width="20px" src="https://upload.wikimedia.org/wikipedia/commons/7/7a/Bluesky_Logo.svg" alt="Bluesky logo">
+</a>
+
+<a href="https://twitter.com/intent/tweet?url=https%3A//github.com/GoogleCloudPlatform/generative-ai/blob/main/gemini/function-calling/multimodal_function_calling.ipynb" target="_blank">
+  <img width="20px" src="https://upload.wikimedia.org/wikipedia/commons/5/53/X_logo_2023_original.svg" alt="X logo">
+</a>
+
+<a href="https://reddit.com/submit?url=https%3A//github.com/GoogleCloudPlatform/generative-ai/blob/main/gemini/function-calling/multimodal_function_calling.ipynb" target="_blank">
+  <img width="20px" src="https://redditinc.com/hubfs/Reddit%20Inc/Brand/Reddit_Logo.png" alt="Reddit logo">
+</a>
+
+<a href="https://www.facebook.com/sharer/sharer.php?u=https%3A//github.com/GoogleCloudPlatform/generative-ai/blob/main/gemini/function-calling/multimodal_function_calling.ipynb" target="_blank">
+  <img width="20px" src="https://upload.wikimedia.org/wikipedia/commons/5/51/Facebook_f_logo_%282019%29.svg" alt="Facebook logo">
+</a>            
+
+| | |
+|-|-|
+|Author(s) | [Kristopher Overholt](https://github.com/koverholt) |
+## Overview
+
+### Introduction to Multimodal Function Calling with Gemini
+
+This notebook demonstrates a powerful [Function Calling](https://cloud.google.com/vertex-ai/docs/generative-ai/multimodal/function-calling) capability of the Gemini model: support for multimodal inputs. With multimodal function calling, you can go beyond traditional text inputs, enabling Gemini to understand your intent and predict function calls and function parameters based on various inputs like images, audio, video, and PDFs. Function calling can also be referred to as *function calling with controlled generation*, which guarantees that output generated by the model always adheres to a specific schema so that you receive consistently formatted responses.
+
+Previously, implementing multimodal function calling required two separate calls to the Gemini API: one to extract information from media, and another to generate a function call based on the extracted text. This process was cumbersome, prone to errors, and resulted in the loss of detail in valuable contextual information. Gemini's multimodal function calling capability streamlines this workflow, enabling a single API call that efficiently processes multimodal inputs for accurate function predictions and structured outputs. 
+
+### How It Works
+
+1. **Define Functions and Tools:** Describe your functions, then group them into `Tool` objects for Gemini to use.
+2. **Send Inputs and Prompt:** Provide Gemini with multimodal input (image, audio, PDF, etc.) and a prompt describing your request.
+3. **Gemini Predicts Action:** Gemini analyzes the multimodal input and prompt to predict the best function to call and its parameters.
+4. **Execute and Return:** Use Gemini's prediction to make API calls, then send the results back to Gemini.
+5. **Generate Response:** Gemini uses the API results to provide a final, natural language response to the user. 
+
+This notebook will guide you through practical examples of using Gemini's multimodal function calling to build intelligent applications that go beyond the limitations of text-only interactions. 
+### Objectives
+
+In this tutorial, you will learn how to use the Gemini API in Vertex AI with the Vertex AI SDK for Python to make function calls with multimodal inputs, using the Gemini 1.5 Pro (`gemini-1.5-pro`) model. You'll explore how Gemini can process and understand various input types — including images, video, audio, and PDFs — to predict and execute functions.
+
+You will complete the following tasks:
+
+- Install the Vertex AI SDK for Python.
+- Define functions that can be called by Gemini.
+- Package functions into tools.
+- Send multimodal inputs (images, video, audio, PDFs) and prompts to Gemini.
+- Extract predicted function calls and their parameters from Gemini's response.
+- Use the predicted output to make API calls to external systems (demonstrated with an image input example). 
+- Return API responses to Gemini for natural language response generation (demonstrated with an image input example). 
+### Costs
+
+This tutorial uses billable components of Google Cloud:
+
+- Vertex AI
+
+Learn about [Vertex AI pricing](https://cloud.google.com/vertex-ai/pricing) and use the [Pricing Calculator](https://cloud.google.com/products/calculator/) to generate a cost estimate based on your projected usage.
+
+## Getting Started
+
+### Install Vertex AI SDK for Python
+
+%pip install --upgrade --user --quiet google-cloud-aiplatform wikipedia
+### Restart current runtime
+
+To use the newly installed packages in this Jupyter runtime, you must restart the runtime. You can do this by running the cell below, which will restart the current kernel.
+# Restart kernel after installs so that your environment can access the new packages
+import IPython
+
+app = IPython.Application.instance()
+app.kernel.do_shutdown(True)
+<div class="alert alert-block alert-warning">
+<b>⚠️ The kernel is going to restart. Please wait until it is finished before continuing to the next step. ⚠️</b>
+</div>
+
+### Authenticate your notebook environment (Colab only)
+
+If you are running this notebook on Google Colab, run the following cell to authenticate your environment. This step is not required if you are using [Vertex AI Workbench](https://cloud.google.com/vertex-ai-workbench).
+import sys
+
+if "google.colab" in sys.modules:
+    from google.colab import auth
+
+    auth.authenticate_user()
+### Set Google Cloud project information and initialize Vertex AI SDK
+
+To get started using Vertex AI, you must have an existing Google Cloud project and [enable the Vertex AI API](https://console.cloud.google.com/flows/enableapi?apiid=aiplatform.googleapis.com).
+
+Learn more about [setting up a project and a development environment](https://cloud.google.com/vertex-ai/docs/start/cloud-environment).
+PROJECT_ID = "[your-project-id]"  # @param {type:"string"}
+LOCATION = "us-central1"  # @param {type:"string"}
+
+import vertexai
+
+vertexai.init(project=PROJECT_ID, location=LOCATION)
+## Multimodal Function Calling in Action
+### Import libraries
+
+from IPython.display import Markdown, display
+from vertexai.generative_models import (
+    Content,
+    FunctionDeclaration,
+    GenerationConfig,
+    GenerativeModel,
+    Part,
+    Tool,
+)
+import wikipedia
+### Image-Based Function Calling: Finding Animal Habitats
+
+In this example, you'll send along an image of a bird and ask Gemini to identify its habitat. This involves defining a function that looks up regions where a given animal is found, creating a tool that uses this function, and then sending a request to Gemini.
+
+<img src="https://storage.googleapis.com/github-repo/generative-ai/gemini/function-calling/multi-color-bird.jpg" width="250px">
+
+First, you define a `FunctionDeclaration` called `get_wildlife_region`. This function takes the name of an animal species as input and returns information about its typical region.
+get_wildlife_region = FunctionDeclaration(
+    name="get_wildlife_region",
+    description="Look up the region where an animal can be found",
+    parameters={
+        "type": "object",
+        "properties": {
+            "animal": {"type": "string", "description": "Species of animal"}
+        },
+    },
+)
+Next, you create a `Tool` object that includes your `get_wildlife_region` function. Tools help group related functions that Gemini can use:
+image_tool = Tool(
+    function_declarations=[
+        get_wildlife_region,
+    ],
+)
+Now you're ready to send a request to Gemini. Initialize the `GenerativeModel` and specify the image to analyze, along with a prompt. The `tools` argument tells Gemini to consider the functions in your `image_tool`.
+model = GenerativeModel("gemini-1.5-pro")
+generation_config = GenerationConfig(temperature=0)
+
+response = model.generate_content(
+    [
+        Part.from_uri(
+            "gs://github-repo/generative-ai/gemini/function-calling/multi-color-bird.jpg",
+            mime_type="image/jpeg",
+        ),
+        "What is the typical habitat or region where this animal lives?",
+    ],
+    generation_config=generation_config,
+    tools=[image_tool],
+)
+response_function_call = response.candidates[0].content
+response.candidates[0].function_calls[0]
+Let's examine the response from Gemini. You can extract the predicted function name:
+function_name = response.candidates[0].function_calls[0].name
+function_name
+You can also get the arguments that Gemini predicted for the function call:
+function_args = {
+    key: value for key, value in response.candidates[0].function_calls[0].args.items()
+}
+function_args
+Now, you'll call an external API (in this case, using the `wikipedia` Python package) using the animal name that Gemini extracted from the image:
+api_response = wikipedia.page(function_args["animal"]).content
+api_response[:500]
+Finally, you return the API response to Gemini so it can generate a final answer in natural language:
+response = model.generate_content(
+    [
+        Content(
+            role="user",
+            parts=[
+                Part.from_uri(
+                    "gs://github-repo/generative-ai/gemini/function-calling/multi-color-bird.jpg",
+                    mime_type="image/jpeg",
+                ),
+                Part.from_text(
+                    "Inspect the image and get the regions where this animal can be found",
+                ),
+            ],
+        ),
+        response_function_call,  # Function call response
+        Content(
+            parts=[
+                Part.from_function_response(
+                    name=function_name,
+                    response={
+                        "content": api_response,  # Return the API response to the Gemini model
+                    },
+                )
+            ],
+        ),
+    ],
+    tools=[image_tool],
+)
+
+display(Markdown(response.text))
+This example showcases how Gemini's multimodal function calling processes an image, predicts a relevant function and its parameters, and integrates with external APIs to provide comprehensive user information. This process opens up exciting possibilities for building intelligent applications that can "see" and understand the world around them via API calls to Gemini.
+### Video-Based Function Calling: Identifying Product Features
+Now let's explore how Gemini can extract information from videos for the purpose of invoking a function call. You'll use a video showcasing multiple products and ask Gemini to identify its key features.
+
+<img src="https://storage.googleapis.com/github-repo/generative-ai/gemini/function-calling/made-by-google-24.gif" width="600px">
+
+Start by defining a function called `get_feature_info` that takes a list of product features as input and could potentially be used to retrieve additional details about those features:
+get_feature_info = FunctionDeclaration(
+    name="get_feature_info",
+    description="Get additional information about a product feature",
+    parameters={
+        "type": "object",
+        "properties": {
+            "features": {
+                "type": "array",
+                "description": "A list of product features",
+                "items": {"type": "string", "description": "Product feature"},
+            }
+        },
+    },
+)
+Next, create a tool that includes your `get_feature_info` function:
+video_tool = Tool(
+    function_declarations=[
+        get_feature_info,
+    ],
+)
+Send a video to Gemini, along with a prompt asking for information about the product features, making sure to include your `video_tool` in the `tools` kwarg:
+model = GenerativeModel("gemini-1.5-pro")
+generation_config = GenerationConfig(temperature=0)
+
+response = model.generate_content(
+    [
+        Part.from_uri(
+            "gs://github-repo/generative-ai/gemini/function-calling/made-by-google-24.mp4",
+            mime_type="video/mp4",
+        ),
+        "Inspect the video and get information about the product features shown",
+    ],
+    generation_config=generation_config,
+    tools=[video_tool],
+)
+response.candidates[0].function_calls
+Gemini correctly predicted the `get_feature_info` function:
+function_name = response.candidates[0].function_calls[0].name
+function_name
+And you can see the list of product features that Gemini extracted from the video, which are available as structured function arguments that adhere to the JSON schema we defined in the `FunctionDeclaration`:
+function_args = {
+    key: value for key, value in response.candidates[0].function_calls[0].args.items()
+}
+function_args
+This example demonstrates Gemini's ability to understand video content. By defining a relevant function, you can use Gemini to extract structured information from videos and perform further actions based on that information.
+
+Now that the multimodal function call response is complete, you could use the function name and function arguments to call an external API using any REST API or client library of your choice, similar to how we did in the previous example with the `wikipedia` Python package.
+
+Since this sample notebook is focused on the mechanics of multimodal function calling rather than the subsequent function calls and API calls, we'll move on to another example with different multimodal inputs. You can refer to other sample notebooks on Gemini Function Calling for more details on where to go from here.
+### Audio-Based Function Calling: Generating Book Recommendations
+In this example, you'll explore using audio input with Gemini's multimodal function calling. You'll send a podcast episode to Gemini and ask for book recommendations related to the topics discussed.
+
+<font color="green">>>> "SRE is just a production system specific manifestation of systems thinking ... and we kind of do it in an informal way."</font><br/>
+<font color="purple">>>> "The book called 'Thinking in Systems' ... it's a really good primer on this topic."</font><br/>
+<font color="green">>>> "An example of ... systems structure behavior thinking ... is the idea of like the cascading failure, that kind of vicious cycle of load that causes retries that causes more load ... "</font><br/>
+<font color="purple">>>> "The worst pattern is the single embedded SRE that turns into the ops person ... you just end up doing all of the toil, all of the grunt work."</font><br/>
+<font color="green">>>> "Take that moment, take a breath, and really analyze the problem and understand how it's working as a system and understand how you can intervene to improve that."</font><br/>
+<font color="purple">>>> "Avoid just doing what you've done before and kicking the can down the road, and really think deeply about your problems."</font><br/>
+
+Define a function called `get_recommended_books` that takes a list of topics as input and (hypothetically) returns relevant book recommendations:
+get_recommended_books = FunctionDeclaration(
+    name="get_recommended_books",
+    description="Get recommended books based on a list of topics",
+    parameters={
+        "type": "object",
+        "properties": {
+            "topics": {
+                "type": "array",
+                "description": "A list of topics",
+                "items": {"type": "string", "description": "Topic"},
+            },
+        },
+    },
+)
+Now create a tool that includes your newly defined function:
+audio_tool = Tool(
+    function_declarations=[
+        get_recommended_books,
+    ],
+)
+Provide Gemini with the audio file and a prompt to recommend books based on the podcast content:
+model = GenerativeModel("gemini-1.5-pro")
+generation_config = GenerationConfig(temperature=0)
+
+response = model.generate_content(
+    [
+        Part.from_uri(
+            "gs://github-repo/generative-ai/gemini/function-calling/google-cloud-sre-podcast-s2-e8.mp3",
+            mime_type="audio/mpeg",
+        ),
+        "Inspect the audio file and generate a list of recommended books based on the topics discussed",
+    ],
+    generation_config=generation_config,
+    tools=[audio_tool],
+)
+response.candidates[0].function_calls
+You can see that Gemini has successfully predicted your `get_recommended_books` function:
+function_name = response.candidates[0].function_calls[0].name
+function_name
+And the function arguments contain the list of topics that Gemini identified and extracted from the input audio file:
+function_args = {
+    key: value for key, value in response.candidates[0].function_calls[0].args.items()
+}
+function_args
+This example highlights Gemini's capacity to understand and extract information from audio, enabling you to create applications that respond to spoken content or audio-based interactions.
+### PDF-Based Function Calling: Extracting Company Data from Invoices
+This example demonstrates how to use Gemini's multimodal function calling to process PDF documents. You'll work with a set of invoices and extract the names of the (fictitious) companies involved.
+
+<img src="https://storage.googleapis.com/github-repo/generative-ai/gemini/function-calling/invoice-synthetic-overview.png" width="1000px">
+
+Define a function called `get_company_information` that (in a real-world scenario) could be used to fetch details about a given list of companies:
+get_company_information = FunctionDeclaration(
+    name="get_company_information",
+    description="Get information about a list of companies",
+    parameters={
+        "type": "object",
+        "properties": {
+            "companies": {
+                "type": "array",
+                "description": "A list of companies",
+                "items": {"type": "string", "description": "Company name"},
+            }
+        },
+    },
+)
+Package your newly defined function into a tool:
+invoice_tool = Tool(
+    function_declarations=[
+        get_company_information,
+    ],
+)
+Now you can provide Gemini with multiple PDF invoices and ask it to get company information:
+model = GenerativeModel("gemini-1.5-pro")
+generation_config = GenerationConfig(temperature=0)
+
+response = model.generate_content(
+    [
+        Part.from_uri(
+            "gs://github-repo/generative-ai/gemini/function-calling/invoice-synthetic-1.pdf",
+            mime_type="application/pdf",
+        ),
+        Part.from_uri(
+            "gs://github-repo/generative-ai/gemini/function-calling/invoice-synthetic-2.pdf",
+            mime_type="application/pdf",
+        ),
+        Part.from_uri(
+            "gs://github-repo/generative-ai/gemini/function-calling/invoice-synthetic-3.pdf",
+            mime_type="application/pdf",
+        ),
+        Part.from_uri(
+            "gs://github-repo/generative-ai/gemini/function-calling/invoice-synthetic-4.pdf",
+            mime_type="application/pdf",
+        ),
+        Part.from_uri(
+            "gs://github-repo/generative-ai/gemini/function-calling/invoice-synthetic-5.pdf",
+            mime_type="application/pdf",
+        ),
+        "Inspect the PDF files of invoices and retrieve information about each company",
+    ],
+    generation_config=generation_config,
+    tools=[invoice_tool],
+)
+response.candidates[0].function_calls
+As expected, Gemini predicted the `get_company_information` function:
+function_name = response.candidates[0].function_calls[0].name
+function_name
+The function arguments contain the list of company names extracted from the PDF invoices:
+function_args = {
+    key: value for key, value in response.candidates[0].function_calls[0].args.items()
+}
+function_args
+This example shows the power of Gemini for processing and extracting structured data from documents, a common requirement in many real-world applications.
+### Image-Based Chat: Building a Multimodal Chatbot
+Let's put it all together and build a simple multimodal chatbot. This chatbot will understand image inputs and respond to questions using the functions you define.
+
+<img src="https://storage.googleapis.com/github-repo/generative-ai/gemini/function-calling/baby-fox-info.png" width="500px">
+
+First, define three functions: `get_animal_details`, `get_location_details`, and `check_color_palette`. These functions represent the capabilities of your chatbot and could potentially be used to retrieve additional details using REST API calls:
+get_animal_details = FunctionDeclaration(
+    name="get_animal_details",
+    description="Look up information about a given animal species",
+    parameters={
+        "type": "object",
+        "properties": {
+            "animal": {"type": "string", "description": "Species of animal"}
+        },
+    },
+)
+
+get_location_details = FunctionDeclaration(
+    name="get_location_details",
+    description="Look up information about a given location",
+    parameters={
+        "type": "object",
+        "properties": {"location": {"type": "string", "description": "Location"}},
+    },
+)
+
+check_color_palette = FunctionDeclaration(
+    name="check_color_palette",
+    description="Check hex color codes for accessibility",
+    parameters={
+        "type": "object",
+        "properties": {
+            "colors": {
+                "type": "array",
+                "description": "A list of colors in hexadecimal format",
+                "items": {
+                    "type": "string",
+                    "description": "Hexadecimal representation of color, as in #355E3B",
+                },
+            }
+        },
+    },
+)
+Group your functions into a tool:
+chat_tool = Tool(
+    function_declarations=[
+        get_animal_details,
+        get_location_details,
+        check_color_palette,
+    ],
+)
+Initialize the `GenerativeModel` and start a chat session with Gemini, providing it with your `chat_tool`:
+model = GenerativeModel(
+    "gemini-1.5-pro",
+    generation_config=GenerationConfig(temperature=0),
+    tools=[chat_tool],
+)
+
+chat = model.start_chat()
+Send an image of a fox, along with a simple prompt:
+response = chat.send_message(
+    [
+        Part.from_uri(
+            "gs://github-repo/generative-ai/gemini/function-calling/baby-fox.jpg",
+            mime_type="image/jpeg",
+        ),
+        "Tell me about this animal",
+    ]
+)
+
+response.candidates[0].function_calls
+Now ask about the location details in the image:
+response = chat.send_message(
+    [
+        Part.from_uri(
+            "gs://github-repo/generative-ai/gemini/function-calling/baby-fox.jpg",
+            mime_type="image/jpeg",
+        ),
+        "Tell me details about this location",
+    ]
+)
+
+response.candidates[0].function_calls
+And finally, ask for a color palette based the image:
+response = chat.send_message(
+    [
+        Part.from_uri(
+            "gs://github-repo/generative-ai/gemini/function-calling/baby-fox.jpg",
+            mime_type="image/jpeg",
+        ),
+        "Get the color palette of this image and check it for accessibility",
+    ]
+)
+
+response.candidates[0].function_calls
+While this chatbot doesn't actually execute the predicted functions, it demonstrates creating an interactive experience using multimodal inputs and function calling in a chat format. You can extend this example by implementing REST API calls or client library requests for each function to create a truly functional and engaging multimodal chatbot that's connected to the real world.
+## Conclusions
+
+In this notebook, you explored the powerful capabilities of Gemini's multimodal function calling. You learned how to:
+
+- Define functions and package them into tools.
+- Send multimodal inputs (images, video, audio, PDFs) and prompts to Gemini. 
+- Extract predicted function calls and their parameters.
+- Use the predicted output to make (or potentially make) API calls.
+- Return API responses to Gemini for natural language generation. 
+
+You've seen how Gemini can understand and act on a range of different multimodal inputs, which opens up a world of possibilities for building innovative and engaging multimodal applications.  You can now use these powerful tools to create your own intelligent applications that seamlessly integrate media, natural language, and calls to external APIs and system.
+
+Experiment with different modalities, functions, and prompts to discover the full potential of Gemini's multimodal and function calling capabilities. And you can continue learning by exploring other sample notebooks in this repository and exploring the [documentation for Gemini Function Calling](https://cloud.google.com/vertex-ai/generative-ai/docs/multimodal/function-calling). 
