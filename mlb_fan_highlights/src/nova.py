@@ -3,7 +3,7 @@ from google.api_core import retry
 import requests
 import json
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone, UTC
 import time
 from typing import List, Dict
 import logging
@@ -136,18 +136,24 @@ class MLBDataPipeline:
             games_data = []
             for date in data.get("dates", []):
                 for game in date.get("games", []):
+                    # Parse the game_date string to datetime
+                    game_date_str = game.get("gameDate")
+                    try:
+                        game_date = pd.to_datetime(game_date_str)
+                    except:
+                        game_date = None
                     game_data = {
                         "game_pk": game.get("gamePk"),
                         "game_type": game.get("gameType"),
-                        "season": game.get("season"),
-                        "game_date": game.get("gameDate"),
+                        "season": int(game.get("season")) if game.get("season") is not None else None,
+                        "game_date": game_date,
                         "home_team_id": game.get("teams", {}).get("home", {}).get("team", {}).get("id"),
                         "away_team_id": game.get("teams", {}).get("away", {}).get("team", {}).get("id"),
                         "venue_id": game.get("venue", {}).get("id"),
                         "status": game.get("status", {}).get("detailedState"),
                         "home_score": game.get("teams", {}).get("home", {}).get("score"),
                         "away_score": game.get("teams", {}).get("away", {}).get("score"),
-                        "last_updated": datetime.utcnow()
+                        "last_updated": datetime.now(UTC)
                     }
                     games_data.append(game_data)
             
@@ -192,18 +198,24 @@ class MLBDataPipeline:
                 games_data = []
                 for date in data.get("dates", []):
                     for game in date.get("games", []):
+                        # Parse the game_date string to datetime
+                        game_date_str = game.get("gameDate")
+                        try:
+                           game_date = pd.to_datetime(game_date_str)
+                        except:
+                           game_date = None
                         game_data = {
                             "game_pk": game.get("gamePk"),
                             "game_type": game.get("gameType"),
-                            "season": game.get("season"),
-                            "game_date": game.get("gameDate"),
+                            "season": int(game.get("season")) if game.get("season") is not None else None,
+                            "game_date": game_date,
                             "home_team_id": game.get("teams", {}).get("home", {}).get("team", {}).get("id"),
                             "away_team_id": game.get("teams", {}).get("away", {}).get("team", {}).get("id"),
                             "venue_id": game.get("venue", {}).get("id"),
                             "status": game.get("status", {}).get("detailedState"),
                             "home_score": game.get("teams", {}).get("home", {}).get("score"),
                             "away_score": game.get("teams", {}).get("away", {}).get("score"),
-                            "last_updated": datetime.utcnow()
+                            "last_updated": datetime.now(UTC)
                         }
                         games_data.append(game_data)
                 
