@@ -281,86 +281,174 @@ class MLBDataPipeline:
         job = self.client.load_table_from_dataframe(df, table_ref, job_config=job_config)
         job.result()
 
+    
+    def fetch_recent_games(self, start_date: str, end_date: str) -> List[Dict]:
+       """
+       Fetch games within a specific date range
+    
+       Args:
+           start_date: Start date in YYYY-MM-DD format
+           end_date: End date in YYYY-MM-DD format
+    
+       Returns:
+           List of game dictionaries
+       """
+       try:
+           params = {
+               "sportId": 1,
+               "startDate": start_date,
+               "endDate": end_date,
+               "gameType": "R,F,D,L,W"  # Regular season, Finals, Division, League, Wild Card
+           }
+        
+           response = rate_limited_request(f"{self.base_url}/schedule", params=params)
+           data = response.json()
+        
+           games_data = []
+           for date in data.get("dates", []):
+               for game in date.get("games", []):
+                  game_date_str = game.get("gameDate")
+                  try:
+                      game_date = pd.to_datetime(game_date_str)
+                  except:
+                      game_date = None
+
+                  game_data = {
+                       "game_pk": game.get("gamePk"),
+                       "game_type": game.get("gameType"),
+                       "season": int(game.get("season")) if game.get("season") is not None else None,
+                       "game_date": game_date,
+                       "home_team_id": game.get("teams", {}).get("home", {}).get("team", {}).get("id"),
+                       "away_team_id": game.get("teams", {}).get("away", {}).get("team", {}).get("id"),
+                       "venue_id": game.get("venue", {}).get("id"),
+                       "status": game.get("status", {}).get("detailedState"),
+                       "home_score": game.get("teams", {}).get("home", {}).get("score"),
+                       "away_score": game.get("teams", {}).get("away", {}).get("score"),
+                       "last_updated": datetime.now(UTC)
+                    }
+                  games_data.append(game_data)
+        
+           return games_data
+
+       except Exception as e:
+           logger.error(f"Error fetching recent games: {str(e)}")
+           return []
+
+
+
     def real_time_updates(self):
-        """Handle real-time updates for current and upcoming games"""
-        while True:
-            try:
-                # Get games for next 7 days
-                end_date = datetime.now() + timedelta(days=7)
-                start_date = datetime.now() - timedelta(days=1)  # Include yesterday for any pending updates
-                
-                params = {
-                    "sportId": 1,
-                    "startDate": start_date.strftime("%Y-%m-%d"),
-                    "endDate": end_date.strftime("%Y-%m-%d")
-                }
-                
-                response = rate_limited_request(f"{self.base_url}/schedule", params=params)
-                data = response.json()
-                
-                games_data = []
-                for date in data.get("dates", []):
-                    for game in date.get("games", []):
-                        # Parse the game_date string to datetime
-                        game_date_str = game.get("gameDate")
-                        try:
-                           game_date = pd.to_datetime(game_date_str)
-                        except:
-                           game_date = None
-                        game_data = {
-                            "game_pk": game.get("gamePk"),
-                            "game_type": game.get("gameType"),
-                            "season": int(game.get("season")) if game.get("season") is not None else None,
-                            "game_date": game_date,
-                            "home_team_id": game.get("teams", {}).get("home", {}).get("team", {}).get("id"),
-                            "away_team_id": game.get("teams", {}).get("away", {}).get("team", {}).get("id"),
-                            "venue_id": game.get("venue", {}).get("id"),
-                            "status": game.get("status", {}).get("detailedState"),
-                            "home_score": game.get("teams", {}).get("home", {}).get("score"),
-                            "away_score": game.get("teams", {}).get("away", {}).get("score"),
-                            "last_updated": datetime.now(UTC)
-                        }
-                        games_data.append(game_data)
-                
-                if games_data:
-                    # Use MERGE in BigQuery to update existing games or insert new ones
-                    merge_query = f"""
-                    MERGE {self.dataset_id}.games T
-                    USING (SELECT * FROM UNNEST(@games_data)) S
-                    ON T.game_pk = S.game_pk
-                    WHEN MATCHED THEN
-                        UPDATE SET 
-                            status = S.status,
-                            home_score = S.home_score,
-                            away_score = S.away_score,
-                            last_updated = S.last_updated
-                    WHEN NOT MATCHED THEN
-                        INSERT ROW
-                    """
-                    
-                    job_config = bigquery.QueryJobConfig(
-                        query_parameters=[
-                            bigquery.ArrayQueryParameter("games_data", "STRUCT", games_data)
-                        ]
-                    )
-                    
-                    self.client.query(merge_query, job_config=job_config).result()
-                    
-                logger.info(f"Real-time update completed at {datetime.now()}")
-                
-            except Exception as e:
-                logger.error(f"Error in real-time updates: {str(e)}")
+       """Perform real-time updates for games, teams, and player data"""
+       try:
+           current_time = datetime.now(UTC)
+           logger.info(f"Starting real-time update at {current_time}")
+
+           # 1. Update teams first (as players depend on team data)
+           teams_data = self.fetch_teams()
+           if teams_data:
+            self.update_bigquery_batch("teams", teams_data, team_schema)
+
+           # 2. Update players for current season
+           current_year = current_time.year
+           players_data = self.fetch_players(current_year)
+           if players_data:
+            self.update_bigquery_batch("players", players_data, player_schema)
+
+           # 3. Update games
+           # Calculate date range for recent games (e.g., last 7 days to next 7 days)
+           start_date = (current_time - timedelta(days=7)).strftime('%Y-%m-%d')
+           end_date = (current_time + timedelta(days=7)).strftime('%Y-%m-%d')
+           games_data = self.fetch_recent_games(start_date, end_date)
+           if games_data:
+            self.update_bigquery_batch("games", games_data, game_schema)
+            logger.info(f"Updated {len(games_data)} recent games")
+        
+           params = {
+               "sportId": 1,
+               "startDate": start_date,
+               "endDate": end_date,
+               "gameType": "R,F,D,L,W"  # Regular season, Finals, Division, League, Wild Card
+            }
+
+           response = rate_limited_request(f"{self.base_url}/schedule", params=params)
+           data = response.json()
+        
+           games_data = []
+           for date in data.get("dates", []):
+               for game in date.get("games", []):
+                   game_date_str = game.get("gameDate")
+                   try:
+                       game_date = pd.to_datetime(game_date_str)
+                   except:
+                       game_date = None
+
+                   game_data = {
+                       "game_pk": game.get("gamePk"),
+                       "game_type": game.get("gameType"),
+                       "season": int(game.get("season")) if game.get("season") is not None else None,
+                       "game_date": game_date,
+                       "home_team_id": game.get("teams", {}).get("home", {}).get("team", {}).get("id"),
+                       "away_team_id": game.get("teams", {}).get("away", {}).get("team", {}).get("id"),
+                       "venue_id": game.get("venue", {}).get("id"),
+                       "status": game.get("status", {}).get("detailedState"),
+                       "home_score": game.get("teams", {}).get("home", {}).get("score"),
+                       "away_score": game.get("teams", {}).get("away", {}).get("score"),
+                       "last_updated": datetime.now(UTC)
+                    }
+                   games_data.append(game_data)
+
+           if games_data:
+               # Update games table with MERGE/UPSERT logic
+               table_id = f"{self.client.project}.{self.dataset_id}.games"
             
-            time.sleep(7200)  # Wait 2 hours before next update
+               # Create a temporary table with the new data
+               temp_table_id = f"{table_id}_temp"
+               job_config = bigquery.LoadJobConfig(
+                   schema=game_schema,
+                   write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE
+                )
+            
+               df = pd.DataFrame(games_data)
+               job = self.client.load_table_from_dataframe(
+                   df, temp_table_id, job_config=job_config
+               )
+               job.result()
+
+               # Perform MERGE operation
+               merge_query = f"""
+                   MERGE `{table_id}` T
+                   USING `{temp_table_id}` S
+                   ON T.game_pk = S.game_pk
+                   WHEN MATCHED THEN
+                       UPDATE SET 
+                           status = S.status,
+                           home_score = S.home_score,
+                           away_score = S.away_score,
+                           last_updated = S.last_updated
+                   WHEN NOT MATCHED THEN
+                       INSERT ROW
+               """
+            
+               self.client.query(merge_query).result()
+            
+               # Clean up temporary table
+               self.client.delete_table(temp_table_id)
+            
+               logger.info(f"Updated {len(games_data)} games")
+
+           logger.info(f"Real-time update completed at {datetime.now(UTC)}")
+
+       except Exception as e:
+           logger.error(f"Error in real-time updates: {str(e)}")
+
 
 def main():
     pipeline = MLBDataPipeline()
     
     # Create tables if they don't exist
-    pipeline.create_tables_if_not_exist()
+    #pipeline.create_tables_if_not_exist()
     
     # First, load historical data
-    pipeline.fetch_historical_seasons(2014)
+    #pipeline.fetch_historical_seasons(2014)
     
     # Then start real-time updates
     pipeline.real_time_updates()
