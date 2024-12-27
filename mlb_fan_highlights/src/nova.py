@@ -9,6 +9,8 @@ from typing import List, Dict
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from ratelimit import limits, sleep_and_retry
+import numpy as np
+
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -68,6 +70,42 @@ game_schema = [
 ]
 
 
+# Add this to your schema definitions at the top
+player_season_stats_schema = [
+    bigquery.SchemaField("season", "INTEGER"),
+    bigquery.SchemaField("first_name", "STRING"),
+    bigquery.SchemaField("last_name", "STRING"),
+    bigquery.SchemaField("link", "STRING"),
+    bigquery.SchemaField("position", "STRING"),
+    bigquery.SchemaField("team", "STRING"),
+    bigquery.SchemaField("games_played", "INTEGER"),
+    bigquery.SchemaField("at_bats", "INTEGER"),
+    bigquery.SchemaField("runs", "INTEGER"),
+    bigquery.SchemaField("hits", "INTEGER"),
+    bigquery.SchemaField("doubles", "INTEGER"),
+    bigquery.SchemaField("triples", "INTEGER"),
+    bigquery.SchemaField("homeruns", "INTEGER"),
+    bigquery.SchemaField("rbi", "INTEGER"),
+    bigquery.SchemaField("walks", "INTEGER"),
+    bigquery.SchemaField("strikeouts", "INTEGER"),
+    bigquery.SchemaField("stolen_bases", "INTEGER"),
+    bigquery.SchemaField("caught_stealing", "INTEGER"),
+    bigquery.SchemaField("batting_average", "FLOAT"),
+    bigquery.SchemaField("on_base_percentage", "FLOAT"),
+    bigquery.SchemaField("slugging_percentage", "FLOAT"),
+    bigquery.SchemaField("on_base_plus_slugging", "FLOAT"),
+    bigquery.SchemaField("last_updated", "TIMESTAMP")
+]
+
+
+# Add these retry parameters to your BigQuery client initialization
+retry_config = retry.Retry(
+    initial=1.0,  # Initial delay in seconds
+    maximum=60.0,  # Maximum delay in seconds
+    multiplier=2.0,  # Delay multiplier
+    predicate=retry.if_transient_error,
+)
+
 @sleep_and_retry
 @limits(calls=CALLS, period=RATE_LIMIT)
 def rate_limited_request(url: str, params: Dict = None) -> requests.Response:
@@ -76,7 +114,8 @@ def rate_limited_request(url: str, params: Dict = None) -> requests.Response:
 class MLBDataPipeline:
     def __init__(self):
         self.base_url = "https://statsapi.mlb.com/api/v1"
-        self.client = bigquery.Client()
+        self.client = bigquery.Client(
+        )
         self.dataset_id = "mlb_data"
         
     def create_tables_if_not_exist(self):
@@ -97,7 +136,8 @@ class MLBDataPipeline:
         tables = {
             "teams": team_schema,
             "players": player_schema,
-            "games": game_schema
+            "games": game_schema,
+            "player_season_stats": player_season_stats_schema 
         }
     
         for table_name, schema in tables.items():
@@ -199,6 +239,111 @@ class MLBDataPipeline:
             
        except Exception as e:
            logger.error(f"Error processing teams: {str(e)}")
+
+
+
+    
+    def load_player_season_stats(self, file_path: str = "datasets/mlb_season_data.csv", start_year: int = 2014, batch_size: int = 1000):
+
+        """
+         Load player season statistics from CSV file into BigQuery.
+    
+         Args:
+            file_path (str): Path to the MLB season data CSV file
+        """
+        try:
+
+            # Create the player_season_stats table if it doesn't exist
+            dataset_ref = self.client.dataset(self.dataset_id)
+            table_ref = dataset_ref.table("player_season_stats")
+        
+            try:
+                self.client.get_table(table_ref)
+                logger.info("Player season stats table already exists")
+            except Exception:
+                 table = bigquery.Table(table_ref, schema=player_season_stats_schema)
+                 self.client.create_table(table)
+                 logger.info("Created player season stats table")
+
+            # First read the CSV without dtype specifications
+            df = pd.read_csv(file_path, low_memory=False, dtype=str)
+            df = df[df['season'] >= str(start_year)]
+
+            # Print column names to debug
+            logger.info(f"CSV columns: {df.columns.tolist()}") 
+            
+
+            # Convert integer columns to nullable Int64
+            integer_columns = [
+            'season', 'games_played', 'at_bats', 'runs', 'hits',
+            'doubles', 'triples', 'homeruns', 'rbi',
+            'walks', 'strikeouts'
+        ]
+            for col in integer_columns:
+                if col in df.columns:
+                   df[col] = pd.to_numeric(df[col], errors='coerce').astype('Int64')
+
+             # Convert float columns
+            float_columns = [
+               'stolen_bases', 'caught_stealing', 'batting_average',
+               'on_base_percentage', 'slugging_percentage', 'on_base_plus_slugging'
+            ]
+            for col in float_columns:
+               if col in df.columns:
+                  df[col] = pd.to_numeric(df[col].replace('--', np.nan), errors='coerce')
+                  
+
+             # Convert string columns
+            string_columns = ['first_name', 'last_name', 'player_link', 'position', 'team']
+            for col in string_columns:
+                if col in df.columns:
+                   df[col] = df[col].fillna('')  # Replace NaN with empty string for string columns
+
+             # Add last_updated timestamp
+            df['last_updated'] = datetime.now(UTC)
+
+             # Load data into BigQuery
+            job_config = bigquery.LoadJobConfig(
+                schema=player_season_stats_schema,
+                write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE
+            )
+
+            # Convert to records and ensure no NaN values remain
+            records = []
+            for index, row in df.iterrows():
+               record = {}
+               for column in df.columns:
+                   value = row[column]
+                   if pd.isna(value) or value == 'nan':
+                       record[column] = None
+                   else:
+                       record[column] = value
+               records.append(record)
+
+            total_records = len(records)
+        
+             # Insert data in batches
+            table = self.client.get_table(table_ref)
+            for i in range(0, total_records, batch_size):
+               batch = records[i:i + batch_size]
+               try:
+                  errors = self.client.insert_rows(table, batch)
+        
+                  if errors:
+                           logger.error(f"Errors in batch {i//batch_size + 1}: {errors}")
+                  else:
+                           logger.info(f"Successfully loaded batch {i//batch_size + 1} ({len(batch)} records)")
+                  # Add a small delay between batches
+                  time.sleep(1)
+               except Exception as batch_error:
+                    logger.error(f"Error in batch {i//batch_size + 1}: {str(batch_error)}")
+                    continue
+        except FileNotFoundError:
+             logger.error(f"Could not find file at {file_path}")
+             raise
+        except Exception as e:
+             logger.error(f"Error loading player season stats: {str(e)}")
+             raise
 
 
     def fetch_historical_seasons(self, start_year: int = 2014):
@@ -449,9 +594,12 @@ def main():
     
     # First, load historical data
     #pipeline.fetch_historical_seasons(2014)
+
+    # Load player season stats
+    pipeline.load_player_season_stats("../../datasets/mlb_season_data.csv")
     
     # Then start real-time updates
-    pipeline.real_time_updates()
+    # pipeline.real_time_updates()
 
 if __name__ == "__main__":
     main()
