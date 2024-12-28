@@ -70,7 +70,7 @@ game_schema = [
 ]
 
 
-# Add this to your schema definitions at the top
+# Add this to your schema definitions at the top (data enrichment)
 player_season_stats_schema = [
     bigquery.SchemaField("season", "INTEGER"),
     bigquery.SchemaField("first_name", "STRING"),
@@ -478,9 +478,9 @@ class MLBDataPipeline:
        except Exception as e:
            logger.error(f"Error fetching recent games: {str(e)}")
            return []
+       
 
-
-
+    
     def real_time_updates(self):
        """Perform real-time updates for games, teams, and player data"""
        try:
@@ -596,10 +596,11 @@ def main():
     #pipeline.fetch_historical_seasons(2014)
 
     # Load player season stats
-    pipeline.load_player_season_stats("../../datasets/mlb_season_data.csv")
+    # pipeline.load_player_season_stats("../../datasets/mlb_season_data.csv")
     
     # Then start real-time updates
     # pipeline.real_time_updates()
+    
 
 if __name__ == "__main__":
     main()
