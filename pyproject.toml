@@ -18,6 +18,7 @@ matplotlib = "^3.10.0"
 streamlit = "^1.41.1"
 ratelimit = "^2.2.1"
 ipython = "^8.31.0"
+google-cloud-texttospeech = {extras = ["beta"], version = "^2.23.0"}
 
 [tool.poetry.dev-dependencies]
 pytest = "^7.3.1" 
