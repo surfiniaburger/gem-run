@@ -1673,120 +1673,6 @@ def analyze_ops_percentile_trends() -> list:
 
 
 
-def analyze_team_win_trends(seasons: List[int]) -> List[Dict[str, Union[str, int, float]]]:
-    """Analyzes team winning percentages across specified seasons.
-    
-    Args:
-        seasons: List of seasons to analyze
-        
-    Returns:
-        List[Dict]: Team winning percentages and home/away splits
-        
-    Raises:
-        ValueError: If seasons list is invalid
-        BigQueryError: If there's an issue with the BigQuery execution
-    """
-    if not seasons or not all(isinstance(s, int) for s in seasons):
-        raise ValueError("Seasons must be a non-empty list of integers")
-        
-    try:
-        query = """
-        WITH TeamWins AS (
-            SELECT
-                season,
-                team_name,
-                COUNTIF(home_score > away_score OR away_score > home_score) AS total_games,
-                COUNTIF(home_score > away_score) AS home_wins,
-                COUNTIF(away_score > home_score) AS away_wins
-            FROM
-                `mlb_data.combined_player_stats`
-            WHERE season IN UNNEST(@seasons)
-            GROUP BY season, team_name
-        )
-        SELECT
-            *,
-            ROUND((home_wins + away_wins) * 100.0 / NULLIF(total_games, 0), 2) AS win_percentage
-        FROM TeamWins
-        ORDER BY season, win_percentage DESC
-        """
-        
-        job_config = bigquery.QueryJobConfig(
-            query_parameters=[
-                bigquery.ArrayQueryParameter("seasons", "INT64", seasons)
-            ]
-        )
-        
-        query_job = bq_client.query(query, job_config=job_config)
-        results = list(query_job.result(timeout=30))
-        
-        if not results:
-            logging.warning(f"No team win data found for seasons {seasons}")
-            return []
-            
-        return [dict(row) for row in results]
-        
-    except Exception as e:
-        logging.error(f"Error in analyze_team_win_trends: {e}")
-        raise
-
-def analyze_player_performance_trends(season: int) -> List[Dict[str, Union[str, int, float]]]:
-    """Analyzes player performance using a composite score.
-    
-    Args:
-        season: The season to analyze
-        
-    Returns:
-        List[Dict]: Players ranked by composite performance score
-        
-    Raises:
-        ValueError: If season is invalid
-        BigQueryError: If there's an issue with the BigQuery execution
-    """
-    if not isinstance(season, int):
-        raise ValueError("Season must be an integer")
-        
-    try:
-        query = """
-        SELECT
-            first_name,
-            last_name,
-            game_date,
-            team_name,
-            hits + doubles*2 + triples*3 + homeruns*4 + rbi + stolen_bases AS performance_score,
-            hits,
-            doubles,
-            triples,
-            homeruns,
-            rbi,
-            stolen_bases
-        FROM
-            `mlb_data.combined_player_stats`
-        WHERE 
-            season = @season
-        ORDER BY
-            performance_score DESC
-        """
-        
-        job_config = bigquery.QueryJobConfig(
-            query_parameters=[
-                bigquery.ScalarQueryParameter("season", "INT64", season)
-            ]
-        )
-        
-        query_job = bq_client.query(query, job_config=job_config)
-        results = list(query_job.result(timeout=30))
-        
-        if not results:
-            logging.warning(f"No performance data found for season {season}")
-            return []
-            
-        return [dict(row) for row in results]
-        
-    except Exception as e:
-        logging.error(f"Error in analyze_player_performance_trends: {e}")
-        raise
-
-
 def analyze_near_cycle_players(season: int, team_name: str, last_n_games: int = 5) -> List[Dict[str, Union[str, int]]]:
     """Finds players who nearly hit for the cycle in team's last N games of a season.
     
@@ -1858,7 +1744,7 @@ def analyze_near_cycle_players(season: int, team_name: str, last_n_games: int = 
 
 response = client.models.generate_content(
     model=MODEL_ID,
-    contents="Show me any players who almost hit for the cycle for the Boston Red Sox in their last 5 games of the 2024 season.",
+    contents="What's the average home team score when the away team scores more than 5 runs?",
     config=GenerateContentConfig(
         tools=[get_player_highest_ops, 
                analyze_player_performance, 
@@ -1874,8 +1760,6 @@ response = client.models.generate_content(
                analyze_stolen_base_efficiency,
                analyze_ops_percentile_trends,
                analyze_home_scoring_vs_high_away_scores,
-               analyze_player_performance_trends,
-               analyze_team_win_trends,
                analyze_near_cycle_players
             ],
         temperature=0,
