@@ -768,9 +768,20 @@ LIMIT 10;
 
 
 
+Why this is a good idea:
+
+Personalization: Focusing on the user's team or specific players makes the content directly relevant and interesting.
+
+Engagement: The "good cop/bad cop" dynamic naturally creates conflict and different perspectives, making the podcast more entertaining and thought-provoking. It prevents the podcast from being a dry recitation of stats.
+
+Insightful Analysis: Leveraging the data analysis capabilities of surfire.py ensures that the podcast has factual grounding and provides genuine insights beyond just opinions.
+
+Unique Offering: This combination offers a unique way for fans to interact with data and analysis about their teams, going beyond traditional articles or highlight reels.
 
 
+<iframe width="600" height="450" src="https://lookerstudio.google.com/embed/reporting/57ebdcdb-9526-44d3-9e47-4d01994f6f1c/page/eiCbE" frameborder="0" style="border:0" allowfullscreen sandbox="allow-storage-access-by-user-activation allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"></iframe>
 
+Looker Studio Report
 
 
 
