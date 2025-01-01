@@ -1742,28 +1742,45 @@ def analyze_near_cycle_players(season: int, team_name: str, last_n_games: int = 
         raise
 
 
-response = client.models.generate_content(
-    model=MODEL_ID,
-    contents="What's the average home team score when the away team scores more than 5 runs?",
-    config=GenerateContentConfig(
-        tools=[get_player_highest_ops, 
-               analyze_player_performance, 
-               calculate_team_home_advantage, 
-               analyze_position_slugging, 
-               analyze_team_strikeouts, 
-               analyze_monthly_home_runs, 
-               analyze_weight_performance, 
-               analyze_homerun_win_correlation, 
-               analyze_position_ops_percentile, 
-               analyze_position_batting_efficiency,
-               analyze_team_weight_trends,
-               analyze_stolen_base_efficiency,
-               analyze_ops_percentile_trends,
-               analyze_home_scoring_vs_high_away_scores,
-               analyze_near_cycle_players
-            ],
-        temperature=0,
-    ),
-)
+def generate_mlb_analysis(contents: str) -> str:
+    """
+    Generates MLB analysis using Gemini with specified tools.
 
-print(response.text)
+    Args:
+        contents: The prompt or question for the analysis.
+
+    Returns:
+        The text response from the Gemini model.  Returns an empty string if there's an error.
+    """
+    client = genai.Client(vertexai=True, project="gem-creation", location="us-central1")  # Initialize client only once
+    MODEL_ID = "gemini-2.0-flash-exp"  # Define Model ID only once
+
+    try:
+        response = client.models.generate_content(
+            model=MODEL_ID,
+            contents=contents,
+            config=GenerateContentConfig(
+                tools=[
+                    get_player_highest_ops,
+                    analyze_player_performance,
+                    calculate_team_home_advantage,
+                    analyze_position_slugging,
+                    analyze_team_strikeouts,
+                    analyze_monthly_home_runs,
+                    analyze_weight_performance,
+                    analyze_homerun_win_correlation,
+                    analyze_position_ops_percentile,
+                    analyze_position_batting_efficiency,
+                    analyze_team_weight_trends,
+                    analyze_stolen_base_efficiency,
+                    analyze_ops_percentile_trends,
+                    analyze_home_scoring_vs_high_away_scores,
+                    analyze_near_cycle_players,
+                ],
+                temperature=0,  # Ensure deterministic output for consistent results
+            ),
+        )
+        return response.text
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        return ""
