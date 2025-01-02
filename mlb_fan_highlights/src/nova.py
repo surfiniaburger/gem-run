@@ -590,16 +590,16 @@ def main():
     pipeline = MLBDataPipeline()
     
     # Create tables if they don't exist
-    #pipeline.create_tables_if_not_exist()
+    pipeline.create_tables_if_not_exist()
     
     # First, load historical data
-    #pipeline.fetch_historical_seasons(2014)
+    pipeline.fetch_historical_seasons(2014)
 
     # Load player season stats
-    # pipeline.load_player_season_stats("../../datasets/mlb_season_data.csv")
+    pipeline.load_player_season_stats("../../datasets/mlb_season_data.csv")
     
     # Then start real-time updates
-    # pipeline.real_time_updates()
+    pipeline.real_time_updates()
     
 
 if __name__ == "__main__":

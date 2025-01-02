@@ -1742,6 +1742,377 @@ def analyze_near_cycle_players(season: int, team_name: str, last_n_games: int = 
         raise
 
 
+def get_player_recent_streaks(player_name: str, stat: str, last_n_games: int = 10, threshold: float = 0.300):
+    """
+    Finds recent games where a player exceeded a threshold for a specific statistic.
+
+    Args:
+        player_name: The full name of the player.
+        stat: The statistic to track (e.g., 'batting_average', 'on_base_plus_slugging', 'homeruns').
+        last_n_games: The number of recent games to consider (default: 10).
+        threshold: The threshold value for the statistic (default: 0.300).
+
+    Returns:
+        list: A list of dictionaries containing game_date and the specified stat
+              for games where the threshold was met.
+    """
+    try:
+        query = f"""
+        SELECT
+            game_date,
+            {stat}
+        FROM
+            `mlb_data.combined_player_stats`
+        WHERE
+            full_name = @player_name
+        ORDER BY
+            game_date DESC
+        LIMIT @last_n_games
+        """
+
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("player_name", "STRING", player_name),
+                bigquery.ScalarQueryParameter("last_n_games", "INT64", last_n_games)
+            ]
+        )
+
+        query_job = bq_client.query(query, job_config=job_config)
+        results = list(query_job.result())
+
+        # Changed from row.to_dict() to dict(row)
+        streaks = [dict(row) for row in results if row.get(stat) is not None and row[stat] >= threshold]
+
+        return streaks
+
+    except Exception as e:
+        logging.error(f"Error in get_player_recent_streaks: {e}")
+        return []
+
+
+def get_team_clutch_moments(team_name: str, season: int, min_run_difference: int = 2):
+    """
+    Identifies games where a team had a significant comeback or held a tight lead.
+
+    Args:
+        team_name: The name of the team.
+        season: The season to analyze.
+        min_run_difference: The minimum run difference to consider a "clutch" moment.
+
+    Returns:
+        list: A list of dictionaries describing the clutch moments.
+    """
+    try:
+        query = """
+        SELECT
+            game_date,
+            home_team.team_name AS home_team,
+            away_team.team_name AS away_team,
+            home_score,
+            away_score,
+            CASE
+                WHEN home_team.team_name = @team_name AND home_score > away_score AND ABS(home_score - away_score) <= @min_run_difference THEN 'Tight Win'
+                WHEN away_team.team_name = @team_name AND away_score > home_score AND ABS(away_score - home_score) <= @min_run_difference THEN 'Tight Win'
+                WHEN home_team.team_name = @team_name AND home_score > away_score AND ABS(original_home_score - original_away_score) > @min_run_difference THEN 'Comeback Win'
+                WHEN away_team.team_name = @team_name AND away_score > home_score AND ABS(original_away_score - original_home_score) > @min_run_difference THEN 'Comeback Win'
+                ELSE NULL
+            END AS clutch_moment_type
+        FROM
+            `mlb_data.combined_game_stats`
+        JOIN
+            `mlb_data.teams` AS home_team ON combined_game_stats.home_team_id = home_team.team_id
+        JOIN
+            `mlb_data.teams` AS away_team ON combined_game_stats.away_team_id = away_team.team_id
+        WHERE
+            (home_team.team_name = @team_name OR away_team.team_name = @team_name)
+            AND season = @season
+            AND clutch_moment_type IS NOT NULL
+        ORDER BY
+            game_date DESC
+        """
+
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("team_name", "STRING", team_name),
+                bigquery.ScalarQueryParameter("season", "INT64", season),
+                bigquery.ScalarQueryParameter("min_run_difference", "INT64", min_run_difference)
+            ]
+        )
+        query_job = bq_client.query(query, job_config=job_config)
+        results = list(query_job.result())
+        return [dict(row) for row in results]
+    except Exception as e:
+        logging.error(f"Error in get_team_clutch_moments: {e}")
+        return []
+
+
+def analyze_team_bunt_tendency(team_name: str, season: int, situation: str = 'RISP'):
+    """
+    Analyzes how often a team attempts to bunt in specific situations.
+
+    Args:
+        team_name: The name of the team.
+        season: The season to analyze.
+        situation: The specific game situation to analyze (e.g., 'RISP' - Runners in Scoring Position, 'LeadOff').
+
+    Returns:
+        list: Statistics on the team's bunt tendencies in the specified situation.
+    """
+    try:
+        query = f"""
+        SELECT
+            COUNT(*) AS total_opportunities,
+            SUM(CASE WHEN rbi = 0 AND hits = 0 THEN 1 ELSE 0 END) AS bunt_attempts,
+            AVG(CASE WHEN rbi = 0 AND hits = 0 THEN 1 ELSE 0 END) AS bunt_rate
+        FROM
+            `mlb_data.combined_player_stats`
+        WHERE
+            team_name = @team_name
+            AND season = @season
+            {'AND runs_batted_in > 0' if situation == 'RISP' else ''}
+        """
+
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("team_name", "STRING", team_name),
+                bigquery.ScalarQueryParameter("season", "INT64", season)
+            ]
+        )
+        query_job = bq_client.query(query, job_config=job_config)
+        results = list(query_job.result())
+        return [dict(row) for row in results]
+    except Exception as e:
+        logging.error(f"Error in analyze_team_bunt_tendency: {e}")
+        return []
+
+
+def compare_rookie_season_to_veteran(rookie_name: str, veteran_name: str, stat_categories: str = ''):
+    """
+    Compares a rookie's stats to a veteran player's stats in their early career.
+
+    Args:
+        rookie_name: The full name of the rookie player.
+        veteran_name: The full name of the veteran player.
+        stat_categories: Comma-separated string of statistics to compare (e.g., 'batting_average,homeruns').
+                        If empty, uses default stats.
+
+    Returns:
+        list: A comparison of the specified stats for both players.
+    """
+    default_stats = ['batting_average', 'on_base_percentage', 'slugging_percentage', 
+                    'on_base_plus_slugging', 'homeruns', 'rbi', 'stolen_bases']
+    
+    # Parse stat_categories or use defaults
+    stats_to_use = stat_categories.split(',') if stat_categories else default_stats
+    stats_to_use = [stat.strip() for stat in stats_to_use]  # Clean up any whitespace
+
+    try:
+        query = f"""
+        WITH RookieStats AS (
+            SELECT
+                season,
+                {','.join(stats_to_use)}
+            FROM
+                `mlb_data.combined_player_stats`
+            WHERE
+                full_name = @rookie_name
+            ORDER BY season
+            LIMIT 1
+        ),
+        VeteranStats AS (
+            SELECT
+                season,
+                {','.join(stats_to_use)}
+            FROM
+                `mlb_data.combined_player_stats`
+            WHERE
+                full_name = @veteran_name
+            ORDER BY season
+            LIMIT 1
+        )
+        SELECT
+            'Rookie' AS player_type,
+            RookieStats.*
+        FROM RookieStats
+        UNION ALL
+        SELECT
+            'Veteran' AS player_type,
+            VeteranStats.*
+        FROM VeteranStats
+        """
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("rookie_name", "STRING", rookie_name),
+                bigquery.ScalarQueryParameter("veteran_name", "STRING", veteran_name)
+            ]
+        )
+        query_job = bq_client.query(query, job_config=job_config)
+        results = list(query_job.result())
+        return [dict(row) for row in results]
+    except Exception as e:
+        logging.error(f"Error in compare_rookie_season_to_veteran: {e}")
+        return []
+
+def identify_undervalued_players(season: int, min_games_played: int = 50, ops_threshold: float = 0.800):
+    """
+    Identifies players with high offensive output (OPS) who might be playing on lower-performing teams.
+
+    Args:
+        season: The season to analyze.
+        min_games_played: Minimum number of games played to be considered.
+        ops_threshold: The minimum OPS to be considered high-performing.
+
+    Returns:
+        list: Players who meet the criteria.
+    """
+    try:
+        query = """
+        SELECT
+            p.full_name,
+            p.team_name,
+            p.on_base_plus_slugging,
+            t.wins,
+            t.losses
+        FROM
+            `mlb_data.combined_player_stats` p
+        JOIN
+            `mlb_data.standings` t ON p.team_id = t.team_id AND p.season = t.season
+        WHERE
+            p.season = @season
+            AND p.games_played >= @min_games_played
+            AND p.on_base_plus_slugging >= @ops_threshold
+        ORDER BY
+            t.wins ASC
+        """
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("season", "INT64", season),
+                bigquery.ScalarQueryParameter("min_games_played", "INT64", min_games_played),
+                bigquery.ScalarQueryParameter("ops_threshold", "FLOAT64", ops_threshold)
+            ]
+        )
+        query_job = bq_client.query(query, job_config=job_config)
+        results = list(query_job.result())
+        return [dict(row) for row in results]
+    except Exception as e:
+        logging.error(f"Error in identify_undervalued_players: {e}")
+        return []
+
+
+def predict_matchup_outcome_by_stats(home_team_name: str, away_team_name: str, season: int, stat: str = 'on_base_plus_slugging'):
+    """
+    Predicts the outcome of a matchup based on a comparison of team statistics.
+
+    Args:
+        home_team_name: The name of the home team.
+        away_team_name: The name of the away team.
+        season: The season to analyze.
+        stat: The statistic to use for comparison (e.g., 'on_base_plus_slugging', 'batting_average').
+
+    Returns:
+        list: A prediction of the likely winner based on the chosen statistic.
+    """
+    try:
+        query = f"""
+        WITH HomeTeamStats AS (
+            SELECT
+                AVG({stat}) AS home_team_avg_stat
+            FROM
+                `mlb_data.combined_player_stats`
+            WHERE
+                team_name = @home_team_name
+                AND season = @season
+        ),
+        AwayTeamStats AS (
+            SELECT
+                AVG({stat}) AS away_team_avg_stat
+            FROM
+                `mlb_data.combined_player_stats`
+            WHERE
+                team_name = @away_team_name
+                AND season = @season
+        )
+        SELECT
+            (SELECT home_team_avg_stat FROM HomeTeamStats) AS home_team_avg_stat,
+            (SELECT away_team_avg_stat FROM AwayTeamStats) AS away_team_avg_stat,
+            CASE
+                WHEN (SELECT home_team_avg_stat FROM HomeTeamStats) > (SELECT away_team_avg_stat FROM AwayTeamStats) THEN @home_team_name
+                WHEN (SELECT away_team_avg_stat FROM AwayTeamStats) > (SELECT home_team_avg_stat FROM HomeTeamStats) THEN @away_team_name
+                ELSE 'Tie/Too Close to Call'
+            END AS predicted_winner
+        """
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("home_team_name", "STRING", home_team_name),
+                bigquery.ScalarQueryParameter("away_team_name", "STRING", away_team_name),
+                bigquery.ScalarQueryParameter("season", "INT64", season)
+            ]
+        )
+        query_job = bq_client.query(query, job_config=job_config)
+        results = list(query_job.result())
+        return [dict(row) for row in results]
+    except Exception as e:
+        logging.error(f"Error in predict_matchup_outcome_by_stats: {e}")
+        return []
+
+
+def get_player_stat_ranks_vs_peers(player_name: str, season: int, stat: str, position: str = None) -> List[Dict]:
+    """
+    Gets a player's rank in a specific statistic compared to others at the same position (optional) or all players.
+
+    Args:
+        player_name: The full name of the player.
+        season: The season to analyze.
+        stat: The statistic to rank by (e.g., 'homeruns', 'rbi', 'batting_average').
+        position: (Optional) The player's position to filter peers (e.g., 'OF', 'SS'). If None, compare against all players.
+
+    Returns:
+        List[Dict]: A list containing a dictionary with the player's rank and total count of players considered.
+    """
+    try:
+        query = f"""
+        WITH PlayerStats AS (
+            SELECT
+                full_name,
+                {stat},
+                RANK() OVER (ORDER BY {stat} DESC) as overall_rank
+            FROM
+                `mlb_data.combined_player_stats`
+            WHERE
+                season = @season
+        ),
+        PositionStats AS (
+            SELECT
+                full_name,
+                {stat},
+                RANK() OVER (ORDER BY {stat} DESC) as position_rank
+            FROM
+                `mlb_data.combined_player_stats`
+            WHERE
+                season = @season
+                {'AND position_code = @position' if position else ''}
+        )
+        SELECT
+            (SELECT {stat} FROM PlayerStats WHERE full_name = @player_name) as player_stat,
+            (SELECT overall_rank FROM PlayerStats WHERE full_name = @player_name) as overall_rank,
+            (SELECT COUNT(*) FROM PlayerStats) as total_players{f""",
+            (SELECT position_rank FROM PositionStats WHERE full_name = @player_name) as position_rank,
+            (SELECT COUNT(*) FROM PositionStats) as total_position_players""" if position else ''}
+        """
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("player_name", "STRING", player_name),
+                bigquery.ScalarQueryParameter("season", "INT64", season),
+                bigquery.ScalarQueryParameter("position", "STRING", position) if position else None
+            ]
+        )
+        query_job = bq_client.query(query, job_config=job_config)
+        results = list(query_job.result())
+        return [dict(row) for row in results]
+    except Exception as e:
+        logging.error(f"Error in get_player_stat_ranks_vs_peers: {e}")
+        return []
+
 def generate_mlb_analysis(contents: str) -> str:
     """
     Generates MLB analysis using Gemini with specified tools.
@@ -1776,6 +2147,12 @@ def generate_mlb_analysis(contents: str) -> str:
                     analyze_ops_percentile_trends,
                     analyze_home_scoring_vs_high_away_scores,
                     analyze_near_cycle_players,
+                    get_player_recent_streaks,
+                    get_team_clutch_moments,
+                    analyze_team_bunt_tendency,
+                    compare_rookie_season_to_veteran,
+                    identify_undervalued_players,
+                    predict_matchup_outcome_by_stats,
                 ],
                 temperature=0,  # Ensure deterministic output for consistent results
             ),
