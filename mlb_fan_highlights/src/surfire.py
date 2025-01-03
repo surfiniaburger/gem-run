@@ -22,11 +22,11 @@ logging.basicConfig(
 )
 
 
-PROJECT_ID = "gem-creation"  # Replace with your actual Google Cloud project ID
+PROJECT_ID = "gem-rush-007"  # Replace with your actual Google Cloud project ID
 os.environ["GOOGLE_CLOUD_PROJECT"] = PROJECT_ID # set this environment variable to your project ID
 bq_client = bigquery.Client(project=PROJECT_ID)
 
-client = genai.Client(vertexai=True, project="gem-creation", location="us-central1")
+client = genai.Client(vertexai=True, project="gem-rush-007", location="us-central1")
 MODEL_ID = "gemini-2.0-flash-exp"  # @param {type: "string"}
 
 from google.cloud import bigquery
@@ -1983,6 +1983,7 @@ def identify_undervalued_players(season: int, min_games_played: int = 50, ops_th
             AND p.on_base_plus_slugging >= @ops_threshold
         ORDER BY
             t.wins ASC
+        LIMIT 5;
         """
         job_config = bigquery.QueryJobConfig(
             query_parameters=[
@@ -1993,7 +1994,19 @@ def identify_undervalued_players(season: int, min_games_played: int = 50, ops_th
         )
         query_job = bq_client.query(query, job_config=job_config)
         results = list(query_job.result())
-        return [dict(row) for row in results]
+        data = [dict(row) for row in results]
+        iframe_html = '''<iframe 
+        width="600" 
+        height="450" 
+        src="https://lookerstudio.google.com/embed/reporting/b845c095-6fa7-4b2d-a3b5-94e8c55576ec/page/NFWbE" 
+        frameborder="0" 
+        style="border:0" 
+        allowfullscreen 
+        sandbox="allow-storage-access-by-user-activation allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox">
+    </iframe>'''
+        return  {
+        'data': data,
+        'visualization': iframe_html}
     except Exception as e:
         logging.error(f"Error in identify_undervalued_players: {e}")
         return []
@@ -2055,64 +2068,6 @@ def predict_matchup_outcome_by_stats(home_team_name: str, away_team_name: str, s
         logging.error(f"Error in predict_matchup_outcome_by_stats: {e}")
         return []
 
-
-def get_player_stat_ranks_vs_peers(player_name: str, season: int, stat: str, position: str = None) -> List[Dict]:
-    """
-    Gets a player's rank in a specific statistic compared to others at the same position (optional) or all players.
-
-    Args:
-        player_name: The full name of the player.
-        season: The season to analyze.
-        stat: The statistic to rank by (e.g., 'homeruns', 'rbi', 'batting_average').
-        position: (Optional) The player's position to filter peers (e.g., 'OF', 'SS'). If None, compare against all players.
-
-    Returns:
-        List[Dict]: A list containing a dictionary with the player's rank and total count of players considered.
-    """
-    try:
-        query = f"""
-        WITH PlayerStats AS (
-            SELECT
-                full_name,
-                {stat},
-                RANK() OVER (ORDER BY {stat} DESC) as overall_rank
-            FROM
-                `mlb_data.combined_player_stats`
-            WHERE
-                season = @season
-        ),
-        PositionStats AS (
-            SELECT
-                full_name,
-                {stat},
-                RANK() OVER (ORDER BY {stat} DESC) as position_rank
-            FROM
-                `mlb_data.combined_player_stats`
-            WHERE
-                season = @season
-                {'AND position_code = @position' if position else ''}
-        )
-        SELECT
-            (SELECT {stat} FROM PlayerStats WHERE full_name = @player_name) as player_stat,
-            (SELECT overall_rank FROM PlayerStats WHERE full_name = @player_name) as overall_rank,
-            (SELECT COUNT(*) FROM PlayerStats) as total_players{f""",
-            (SELECT position_rank FROM PositionStats WHERE full_name = @player_name) as position_rank,
-            (SELECT COUNT(*) FROM PositionStats) as total_position_players""" if position else ''}
-        """
-        job_config = bigquery.QueryJobConfig(
-            query_parameters=[
-                bigquery.ScalarQueryParameter("player_name", "STRING", player_name),
-                bigquery.ScalarQueryParameter("season", "INT64", season),
-                bigquery.ScalarQueryParameter("position", "STRING", position) if position else None
-            ]
-        )
-        query_job = bq_client.query(query, job_config=job_config)
-        results = list(query_job.result())
-        return [dict(row) for row in results]
-    except Exception as e:
-        logging.error(f"Error in get_player_stat_ranks_vs_peers: {e}")
-        return []
-
 def generate_mlb_analysis(contents: str) -> str:
     """
     Generates MLB analysis using Gemini with specified tools.
@@ -2123,7 +2078,7 @@ def generate_mlb_analysis(contents: str) -> str:
     Returns:
         The text response from the Gemini model.  Returns an empty string if there's an error.
     """
-    client = genai.Client(vertexai=True, project="gem-creation", location="us-central1")  # Initialize client only once
+    client = genai.Client(vertexai=True, project="gem-rush-007", location="us-central1")  # Initialize client only once
     MODEL_ID = "gemini-2.0-flash-exp"  # Define Model ID only once
 
     try:
