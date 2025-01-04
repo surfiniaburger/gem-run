@@ -147,6 +147,14 @@ class MLBDataPipeline:
                 logger.info(f"Table {table_name} already exists")
             except Exception:
                 table = bigquery.Table(table_ref, schema=schema)
+
+                if table_name == "players":
+                   table.clustering_fields = ["player_id"]
+                elif table_name == "games":
+                   table.clustering_fields = ["game_pk"]
+                elif table_name == "teams":
+                   table.clustering_fields = ["team_id"]
+                   
                 self.client.create_table(table)
                 logger.info(f"Created table {table_name}")
 
@@ -214,24 +222,33 @@ class MLBDataPipeline:
            data = response.json()
         
            teams_data = []
+           existing_teams = set()  # To track existing teams
            for team in data.get("teams", []):
-               team_data = {
-                   "team_id": team.get("id"),
-                   "name": team.get("name"),
-                   "team_code": team.get("teamCode"),
-                   "file_code": team.get("fileCode"),
-                   "abbreviation": team.get("abbreviation"),
-                   "team_name": team.get("teamName"),
-                   "location_name": team.get("locationName"),
-                   "league_id": team.get("league", {}).get("id"),
-                   "division_id": team.get("division", {}).get("id"),
-                   "venue_id": team.get("venue", {}).get("id"),
-                   "spring_venue_id": team.get("springVenue", {}).get("id"),
-                   "first_year_of_play": team.get("firstYearOfPlay"),
-                   "active": team.get("active", True),
-                   "last_updated": datetime.now(UTC)
-               }
-               teams_data.append(team_data)
+                
+               league_id = team.get("league", {}).get("id")
+               # Filter for MLB teams only
+               if league_id == 100:  # MLB league ID
+                   # Create a unique identifier for each team based on name and league
+                   unique_team_id = (team.get("name"), team.get("league", {}).get("id"))
+                   if unique_team_id not in existing_teams:
+                       existing_teams.add(unique_team_id)
+                       team_data = {
+                       "team_id": team.get("id"),
+                       "name": team.get("name"),
+                       "team_code": team.get("teamCode"),
+                       "file_code": team.get("fileCode"),
+                       "abbreviation": team.get("abbreviation"),
+                       "team_name": team.get("teamName"),
+                       "location_name": team.get("locationName"),
+                       "league_id": team.get("league", {}).get("id"),
+                       "division_id": team.get("division", {}).get("id"),
+                       "venue_id": team.get("venue", {}).get("id"),
+                       "spring_venue_id": team.get("springVenue", {}).get("id"),
+                       "first_year_of_play": team.get("firstYearOfPlay"),
+                       "active": team.get("active", True),
+                       "last_updated": datetime.now(UTC)
+                       }
+                   teams_data.append(team_data)
             
            if teams_data:
                self.update_bigquery_batch("teams", teams_data, team_schema)
@@ -346,7 +363,7 @@ class MLBDataPipeline:
              raise
 
 
-    def fetch_historical_seasons(self, start_year: int = 2014):
+    def fetch_historical_seasons(self, start_year: int = 2024):
         # First fetch teams (only needs to be done once)
         self.fetch_teams()
 
@@ -411,20 +428,70 @@ class MLBDataPipeline:
                 
         except Exception as e:
             logger.error(f"Error processing games for {year}: {str(e)}")
+    
+
 
     def update_bigquery_batch(self, table_id: str, data: List[Dict], schema: List):
-        """Update BigQuery table with batch data"""
-        table_ref = f"{self.client.project}.{self.dataset_id}.{table_id}"
-        
-        job_config = bigquery.LoadJobConfig(
-            schema=schema,
-            write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
-            ignore_unknown_values=True
-        )
-        
-        df = pd.DataFrame(data)
-        job = self.client.load_table_from_dataframe(df, table_ref, job_config=job_config)
-        job.result()
+       """Update BigQuery table with batch data using MERGE operation"""
+       table_ref = f"{self.client.project}.{self.dataset_id}.{table_id}"
+    
+       # Create a temporary table with the new data
+       temp_table_id = f"{table_ref}_temp"
+       job_config = bigquery.LoadJobConfig(
+           schema=schema,
+           write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE
+       )
+    
+       df = pd.DataFrame(data)
+       job = self.client.load_table_from_dataframe(
+           df, temp_table_id, job_config=job_config
+       )
+       job.result()
+
+       # Different MERGE logic based on table type
+       if table_id == "players":
+           merge_query = f"""
+               MERGE `{table_ref}` T
+               USING `{temp_table_id}` S
+               ON T.player_id = S.player_id
+               WHEN MATCHED THEN
+                   UPDATE SET 
+                       current_team_id = S.current_team_id,
+                       active = S.active,
+                       last_updated = S.last_updated
+               WHEN NOT MATCHED THEN
+                   INSERT ROW
+           """
+       elif table_id == "games":
+           merge_query = f"""
+               MERGE `{table_ref}` T
+               USING `{temp_table_id}` S
+               ON T.game_pk = S.game_pk
+               WHEN MATCHED THEN
+                   UPDATE SET 
+                       status = S.status,
+                       home_score = S.home_score,
+                       away_score = S.away_score,
+                       last_updated = S.last_updated
+               WHEN NOT MATCHED THEN
+                   INSERT ROW
+           """
+       else:
+           # For other tables, just use a simple primary key merge
+           merge_query = f"""
+               MERGE `{table_ref}` T
+               USING `{temp_table_id}` S
+               ON T.{table_id[:-1]}_id = S.{table_id[:-1]}_id
+               WHEN NOT MATCHED THEN
+                   INSERT ROW
+           """
+    
+       try:
+           self.client.query(merge_query).result()
+       finally:
+           # Clean up temporary table
+           self.client.delete_table(temp_table_id, not_found_ok=True)    
+
 
     
     def fetch_recent_games(self, start_date: str, end_date: str) -> List[Dict]:
@@ -593,7 +660,7 @@ def main():
     pipeline.create_tables_if_not_exist()
     
     # First, load historical data
-    pipeline.fetch_historical_seasons(2014)
+    pipeline.fetch_historical_seasons(2024)
 
     # Load player season stats
     pipeline.load_player_season_stats("../../datasets/mlb_season_data.csv")
@@ -604,3 +671,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+

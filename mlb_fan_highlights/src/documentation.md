@@ -1,3 +1,5 @@
+datasource - kaggle and statcast powered by google cloud
+
 """
 nova.py: MLB Data Ingestion and BigQuery Pipeline
 
