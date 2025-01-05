@@ -217,7 +217,7 @@ class MLBDataPipeline:
     def fetch_teams(self):
        """Fetch all MLB teams and store in BigQuery"""
        try:
-           response = rate_limited_request(f"{self.base_url}/teams", 
+           response = rate_limited_request(f"{self.base_url}/teams?sportId=1", 
                                      params={"sportId": 1, "activeStatus": "BOTH"})
            data = response.json()
         
@@ -225,12 +225,10 @@ class MLBDataPipeline:
            existing_teams = set()  # To track existing teams
            for team in data.get("teams", []):
                 
-               league_id = team.get("league", {}).get("id")
-               # Filter for MLB teams only
-               if league_id == 100:  # MLB league ID
-                   # Create a unique identifier for each team based on name and league
-                   unique_team_id = (team.get("name"), team.get("league", {}).get("id"))
-                   if unique_team_id not in existing_teams:
+               
+               # Create a unique identifier for each team based on name and league
+               unique_team_id = (team.get("name"), team.get("league", {}).get("id"))
+               if unique_team_id not in existing_teams:
                        existing_teams.add(unique_team_id)
                        team_data = {
                        "team_id": team.get("id"),
@@ -248,7 +246,7 @@ class MLBDataPipeline:
                        "active": team.get("active", True),
                        "last_updated": datetime.now(UTC)
                        }
-                   teams_data.append(team_data)
+           teams_data.append(team_data)
             
            if teams_data:
                self.update_bigquery_batch("teams", teams_data, team_schema)
