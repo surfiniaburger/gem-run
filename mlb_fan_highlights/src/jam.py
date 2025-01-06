@@ -272,7 +272,7 @@ def load_player_profiles(dataset_id: str):
         raise
 
 
-def load_game_data(dataset_id: str, season: int = 2024):
+def load_game_data(dataset_id: str, season: int = 2025):
     """Load game data into BigQuery"""
     schedule_url = f'https://statsapi.mlb.com/api/v1/schedule?sportId=1&season={season}'
     schedule_data = call_mlb_api(schedule_url)
@@ -307,7 +307,7 @@ def load_game_data(dataset_id: str, season: int = 2024):
     # Load to BigQuery
     table_id = f"{dataset_id}.games"
     job_config = bigquery.LoadJobConfig(
-        write_disposition="WRITE_TRUNCATE",
+        write_disposition="WRITE_APPEND",
         schema=GAME_DATA_SCHEMA
     )
     
