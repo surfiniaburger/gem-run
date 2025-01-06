@@ -1628,15 +1628,15 @@ def analyze_ops_percentile_trends() -> list:
         query = """
         SELECT
             season,
-            APPROX_QUANTILES(on_base_plus_slugging, 100)[OFFSET(90)] AS ops_90th_percentile,
-            AVG(on_base_plus_slugging) AS avg_ops,
+            APPROX_QUANTILES(on_base_plus_slg, 100)[OFFSET(90)] AS ops_90th_percentile,
+            AVG(on_base_plus_slg) AS avg_ops,
             COUNT(DISTINCT player_id) as qualified_players
         FROM
-            `mlb_data.combined_player_stats`
+            `mlb_data.player_stats`
         GROUP BY
-            season
+            year
         ORDER BY
-            season DESC
+            year DESC
         """
         query_job = bq_client.query(query)
         
@@ -1672,20 +1672,30 @@ def analyze_ops_percentile_trends() -> list:
         raise
 
 
-def fetch_game_results() -> list:
+def fetch_game_results(limit: int = 1000) -> list:
     """
     Fetches the game results where the status is 'Final' and formats the results.
+    
+    Args:
+        limit (int): Maximum number of results to return. Must be between 1 and 1000.
     
     Returns:
         list: A list of formatted game results with columns including game_date, 
               home_team_name, away_team_name, home_score, away_score, and game_result.
     
     Raises:
+        ValueError: If the limit parameter is invalid.
         BigQueryError: If there's an issue with the BigQuery execution.
         Exception: For other unexpected errors.
     """
+    # Input validation
+    if not isinstance(limit, int):
+        raise ValueError("Limit must be an integer")
+    if limit < 1 or limit > 1000:
+        raise ValueError("Limit must be between 1 and 1000")
+
     try:
-        # Define the query
+        # Define the query with parameterized limit
         query = """
         SELECT 
           game_date,
@@ -1693,19 +1703,28 @@ def fetch_game_results() -> list:
           away_team_name,
           home_score,
           away_score,
-          CONCAT(home_team_name, ' defeated ', away_team_name, ' ', home_score, '-', away_score, ' on ', CAST(game_date AS STRING)) AS game_result
+          CONCAT(home_team_name, ' defeated ', away_team_name, ' ', 
+                CAST(home_score AS STRING), '-', CAST(away_score AS STRING), 
+                ' on ', CAST(game_date AS STRING)) AS game_result
         FROM 
           `gem-rush-007.mlb_data_2024.games`
         WHERE 
           status = 'Final'
-        LIMIT 1000;
+        LIMIT @limit
         """
+        
+        # Define the query parameters
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("limit", "INT64", limit),
+            ]
+        )
         
         # Initialize BigQuery client
         bq_client = bigquery.Client()
         
-        # Execute the query
-        query_job = bq_client.query(query)
+        # Execute the query with parameters
+        query_job = bq_client.query(query, job_config=job_config)
         
         # Ensure the query completes successfully
         query_job.result()
@@ -1714,10 +1733,22 @@ def fetch_game_results() -> list:
         results = []
         for row in query_job:
             row_dict = dict(row)
-            # Convert date object to ISO format string
+            # Validate and convert date object to ISO format string
             if 'game_date' in row_dict and row_dict['game_date']:
-                row_dict['game_date'] = row_dict['game_date'].isoformat()
+                try:
+                    row_dict['game_date'] = row_dict['game_date'].isoformat()
+                except AttributeError:
+                    logging.warning(f"Invalid date format for game_date: {row_dict['game_date']}")
+                    row_dict['game_date'] = None
+            
+            # Validate numeric fields
+            for field in ['home_score', 'away_score']:
+                if field in row_dict and not isinstance(row_dict[field], (int, float)):
+                    logging.warning(f"Invalid {field} value: {row_dict[field]}")
+                    row_dict[field] = None
+            
             results.append(row_dict)
+            
         if not results:
             logging.warning("Query returned no results")
             return []
@@ -1745,46 +1776,86 @@ def fetch_game_results() -> list:
         raise
 
 
-def fetch_home_team_performance() -> list:
+def fetch_home_team_performance(limit: int = 1000) -> list:
     """
     Fetches the home team performance data, calculating wins and losses for each team.
+    
+    Args:
+        limit (int): Maximum number of results to return. Must be between 1 and 1000.
     
     Returns:
         list: A list of dictionaries containing team names, home wins, and home losses.
     
     Raises:
+        ValueError: If the limit parameter is invalid.
         BigQueryError: If there's an issue with the BigQuery execution.
         Exception: For other unexpected errors.
     """
+    # Input validation
+    if not isinstance(limit, int):
+        raise ValueError("Limit must be an integer")
+    if limit < 1 or limit > 1000:
+        raise ValueError("Limit must be between 1 and 1000")
+
     try:
-        # Define the query
+        # Define the query with parameterized limit
         query = """
         SELECT 
           home_team_name AS team_name,
-          COUNT(CASE WHEN home_score > away_score THEN 1 END) AS home_wins,
-          COUNT(CASE WHEN away_score > home_score THEN 1 END) AS home_losses
+          CAST(COUNT(CASE WHEN home_score > away_score THEN 1 END) AS INT64) AS home_wins,
+          CAST(COUNT(CASE WHEN away_score > home_score THEN 1 END) AS INT64) AS home_losses
         FROM 
           `gem-rush-007.mlb_data_2024.games`
         WHERE 
           status = 'Final'
+          AND home_team_name IS NOT NULL
+          AND home_score IS NOT NULL 
+          AND away_score IS NOT NULL
         GROUP BY 
           home_team_name
         ORDER BY 
           home_wins DESC
-        LIMIT 1000;
+        LIMIT @limit
         """
+        
+        # Define the query parameters
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("limit", "INT64", limit),
+            ]
+        )
         
         # Initialize BigQuery client
         bq_client = bigquery.Client()
         
-        # Execute the query
-        query_job = bq_client.query(query)
+        # Execute the query with parameters
+        query_job = bq_client.query(query, job_config=job_config)
         
         # Ensure the query completes successfully
         query_job.result()
         
-        # Fetch and process the results
-        results = [dict(row) for row in query_job]
+        # Fetch and process the results with validation
+        results = []
+        for row in query_job:
+            row_dict = dict(row)
+            
+            # Validate team name
+            if not row_dict.get('team_name'):
+                logging.warning("Skipping record with missing team name")
+                continue
+                
+            # Validate numeric fields
+            for field in ['home_wins', 'home_losses']:
+                if field in row_dict:
+                    try:
+                        row_dict[field] = int(row_dict[field])
+                    except (TypeError, ValueError):
+                        logging.warning(f"Invalid {field} value for {row_dict['team_name']}: {row_dict[field]}")
+                        row_dict[field] = 0
+                else:
+                    row_dict[field] = 0
+            
+            results.append(row_dict)
         
         if not results:
             logging.warning("Query returned no results")
@@ -1812,48 +1883,95 @@ def fetch_home_team_performance() -> list:
         logging.error(f"Unexpected error in fetch_home_team_performance: {e}")
         raise
 
-def fetch_team_performance_by_venue() -> list:
+
+def fetch_team_performance_by_venue(limit: int = 1000) -> list:
     """
     Fetches team performance at different venues, including games played and wins at each venue.
+    
+    Args:
+        limit (int): Maximum number of results to return. Must be between 1 and 1000.
     
     Returns:
         list: A list of dictionaries containing venue names, team names, 
               games played, and wins at the venue.
     
     Raises:
+        ValueError: If the limit parameter is invalid.
         BigQueryError: If there's an issue with the BigQuery execution.
         Exception: For other unexpected errors.
     """
+    # Input validation
+    if not isinstance(limit, int):
+        raise ValueError("Limit must be an integer")
+    if limit < 1 or limit > 1000:
+        raise ValueError("Limit must be between 1 and 1000")
+
     try:
-        # Define the query
+        # Define the query with parameterized limit
         query = """
         SELECT 
           venue_name,
           home_team_name AS team_name,
-          COUNT(*) AS games_played,
-          COUNT(CASE WHEN home_score > away_score THEN 1 END) AS wins_at_venue
+          CAST(COUNT(*) AS INT64) AS games_played,
+          CAST(COUNT(CASE WHEN home_score > away_score THEN 1 END) AS INT64) AS wins_at_venue
         FROM 
           `gem-rush-007.mlb_data_2024.games`
         WHERE 
           status = 'Final'
+          AND venue_name IS NOT NULL
+          AND home_team_name IS NOT NULL
+          AND home_score IS NOT NULL
+          AND away_score IS NOT NULL
         GROUP BY 
           venue_name, home_team_name
+        HAVING 
+          games_played > 0
         ORDER BY 
           wins_at_venue DESC
-        LIMIT 1000;
+        LIMIT @limit
         """
+        
+        # Define the query parameters
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("limit", "INT64", limit),
+            ]
+        )
         
         # Initialize BigQuery client
         bq_client = bigquery.Client()
         
-        # Execute the query
-        query_job = bq_client.query(query)
+        # Execute the query with parameters
+        query_job = bq_client.query(query, job_config=job_config)
         
         # Ensure the query completes successfully
         query_job.result()
         
-        # Fetch and process the results
-        results = [dict(row) for row in query_job]
+        # Fetch and process the results with validation
+        results = []
+        for row in query_job:
+            row_dict = dict(row)
+            
+            # Validate required fields
+            if not row_dict.get('venue_name') or not row_dict.get('team_name'):
+                logging.warning("Skipping record with missing venue or team name")
+                continue
+            
+            # Validate and convert numeric fields
+            try:
+                row_dict['games_played'] = int(row_dict.get('games_played', 0))
+                row_dict['wins_at_venue'] = int(row_dict.get('wins_at_venue', 0))
+                
+                # Additional validation
+                if row_dict['wins_at_venue'] > row_dict['games_played']:
+                    logging.warning(f"Invalid data: wins ({row_dict['wins_at_venue']}) > games played ({row_dict['games_played']}) for {row_dict['team_name']} at {row_dict['venue_name']}")
+                    continue
+                
+            except (TypeError, ValueError) as e:
+                logging.warning(f"Invalid numeric data for {row_dict.get('team_name')} at {row_dict.get('venue_name')}: {e}")
+                continue
+            
+            results.append(row_dict)
         
         if not results:
             logging.warning("Query returned no results")
@@ -1881,21 +1999,30 @@ def fetch_team_performance_by_venue() -> list:
         logging.error(f"Unexpected error in fetch_team_performance_by_venue: {e}")
         raise
 
-
-def fetch_upcoming_games() -> list:
+def fetch_upcoming_games(limit: int = 10) -> list:
     """
     Fetches upcoming scheduled MLB games with their date, teams, and status.
+    
+    Args:
+        limit (int): Maximum number of results to return. Must be between 1 and 100.
     
     Returns:
         list: A list of dictionaries containing game date, home team, 
               away team, and game status for upcoming games.
     
     Raises:
+        ValueError: If the limit parameter is invalid.
         BigQueryError: If there's an issue with the BigQuery execution.
         Exception: For other unexpected errors.
     """
+    # Input validation
+    if not isinstance(limit, int):
+        raise ValueError("Limit must be an integer")
+    if limit < 1 or limit > 100:
+        raise ValueError("Limit must be between 1 and 100")
+
     try:
-        # Define the query
+        # Define the query with parameterized limit
         query = """
         SELECT 
           game_date,
@@ -1907,25 +2034,61 @@ def fetch_upcoming_games() -> list:
         WHERE 
           game_date > CURRENT_DATE() 
           AND status = 'Scheduled'
-        LIMIT 10;
+          AND home_team_name IS NOT NULL
+          AND away_team_name IS NOT NULL
+          AND game_date IS NOT NULL
+        ORDER BY 
+          game_date ASC
+        LIMIT @limit
         """
+        
+        # Define the query parameters
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("limit", "INT64", limit),
+            ]
+        )
         
         # Initialize BigQuery client
         bq_client = bigquery.Client()
         
-        # Execute the query
-        query_job = bq_client.query(query)
+        # Execute the query with parameters
+        query_job = bq_client.query(query, job_config=job_config)
         
         # Ensure the query completes successfully
         query_job.result()
         
-        # Fetch and process the results with date handling
+        # Fetch and process the results with validation
         results = []
         for row in query_job:
             row_dict = dict(row)
-            # Convert date object to ISO format string
-            if 'game_date' in row_dict and row_dict['game_date']:
-                row_dict['game_date'] = row_dict['game_date'].isoformat()
+            
+            # Validate required fields
+            if not all(key in row_dict for key in ['game_date', 'home_team_name', 'away_team_name', 'status']):
+                logging.warning("Skipping record with missing required fields")
+                continue
+                
+            # Validate and convert date
+            try:
+                if row_dict['game_date']:
+                    row_dict['game_date'] = row_dict['game_date'].isoformat()
+                else:
+                    logging.warning("Skipping record with null game date")
+                    continue
+            except (AttributeError, ValueError) as e:
+                logging.warning(f"Invalid date format: {e}")
+                continue
+                
+            # Validate team names
+            if not row_dict['home_team_name'] or not row_dict['away_team_name']:
+                logging.warning("Skipping record with missing team name")
+                continue
+                
+            # Validate status
+            if row_dict['status'] != 'Scheduled':
+                logging.warning(f"Unexpected game status: {row_dict['status']}")
+                continue
+                
             results.append(row_dict)
         
         if not results:
@@ -1955,7 +2118,6 @@ def fetch_upcoming_games() -> list:
         raise
 
 
-
 def fetch_player_season_stats(season: int = 2024, limit: int = 1000) -> list:
     """
     Fetches player season statistics for a given MLB season.
@@ -1973,28 +2135,34 @@ def fetch_player_season_stats(season: int = 2024, limit: int = 1000) -> list:
         Exception: For other unexpected errors.
     """
     try:
-        # Define the query with placeholders for season and limit
-        query = f"""
+        # Define the query with parameterized values
+        query = """
         SELECT 
           first_name,
           last_name,
-          team,
-          homeruns,
-          rbi,
-          runs,
-          stolen_bases
+          home_run,
+          b_rbi,
+          r_run
         FROM 
-          `gem-rush-007.mlb_data.player_season_stats`
+          `gem-rush-007.mlb_data.player_stats`
         WHERE 
-          season = {season}
-        LIMIT {limit};
+          year = @season
+        LIMIT @limit
         """
+
+        # Define the query parameters
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("season", "INT64", season),
+                bigquery.ScalarQueryParameter("limit", "INT64", limit),
+            ]
+        )
         
         # Initialize BigQuery client
         bq_client = bigquery.Client()
         
-        # Execute the query
-        query_job = bq_client.query(query)
+        # Execute the query with parameters
+        query_job = bq_client.query(query, job_config=job_config)
         
         # Ensure the query completes successfully
         query_job.result()
@@ -2027,6 +2195,579 @@ def fetch_player_season_stats(season: int = 2024, limit: int = 1000) -> list:
     except Exception as e:
         logging.error(f"Unexpected error in fetch_player_season_stats: {e}")
         raise
+
+
+def fetch_top_batting_stats(season: int = 2024, limit: int = 1000) -> list:
+    """
+    Fetches player batting statistics for a given MLB season (year), ordered by batting average.
+    
+    Args:
+        season (int): The season year to fetch stats for. Defaults to 2024.
+        limit (int): The maximum number of results to retrieve. Defaults to 1000.
+    
+    Returns:
+        list: A list of dictionaries containing player stats, including first name, last name, team, 
+              batting average, on-base percentage, slugging percentage, and OPS.
+    
+    Raises:
+        BigQueryError: If there's an issue with the BigQuery execution.
+        Exception: For other unexpected errors.
+    """
+    try:
+        # Define the query with parameterized values
+        query = """
+        SELECT 
+          first_name,
+          last_name,
+          batting_avg,
+          on_base_percent,
+          slg_percent,
+          on_base_plus_slg
+        FROM 
+          `gem-rush-007.mlb_data.player_stats`
+        WHERE 
+          year = @season
+        ORDER BY 
+          batting_avg DESC
+        LIMIT @limit
+        """
+        
+        # Define the query parameters
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("season", "INT64", season),
+                bigquery.ScalarQueryParameter("limit", "INT64", limit),
+            ]
+        )
+        
+        # Initialize BigQuery client
+        bq_client = bigquery.Client()
+        
+        # Execute the query with parameters
+        query_job = bq_client.query(query, job_config=job_config)
+        
+        # Ensure the query completes successfully
+        query_job.result()
+        
+        # Fetch and process the results
+        results = [dict(row) for row in query_job]
+        
+        if not results:
+            logging.warning("Query returned no results")
+            return []
+        
+        return results
+    
+    except exceptions.NotFound as e:
+        logging.error(f"Table or dataset not found: {e}")
+        raise
+    
+    except exceptions.BadRequest as e:
+        logging.error(f"Invalid query or bad request: {e}")
+        raise
+    
+    except exceptions.Forbidden as e:
+        logging.error(f"Permission denied: {e}")
+        raise
+    
+    except exceptions.GoogleAPIError as e:
+        logging.error(f"BigQuery API error: {e}")
+        raise
+    
+    except Exception as e:
+        logging.error(f"Unexpected error in fetch_top_batting_stats: {e}")
+        raise
+
+
+def fetch_top_exit_velocity(limit: int = 10) -> list:
+    """
+    Fetches player statistics ordered by exit velocity in descending order.
+
+    Args:
+        limit (int): The maximum number of results to retrieve. Defaults to 10.
+
+    Returns:
+        list: A list of dictionaries containing player stats, including first name, 
+              last name, and exit velocity average.
+
+    Raises:
+        BigQueryError: If there's an issue with the BigQuery execution.
+        Exception: For other unexpected errors.
+    """
+    try:
+        # Define the query with parameterized values
+        query = """
+        SELECT  
+            first_name,
+            last_name,
+            exit_velocity_avg
+        FROM 
+            `gem-rush-007.mlb_data.player_stats`
+        WHERE 
+            exit_velocity_avg IS NOT NULL
+        ORDER BY 
+            exit_velocity_avg DESC
+        LIMIT @limit
+        """
+        
+        # Define the query parameters
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("limit", "INT64", limit),
+            ]
+        )
+        
+        # Initialize BigQuery client
+        bq_client = bigquery.Client()
+        
+        # Execute the query with parameters
+        query_job = bq_client.query(query, job_config=job_config)
+        
+        # Ensure the query completes successfully
+        query_job.result()
+        
+        # Fetch and process the results
+        results = [dict(row) for row in query_job]
+        
+        if not results:
+            logging.warning("Query returned no results")
+            return []
+        
+        return results
+    
+    except exceptions.NotFound as e:
+        logging.error(f"Table or dataset not found: {e}")
+        raise
+    
+    except exceptions.BadRequest as e:
+        logging.error(f"Invalid query or bad request: {e}")
+        raise
+    
+    except exceptions.Forbidden as e:
+        logging.error(f"Permission denied: {e}")
+        raise
+    
+    except exceptions.GoogleAPIError as e:
+        logging.error(f"BigQuery API error: {e}")
+        raise
+    
+    except Exception as e:
+        logging.error(f"Unexpected error in fetch_top_exit_velocity: {e}")
+        raise
+
+def fetch_top_xwoba(limit: int = 10) -> list:
+    """
+    Fetches player statistics ordered by xwOBA (expected weighted on-base average) in descending order.
+
+    Args:
+        limit (int): The maximum number of results to retrieve. Defaults to 10.
+
+    Returns:
+        list: A list of dictionaries containing player stats, including first name, 
+              last name, and xwOBA.
+
+    Raises:
+        BigQueryError: If there's an issue with the BigQuery execution.
+        Exception: For other unexpected errors.
+    """
+    try:
+        # Define the query with parameterized values
+        query = """
+        SELECT 
+            first_name,
+            last_name,
+            xwoba
+        FROM 
+            `gem-rush-007.mlb_data.player_stats`
+        WHERE 
+            xwoba IS NOT NULL
+        ORDER BY 
+            xwoba DESC
+        LIMIT @limit
+        """
+        
+        # Define the query parameters
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("limit", "INT64", limit),
+            ]
+        )
+        
+        # Initialize BigQuery client
+        bq_client = bigquery.Client()
+        
+        # Execute the query with parameters
+        query_job = bq_client.query(query, job_config=job_config)
+        
+        # Ensure the query completes successfully
+        query_job.result()
+        
+        # Fetch and process the results
+        results = [dict(row) for row in query_job]
+        
+        if not results:
+            logging.warning("Query returned no results")
+            return []
+        
+        return results
+    
+    except exceptions.NotFound as e:
+        logging.error(f"Table or dataset not found: {e}")
+        raise
+    
+    except exceptions.BadRequest as e:
+        logging.error(f"Invalid query or bad request: {e}")
+        raise
+    
+    except exceptions.Forbidden as e:
+        logging.error(f"Permission denied: {e}")
+        raise
+    
+    except exceptions.GoogleAPIError as e:
+        logging.error(f"BigQuery API error: {e}")
+        raise
+    
+    except Exception as e:
+        logging.error(f"Unexpected error in fetch_top_xwoba: {e}")
+        raise
+
+
+def fetch_top_players_by_xwoba(limit: int = 10) -> list:
+    """
+    Fetches players ordered by xwOBA (expected weighted on-base average) in descending order.
+
+    Args:
+        limit (int): Maximum number of results to return. Must be between 1 and 100.
+
+    Returns:
+        list: A list of dictionaries containing player stats, including first name, 
+              last name, and xwOBA value.
+
+    Raises:
+        ValueError: If the limit parameter is invalid.
+        BigQueryError: If there's an issue with the BigQuery execution.
+        Exception: For other unexpected errors.
+    """
+    # Input validation
+    if not isinstance(limit, int):
+        raise ValueError("Limit must be an integer")
+    if limit < 1 or limit > 100:
+        raise ValueError("Limit must be between 1 and 100")
+
+    try:
+        # Define the query with parameterized limit
+        query = """
+        SELECT 
+            first_name,
+            last_name,
+            xwoba
+        FROM 
+            `gem-rush-007.mlb_data.player_stats`
+        WHERE 
+            xwoba IS NOT NULL
+            AND first_name IS NOT NULL
+            AND last_name IS NOT NULL
+        ORDER BY 
+            xwoba DESC
+        LIMIT @limit
+        """
+        
+        # Define the query parameters
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("limit", "INT64", limit),
+            ]
+        )
+        
+        # Initialize BigQuery client
+        bq_client = bigquery.Client()
+        
+        # Execute the query with parameters
+        query_job = bq_client.query(query, job_config=job_config)
+        
+        # Ensure the query completes successfully
+        query_job.result()
+        
+        # Fetch and process the results with validation
+        results = []
+        for row in query_job:
+            row_dict = dict(row)
+            
+            # Validate required fields
+            if not row_dict.get('first_name') or not row_dict.get('last_name'):
+                logging.warning("Skipping record with missing name information")
+                continue
+            
+            # Validate xwoba value
+            try:
+                xwoba = float(row_dict.get('xwoba', 0))
+                if not 0 <= xwoba <= 1:  # xwOBA is typically between 0 and 1
+                    logging.warning(f"Invalid xwOBA value ({xwoba}) for {row_dict['first_name']} {row_dict['last_name']}")
+                    continue
+                row_dict['xwoba'] = xwoba
+            except (TypeError, ValueError) as e:
+                logging.warning(f"Invalid xwOBA value for {row_dict.get('first_name')} {row_dict.get('last_name')}: {e}")
+                continue
+            
+            results.append(row_dict)
+        
+        if not results:
+            logging.warning("Query returned no results")
+            return []
+        
+        return results
+    
+    except exceptions.NotFound as e:
+        logging.error(f"Table or dataset not found: {e}")
+        raise
+    
+    except exceptions.BadRequest as e:
+        logging.error(f"Invalid query or bad request: {e}")
+        raise
+    
+    except exceptions.Forbidden as e:
+        logging.error(f"Permission denied: {e}")
+        raise
+    
+    except exceptions.GoogleAPIError as e:
+        logging.error(f"BigQuery API error: {e}")
+        raise
+    
+    except Exception as e:
+        logging.error(f"Unexpected error in fetch_top_players_by_xwoba: {e}")
+        raise
+
+
+def fetch_top_players_by_hard_hit(limit: int = 10) -> list:
+    """
+    Fetches players ordered by hard hit percentage in descending order.
+
+    Args:
+        limit (int): Maximum number of results to return. Must be between 1 and 100.
+
+    Returns:
+        list: A list of dictionaries containing player stats, including first name, 
+              last name, and hard hit percentage.
+
+    Raises:
+        ValueError: If the limit parameter is invalid.
+        BigQueryError: If there's an issue with the BigQuery execution.
+        Exception: For other unexpected errors.
+    """
+    # Input validation
+    if not isinstance(limit, int):
+        raise ValueError("Limit must be an integer")
+    if limit < 1 or limit > 100:
+        raise ValueError("Limit must be between 1 and 100")
+
+    try:
+        # Define the query with parameterized limit
+        query = """
+        SELECT 
+            first_name,
+            last_name,
+            hard_hit_percent
+        FROM 
+            `gem-rush-007.mlb_data.player_stats`
+        WHERE 
+            hard_hit_percent IS NOT NULL
+            AND first_name IS NOT NULL
+            AND last_name IS NOT NULL
+            AND hard_hit_percent > 0  -- Ensure valid percentage
+            AND hard_hit_percent <= 100  -- Ensure valid percentage
+        ORDER BY 
+            hard_hit_percent DESC
+        LIMIT @limit
+        """
+        
+        # Define the query parameters
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("limit", "INT64", limit),
+            ]
+        )
+        
+        # Initialize BigQuery client
+        bq_client = bigquery.Client()
+        
+        # Execute the query with parameters
+        query_job = bq_client.query(query, job_config=job_config)
+        
+        # Ensure the query completes successfully
+        query_job.result()
+        
+        # Fetch and process the results with validation
+        results = []
+        for row in query_job:
+            row_dict = dict(row)
+            
+            # Validate required fields
+            if not row_dict.get('first_name') or not row_dict.get('last_name'):
+                logging.warning("Skipping record with missing name information")
+                continue
+            
+            # Validate hard hit percentage
+            try:
+                hard_hit_pct = float(row_dict.get('hard_hit_percent', 0))
+                if not 0 <= hard_hit_pct <= 100:  # Valid percentage range
+                    logging.warning(
+                        f"Invalid hard hit percentage ({hard_hit_pct}) for "
+                        f"{row_dict['first_name']} {row_dict['last_name']}"
+                    )
+                    continue
+                row_dict['hard_hit_percent'] = round(hard_hit_pct, 2)  # Round to 2 decimal places
+            except (TypeError, ValueError) as e:
+                logging.warning(
+                    f"Invalid hard hit percentage value for "
+                    f"{row_dict.get('first_name')} {row_dict.get('last_name')}: {e}"
+                )
+                continue
+            
+            results.append(row_dict)
+        
+        if not results:
+            logging.warning("Query returned no results")
+            return []
+        
+        return results
+    
+    except exceptions.NotFound as e:
+        logging.error(f"Table or dataset not found: {e}")
+        raise
+    
+    except exceptions.BadRequest as e:
+        logging.error(f"Invalid query or bad request: {e}")
+        raise
+    
+    except exceptions.Forbidden as e:
+        logging.error(f"Permission denied: {e}")
+        raise
+    
+    except exceptions.GoogleAPIError as e:
+        logging.error(f"BigQuery API error: {e}")
+        raise
+    
+    except Exception as e:
+        logging.error(f"Unexpected error in fetch_top_players_by_hard_hit: {e}")
+        raise
+
+
+def fetch_top_players_by_whiff_percent(limit: int = 10) -> list:
+    """
+    Fetches players ordered by whiff percentage in ascending order (lower is better).
+
+    Args:
+        limit (int): Maximum number of results to return. Must be between 1 and 100.
+
+    Returns:
+        list: A list of dictionaries containing player stats, including first name, 
+              last name, and whiff percentage (percentage of swings that miss).
+
+    Raises:
+        ValueError: If the limit parameter is invalid.
+        BigQueryError: If there's an issue with the BigQuery execution.
+        Exception: For other unexpected errors.
+    """
+    # Input validation
+    if not isinstance(limit, int):
+        raise ValueError("Limit must be an integer")
+    if limit < 1 or limit > 100:
+        raise ValueError("Limit must be between 1 and 100")
+
+    try:
+        # Define the query with parameterized limit
+        query = """
+        SELECT 
+            first_name,
+            last_name,
+            whiff_percent
+        FROM 
+            `gem-rush-007.mlb_data.player_stats`
+        WHERE 
+            whiff_percent IS NOT NULL
+            AND first_name IS NOT NULL
+            AND last_name IS NOT NULL
+            AND whiff_percent >= 0  -- Ensure valid percentage
+            AND whiff_percent <= 100  -- Ensure valid percentage
+        ORDER BY 
+            whiff_percent ASC  -- Lower whiff percentage is better
+        LIMIT @limit
+        """
+        
+        # Define the query parameters
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("limit", "INT64", limit),
+            ]
+        )
+        
+        # Initialize BigQuery client
+        bq_client = bigquery.Client()
+        
+        # Execute the query with parameters
+        query_job = bq_client.query(query, job_config=job_config)
+        
+        # Ensure the query completes successfully
+        query_job.result()
+        
+        # Fetch and process the results with validation
+        results = []
+        for row in query_job:
+            row_dict = dict(row)
+            
+            # Validate required fields
+            if not row_dict.get('first_name') or not row_dict.get('last_name'):
+                logging.warning("Skipping record with missing name information")
+                continue
+            
+            # Validate whiff percentage
+            try:
+                whiff_pct = float(row_dict.get('whiff_percent', 0))
+                if not 0 <= whiff_pct <= 100:  # Valid percentage range
+                    logging.warning(
+                        f"Invalid whiff percentage ({whiff_pct}) for "
+                        f"{row_dict['first_name']} {row_dict['last_name']}"
+                    )
+                    continue
+                row_dict['whiff_percent'] = round(whiff_pct, 2)  # Round to 2 decimal places
+            except (TypeError, ValueError) as e:
+                logging.warning(
+                    f"Invalid whiff percentage value for "
+                    f"{row_dict.get('first_name')} {row_dict.get('last_name')}: {e}"
+                )
+                continue
+            
+            # Add a calculated field for display purposes
+            row_dict['contact_percent'] = round(100 - whiff_pct, 2)  # Calculate contact percentage
+            
+            results.append(row_dict)
+        
+        if not results:
+            logging.warning("Query returned no results")
+            return []
+        
+        return results
+    
+    except exceptions.NotFound as e:
+        logging.error(f"Table or dataset not found: {e}")
+        raise
+    
+    except exceptions.BadRequest as e:
+        logging.error(f"Invalid query or bad request: {e}")
+        raise
+    
+    except exceptions.Forbidden as e:
+        logging.error(f"Permission denied: {e}")
+        raise
+    
+    except exceptions.GoogleAPIError as e:
+        logging.error(f"BigQuery API error: {e}")
+        raise
+    
+    except Exception as e:
+        logging.error(f"Unexpected error in fetch_top_players_by_whiff_percent: {e}")
+        raise
+
 
 def analyze_near_cycle_players(season: int, team_name: str, last_n_games: int = 5) -> List[Dict[str, Union[str, int]]]:
     """Finds players who nearly hit for the cycle in team's last N games of a season.
@@ -2097,6 +2838,139 @@ def analyze_near_cycle_players(season: int, team_name: str, last_n_games: int = 
         raise
 
 
+def fetch_top_players_by_barrel_rate(limit: int = 10) -> list:
+    """
+    Fetches players ordered by barrel batted rate in descending order (higher is better).
+
+    Args:
+        limit (int): Maximum number of results to return. Must be between 1 and 100.
+
+    Returns:
+        list: A list of dictionaries containing player stats, including first name, 
+              last name, and barrel batted rate (percentage of batted balls that are barreled).
+
+    Raises:
+        ValueError: If the limit parameter is invalid.
+        BigQueryError: If there's an issue with the BigQuery execution.
+        Exception: For other unexpected errors.
+    """
+    # Input validation
+    if not isinstance(limit, int):
+        raise ValueError("Limit must be an integer")
+    if limit < 1 or limit > 100:
+        raise ValueError("Limit must be between 1 and 100")
+
+    try:
+        # Define the query with parameterized limit
+        query = """
+        SELECT 
+            first_name,
+            last_name,
+            barrel_batted_rate,
+            total_batted_balls,  -- Adding context for the rate
+            total_barrels        -- Adding context for the rate
+        FROM 
+            `gem-rush-007.mlb_data.player_stats`
+        WHERE 
+            barrel_batted_rate IS NOT NULL
+            AND first_name IS NOT NULL
+            AND last_name IS NOT NULL
+            AND barrel_batted_rate >= 0  -- Ensure valid percentage
+            AND barrel_batted_rate <= 100  -- Ensure valid percentage
+            AND total_batted_balls >= 50  -- Minimum sample size for significance
+        ORDER BY 
+            barrel_batted_rate DESC
+        LIMIT @limit
+        """
+        
+        # Define the query parameters
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("limit", "INT64", limit),
+            ]
+        )
+        
+        # Initialize BigQuery client
+        bq_client = bigquery.Client()
+        
+        # Execute the query with parameters
+        query_job = bq_client.query(query, job_config=job_config)
+        
+        # Ensure the query completes successfully
+        query_job.result()
+        
+        # Fetch and process the results with validation
+        results = []
+        for row in query_job:
+            row_dict = dict(row)
+            
+            # Validate required fields
+            if not row_dict.get('first_name') or not row_dict.get('last_name'):
+                logging.warning("Skipping record with missing name information")
+                continue
+            
+            # Validate barrel rate
+            try:
+                barrel_rate = float(row_dict.get('barrel_batted_rate', 0))
+                if not 0 <= barrel_rate <= 100:  # Valid percentage range
+                    logging.warning(
+                        f"Invalid barrel rate ({barrel_rate}) for "
+                        f"{row_dict['first_name']} {row_dict['last_name']}"
+                    )
+                    continue
+                row_dict['barrel_batted_rate'] = round(barrel_rate, 2)  # Round to 2 decimal places
+                
+                # Validate and process additional statistics
+                total_batted = int(row_dict.get('total_batted_balls', 0))
+                total_barrels = int(row_dict.get('total_barrels', 0))
+                
+                if total_batted < 50:  # Minimum sample size check
+                    logging.warning(
+                        f"Insufficient sample size ({total_batted} batted balls) for "
+                        f"{row_dict['first_name']} {row_dict['last_name']}"
+                    )
+                    continue
+                
+                # Add calculated fields
+                row_dict['total_batted_balls'] = total_batted
+                row_dict['total_barrels'] = total_barrels
+                
+            except (TypeError, ValueError) as e:
+                logging.warning(
+                    f"Invalid data for {row_dict.get('first_name')} "
+                    f"{row_dict.get('last_name')}: {e}"
+                )
+                continue
+            
+            results.append(row_dict)
+        
+        if not results:
+            logging.warning("Query returned no results")
+            return []
+        
+        return results
+    
+    except exceptions.NotFound as e:
+        logging.error(f"Table or dataset not found: {e}")
+        raise
+    
+    except exceptions.BadRequest as e:
+        logging.error(f"Invalid query or bad request: {e}")
+        raise
+    
+    except exceptions.Forbidden as e:
+        logging.error(f"Permission denied: {e}")
+        raise
+    
+    except exceptions.GoogleAPIError as e:
+        logging.error(f"BigQuery API error: {e}")
+        raise
+    
+    except Exception as e:
+        logging.error(f"Unexpected error in fetch_top_players_by_barrel_rate: {e}")
+        raise
+
+
 def get_player_recent_streaks(player_name: str, stat: str, last_n_games: int = 10, threshold: float = 0.300):
     """
     Finds recent games where a player exceeded a threshold for a specific statistic.
@@ -2142,102 +3016,6 @@ def get_player_recent_streaks(player_name: str, stat: str, last_n_games: int = 1
 
     except Exception as e:
         logging.error(f"Error in get_player_recent_streaks: {e}")
-        return []
-
-
-def get_team_clutch_moments(team_name: str, season: int, min_run_difference: int = 2):
-    """
-    Identifies games where a team had a significant comeback or held a tight lead.
-
-    Args:
-        team_name: The name of the team.
-        season: The season to analyze.
-        min_run_difference: The minimum run difference to consider a "clutch" moment.
-
-    Returns:
-        list: A list of dictionaries describing the clutch moments.
-    """
-    try:
-        query = """
-        SELECT
-            game_date,
-            home_team.team_name AS home_team,
-            away_team.team_name AS away_team,
-            home_score,
-            away_score,
-            CASE
-                WHEN home_team.team_name = @team_name AND home_score > away_score AND ABS(home_score - away_score) <= @min_run_difference THEN 'Tight Win'
-                WHEN away_team.team_name = @team_name AND away_score > home_score AND ABS(away_score - home_score) <= @min_run_difference THEN 'Tight Win'
-                WHEN home_team.team_name = @team_name AND home_score > away_score AND ABS(original_home_score - original_away_score) > @min_run_difference THEN 'Comeback Win'
-                WHEN away_team.team_name = @team_name AND away_score > home_score AND ABS(original_away_score - original_home_score) > @min_run_difference THEN 'Comeback Win'
-                ELSE NULL
-            END AS clutch_moment_type
-        FROM
-            `mlb_data.combined_game_stats`
-        JOIN
-            `mlb_data.teams` AS home_team ON combined_game_stats.home_team_id = home_team.team_id
-        JOIN
-            `mlb_data.teams` AS away_team ON combined_game_stats.away_team_id = away_team.team_id
-        WHERE
-            (home_team.team_name = @team_name OR away_team.team_name = @team_name)
-            AND season = @season
-            AND clutch_moment_type IS NOT NULL
-        ORDER BY
-            game_date DESC
-        """
-
-        job_config = bigquery.QueryJobConfig(
-            query_parameters=[
-                bigquery.ScalarQueryParameter("team_name", "STRING", team_name),
-                bigquery.ScalarQueryParameter("season", "INT64", season),
-                bigquery.ScalarQueryParameter("min_run_difference", "INT64", min_run_difference)
-            ]
-        )
-        query_job = bq_client.query(query, job_config=job_config)
-        results = list(query_job.result())
-        return [dict(row) for row in results]
-    except Exception as e:
-        logging.error(f"Error in get_team_clutch_moments: {e}")
-        return []
-
-
-def analyze_team_bunt_tendency(team_name: str, season: int, situation: str = 'RISP'):
-    """
-    Analyzes how often a team attempts to bunt in specific situations.
-
-    Args:
-        team_name: The name of the team.
-        season: The season to analyze.
-        situation: The specific game situation to analyze (e.g., 'RISP' - Runners in Scoring Position, 'LeadOff').
-
-    Returns:
-        list: Statistics on the team's bunt tendencies in the specified situation.
-    """
-    try:
-        query = f"""
-        SELECT
-            COUNT(*) AS total_opportunities,
-            SUM(CASE WHEN rbi = 0 AND hits = 0 THEN 1 ELSE 0 END) AS bunt_attempts,
-            AVG(CASE WHEN rbi = 0 AND hits = 0 THEN 1 ELSE 0 END) AS bunt_rate
-        FROM
-            `mlb_data.combined_player_stats`
-        WHERE
-            team_name = @team_name
-            AND season = @season
-            {'AND runs_batted_in > 0' if situation == 'RISP' else ''}
-        """
-
-        job_config = bigquery.QueryJobConfig(
-            query_parameters=[
-                bigquery.ScalarQueryParameter("team_name", "STRING", team_name),
-                bigquery.ScalarQueryParameter("season", "INT64", season)
-            ]
-        )
-        query_job = bq_client.query(query, job_config=job_config)
-        results = list(query_job.result())
-        return [dict(row) for row in results]
-    except Exception as e:
-        logging.error(f"Error in analyze_team_bunt_tendency: {e}")
         return []
 
 
@@ -2448,8 +3226,6 @@ def generate_mlb_analysis(contents: str) -> str:
                     analyze_home_scoring_vs_high_away_scores,
                     analyze_near_cycle_players,
                     get_player_recent_streaks,
-                    get_team_clutch_moments,
-                    analyze_team_bunt_tendency,
                     compare_rookie_season_to_veteran,
                     identify_undervalued_players,
                     predict_matchup_outcome_by_stats,
@@ -2457,6 +3233,12 @@ def generate_mlb_analysis(contents: str) -> str:
                     fetch_team_performance_by_venue,
                     fetch_upcoming_games,
                     fetch_player_season_stats,
+                    fetch_top_batting_stats,
+                    fetch_top_exit_velocity,
+                    fetch_top_players_by_xwoba,
+                    fetch_top_players_by_hard_hit,
+                    fetch_top_players_by_whiff_percent,
+                    
                 ],
                 temperature=0,  # Ensure deterministic output for consistent results
             ),
