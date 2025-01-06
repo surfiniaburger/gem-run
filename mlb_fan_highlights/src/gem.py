@@ -12,15 +12,6 @@ if st.button("Generate Analysis"):
         analysis_result = generate_mlb_analysis(prompt)
         st.success("Analysis generated successfully!")
         st.write(analysis_result)
-        
-        # Handle result based on type
-        if isinstance(analysis_result, dict):
-            st.write(analysis_result.get('text', ''))
-            if 'visualization' in analysis_result:
-                st.subheader("Visualization")
-                st.components.v1.html(analysis_result['visualization'], height=450, width=600)
-        else:
-            st.write(analysis_result)
     except Exception as e:
         st.error(f"An error occurred: {str(e)}")
 

@@ -17,7 +17,7 @@ from typing import List, Dict, Union
 from datetime import datetime
 
 logging.basicConfig(
-    level=logging.WARNING,
+    level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
@@ -1672,6 +1672,361 @@ def analyze_ops_percentile_trends() -> list:
         raise
 
 
+def fetch_game_results() -> list:
+    """
+    Fetches the game results where the status is 'Final' and formats the results.
+    
+    Returns:
+        list: A list of formatted game results with columns including game_date, 
+              home_team_name, away_team_name, home_score, away_score, and game_result.
+    
+    Raises:
+        BigQueryError: If there's an issue with the BigQuery execution.
+        Exception: For other unexpected errors.
+    """
+    try:
+        # Define the query
+        query = """
+        SELECT 
+          game_date,
+          home_team_name,
+          away_team_name,
+          home_score,
+          away_score,
+          CONCAT(home_team_name, ' defeated ', away_team_name, ' ', home_score, '-', away_score, ' on ', CAST(game_date AS STRING)) AS game_result
+        FROM 
+          `gem-rush-007.mlb_data_2024.games`
+        WHERE 
+          status = 'Final'
+        LIMIT 1000;
+        """
+        
+        # Initialize BigQuery client
+        bq_client = bigquery.Client()
+        
+        # Execute the query
+        query_job = bq_client.query(query)
+        
+        # Ensure the query completes successfully
+        query_job.result()
+        
+        # Fetch and process the results
+        results = []
+        for row in query_job:
+            row_dict = dict(row)
+            # Convert date object to ISO format string
+            if 'game_date' in row_dict and row_dict['game_date']:
+                row_dict['game_date'] = row_dict['game_date'].isoformat()
+            results.append(row_dict)
+        if not results:
+            logging.warning("Query returned no results")
+            return []
+        
+        return results
+    
+    except exceptions.NotFound as e:
+        logging.error(f"Table or dataset not found: {e}")
+        raise
+    
+    except exceptions.BadRequest as e:
+        logging.error(f"Invalid query or bad request: {e}")
+        raise
+    
+    except exceptions.Forbidden as e:
+        logging.error(f"Permission denied: {e}")
+        raise
+    
+    except exceptions.GoogleAPIError as e:
+        logging.error(f"BigQuery API error: {e}")
+        raise
+    
+    except Exception as e:
+        logging.error(f"Unexpected error in fetch_game_results: {e}")
+        raise
+
+
+def fetch_home_team_performance() -> list:
+    """
+    Fetches the home team performance data, calculating wins and losses for each team.
+    
+    Returns:
+        list: A list of dictionaries containing team names, home wins, and home losses.
+    
+    Raises:
+        BigQueryError: If there's an issue with the BigQuery execution.
+        Exception: For other unexpected errors.
+    """
+    try:
+        # Define the query
+        query = """
+        SELECT 
+          home_team_name AS team_name,
+          COUNT(CASE WHEN home_score > away_score THEN 1 END) AS home_wins,
+          COUNT(CASE WHEN away_score > home_score THEN 1 END) AS home_losses
+        FROM 
+          `gem-rush-007.mlb_data_2024.games`
+        WHERE 
+          status = 'Final'
+        GROUP BY 
+          home_team_name
+        ORDER BY 
+          home_wins DESC
+        LIMIT 1000;
+        """
+        
+        # Initialize BigQuery client
+        bq_client = bigquery.Client()
+        
+        # Execute the query
+        query_job = bq_client.query(query)
+        
+        # Ensure the query completes successfully
+        query_job.result()
+        
+        # Fetch and process the results
+        results = [dict(row) for row in query_job]
+        
+        if not results:
+            logging.warning("Query returned no results")
+            return []
+        
+        return results
+    
+    except exceptions.NotFound as e:
+        logging.error(f"Table or dataset not found: {e}")
+        raise
+    
+    except exceptions.BadRequest as e:
+        logging.error(f"Invalid query or bad request: {e}")
+        raise
+    
+    except exceptions.Forbidden as e:
+        logging.error(f"Permission denied: {e}")
+        raise
+    
+    except exceptions.GoogleAPIError as e:
+        logging.error(f"BigQuery API error: {e}")
+        raise
+    
+    except Exception as e:
+        logging.error(f"Unexpected error in fetch_home_team_performance: {e}")
+        raise
+
+def fetch_team_performance_by_venue() -> list:
+    """
+    Fetches team performance at different venues, including games played and wins at each venue.
+    
+    Returns:
+        list: A list of dictionaries containing venue names, team names, 
+              games played, and wins at the venue.
+    
+    Raises:
+        BigQueryError: If there's an issue with the BigQuery execution.
+        Exception: For other unexpected errors.
+    """
+    try:
+        # Define the query
+        query = """
+        SELECT 
+          venue_name,
+          home_team_name AS team_name,
+          COUNT(*) AS games_played,
+          COUNT(CASE WHEN home_score > away_score THEN 1 END) AS wins_at_venue
+        FROM 
+          `gem-rush-007.mlb_data_2024.games`
+        WHERE 
+          status = 'Final'
+        GROUP BY 
+          venue_name, home_team_name
+        ORDER BY 
+          wins_at_venue DESC
+        LIMIT 1000;
+        """
+        
+        # Initialize BigQuery client
+        bq_client = bigquery.Client()
+        
+        # Execute the query
+        query_job = bq_client.query(query)
+        
+        # Ensure the query completes successfully
+        query_job.result()
+        
+        # Fetch and process the results
+        results = [dict(row) for row in query_job]
+        
+        if not results:
+            logging.warning("Query returned no results")
+            return []
+        
+        return results
+    
+    except exceptions.NotFound as e:
+        logging.error(f"Table or dataset not found: {e}")
+        raise
+    
+    except exceptions.BadRequest as e:
+        logging.error(f"Invalid query or bad request: {e}")
+        raise
+    
+    except exceptions.Forbidden as e:
+        logging.error(f"Permission denied: {e}")
+        raise
+    
+    except exceptions.GoogleAPIError as e:
+        logging.error(f"BigQuery API error: {e}")
+        raise
+    
+    except Exception as e:
+        logging.error(f"Unexpected error in fetch_team_performance_by_venue: {e}")
+        raise
+
+
+def fetch_upcoming_games() -> list:
+    """
+    Fetches upcoming scheduled MLB games with their date, teams, and status.
+    
+    Returns:
+        list: A list of dictionaries containing game date, home team, 
+              away team, and game status for upcoming games.
+    
+    Raises:
+        BigQueryError: If there's an issue with the BigQuery execution.
+        Exception: For other unexpected errors.
+    """
+    try:
+        # Define the query
+        query = """
+        SELECT 
+          game_date,
+          home_team_name,
+          away_team_name,
+          status
+        FROM 
+          `gem-rush-007.mlb_data_2024.games`
+        WHERE 
+          game_date > CURRENT_DATE() 
+          AND status = 'Scheduled'
+        LIMIT 10;
+        """
+        
+        # Initialize BigQuery client
+        bq_client = bigquery.Client()
+        
+        # Execute the query
+        query_job = bq_client.query(query)
+        
+        # Ensure the query completes successfully
+        query_job.result()
+        
+        # Fetch and process the results with date handling
+        results = []
+        for row in query_job:
+            row_dict = dict(row)
+            # Convert date object to ISO format string
+            if 'game_date' in row_dict and row_dict['game_date']:
+                row_dict['game_date'] = row_dict['game_date'].isoformat()
+            results.append(row_dict)
+        
+        if not results:
+            logging.warning("Query returned no results")
+            return []
+        
+        return results
+    
+    except exceptions.NotFound as e:
+        logging.error(f"Table or dataset not found: {e}")
+        raise
+    
+    except exceptions.BadRequest as e:
+        logging.error(f"Invalid query or bad request: {e}")
+        raise
+    
+    except exceptions.Forbidden as e:
+        logging.error(f"Permission denied: {e}")
+        raise
+    
+    except exceptions.GoogleAPIError as e:
+        logging.error(f"BigQuery API error: {e}")
+        raise
+    
+    except Exception as e:
+        logging.error(f"Unexpected error in fetch_upcoming_games: {e}")
+        raise
+
+
+
+def fetch_player_season_stats(season: int = 2024, limit: int = 1000) -> list:
+    """
+    Fetches player season statistics for a given MLB season.
+    
+    Args:
+        season (int): The season year to fetch stats for. Defaults to 2024.
+        limit (int): The maximum number of results to retrieve. Defaults to 1000.
+    
+    Returns:
+        list: A list of dictionaries containing player stats, including first name, last name, team, 
+              homeruns, RBI, runs, and stolen bases.
+    
+    Raises:
+        BigQueryError: If there's an issue with the BigQuery execution.
+        Exception: For other unexpected errors.
+    """
+    try:
+        # Define the query with placeholders for season and limit
+        query = f"""
+        SELECT 
+          first_name,
+          last_name,
+          team,
+          homeruns,
+          rbi,
+          runs,
+          stolen_bases
+        FROM 
+          `gem-rush-007.mlb_data.player_season_stats`
+        WHERE 
+          season = {season}
+        LIMIT {limit};
+        """
+        
+        # Initialize BigQuery client
+        bq_client = bigquery.Client()
+        
+        # Execute the query
+        query_job = bq_client.query(query)
+        
+        # Ensure the query completes successfully
+        query_job.result()
+        
+        # Fetch and process the results
+        results = [dict(row) for row in query_job]
+        
+        if not results:
+            logging.warning("Query returned no results")
+            return []
+        
+        return results
+    
+    except exceptions.NotFound as e:
+        logging.error(f"Table or dataset not found: {e}")
+        raise
+    
+    except exceptions.BadRequest as e:
+        logging.error(f"Invalid query or bad request: {e}")
+        raise
+    
+    except exceptions.Forbidden as e:
+        logging.error(f"Permission denied: {e}")
+        raise
+    
+    except exceptions.GoogleAPIError as e:
+        logging.error(f"BigQuery API error: {e}")
+        raise
+    
+    except Exception as e:
+        logging.error(f"Unexpected error in fetch_player_season_stats: {e}")
+        raise
 
 def analyze_near_cycle_players(season: int, team_name: str, last_n_games: int = 5) -> List[Dict[str, Union[str, int]]]:
     """Finds players who nearly hit for the cycle in team's last N games of a season.
@@ -1995,18 +2350,8 @@ def identify_undervalued_players(season: int, min_games_played: int = 50, ops_th
         query_job = bq_client.query(query, job_config=job_config)
         results = list(query_job.result())
         data = [dict(row) for row in results]
-        iframe_html = '''<iframe 
-        width="600" 
-        height="450" 
-        src="https://lookerstudio.google.com/embed/reporting/b845c095-6fa7-4b2d-a3b5-94e8c55576ec/page/NFWbE" 
-        frameborder="0" 
-        style="border:0" 
-        allowfullscreen 
-        sandbox="allow-storage-access-by-user-activation allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox">
-    </iframe>'''
-        return  {
-        'data': data,
-        'visualization': iframe_html}
+       
+        return  data
     except Exception as e:
         logging.error(f"Error in identify_undervalued_players: {e}")
         return []
@@ -2108,6 +2453,10 @@ def generate_mlb_analysis(contents: str) -> str:
                     compare_rookie_season_to_veteran,
                     identify_undervalued_players,
                     predict_matchup_outcome_by_stats,
+                    fetch_game_results,
+                    fetch_team_performance_by_venue,
+                    fetch_upcoming_games,
+                    fetch_player_season_stats,
                 ],
                 temperature=0,  # Ensure deterministic output for consistent results
             ),
