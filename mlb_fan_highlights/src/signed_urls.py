@@ -1,6 +1,8 @@
 import os
 from google.cloud import storage
 from datetime import timedelta
+from google.api_core import exceptions
+import csv
 
 def generate_signed_urls(bucket_name, expiration_days=1):
     """
@@ -17,39 +19,81 @@ def generate_signed_urls(bucket_name, expiration_days=1):
         # Initialize the GCS client
         storage_client = storage.Client()
 
-        # Get the GCS bucket
+        # Get the bucket
         bucket = storage_client.bucket(bucket_name)
+        
+        # Test bucket access
+        try:
+            bucket.reload()
+        except exceptions.Forbidden:
+            print(f"Permission denied: Service account does not have required permissions on bucket '{bucket_name}'")
+            print("Required permissions: storage.buckets.get, storage.objects.list, storage.objects.get")
+            return None
+        except exceptions.NotFound:
+            print(f"Bucket '{bucket_name}' not found")
+            return None
 
         signed_urls = {}
         
-        # List all blobs (objects) in the bucket
-        blobs = bucket.list_blobs()
+        try:
+            # List all blobs (objects) in the bucket and convert to list immediately
+            blobs = list(bucket.list_blobs())
+        except exceptions.Forbidden:
+            print("Permission denied: Service account cannot list objects in the bucket")
+            print("Required permission: storage.objects.list")
+            return None
+
+        if not blobs:
+            print("No objects found in the bucket.")
+            return {}
 
         for blob in blobs:
-            # Generate a signed URL that is valid for the specified number of days
-            expiration_time = timedelta(days=expiration_days)
-            signed_url = blob.generate_signed_url(
-                version="v4",
-                expiration=expiration_time,
-                method="GET",
-            )
-            signed_urls[blob.name] = signed_url
-        
-        print("Signed URLs generated successfully.")
-        return signed_urls
+            try:
+                # Generate a signed URL that is valid for the specified number of days
+                expiration_time = timedelta(days=expiration_days)
+                signed_url = blob.generate_signed_url(
+                    version="v4",
+                    expiration=expiration_time,
+                    method="GET"
+                )
+                signed_urls[blob.name] = signed_url
+            except Exception as e:
+                print(f"Error generating signed URL for {blob.name}: {str(e)}")
+                continue
+
+        if signed_urls:
+            print(f"Generated {len(signed_urls)} signed URLs successfully.")
+            return signed_urls
+        else:
+            print("No signed URLs could be generated.")
+            return None
     
     except Exception as e:
-        print(f"Error generating signed URLs: {e}")
+        print(f"Error generating signed URLs: {str(e)}")
         return None
 
 if __name__ == "__main__":
-    # Input your bucket name and the directory with the images
-    bucket_name = "mlb-headshots"  # Replace with your bucket name
-    expiration_days = 7 # Set the number of days you want your URL valid
+    bucket_name = "mlb-headshots"  # Your bucket name
+    expiration_days = 7
+    
+    # Verify credentials are set
+    credentials_path = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')
+    if not credentials_path:
+        print("GOOGLE_APPLICATION_CREDENTIALS environment variable not set")
+        exit(1)
+    
+    print(f"Using credentials from: {credentials_path}")
+
     
     signed_urls = generate_signed_urls(bucket_name, expiration_days)
 
+
+
     if signed_urls:
-        # Print the object to url mapping
-        print (signed_urls)
-        # You will save this mapping as you see fit.
+        with open("signed_urls.csv", 'w', newline='') as csvfile:
+            fieldnames = ["file_name", "signed_url"]
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            for key, value in signed_urls.items():
+               writer.writerow({"file_name": key, "signed_url": value})
+        print("signed URLs have been saved to signed_urls.csv")
