@@ -45,7 +45,7 @@ def generate_signed_urls(bucket_name, expiration_days=1):
 if __name__ == "__main__":
     # Input your bucket name and the directory with the images
     bucket_name = "mlb-headshots"  # Replace with your bucket name
-    expiration_days = 90 # Set the number of days you want your URL valid
+    expiration_days = 7 # Set the number of days you want your URL valid
     
     signed_urls = generate_signed_urls(bucket_name, expiration_days)
 
