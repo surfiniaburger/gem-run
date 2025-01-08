@@ -1,0 +1,38 @@
+Data Quality Report for Dodgers Roster
+Generated on: 2025-01-08 20:28:05.121042
+
+Total players: 60
+Columns in final dataset:
+player_id, fullName, position, jerseyNumber, status, birthDate, currentAge, height, weight, birthCity, birthCountry, batSide.description, pitchHand.description, mlbDebutDate
+
+Missing values:
+player_id                0
+fullName                 0
+position                 0
+jerseyNumber             0
+status                   0
+birthDate                0
+currentAge               0
+height                   0
+weight                   0
+birthCity                0
+birthCountry             0
+batSide.description      0
+pitchHand.description    0
+mlbDebutDate             0
+
+Data types:
+player_id                 int64
+fullName                 object
+position                 object
+jerseyNumber              int64
+status                   object
+birthDate                object
+currentAge                int64
+height                   object
+weight                    int64
+birthCity                object
+birthCountry             object
+batSide.description      object
+pitchHand.description    object
+mlbDebutDate             object

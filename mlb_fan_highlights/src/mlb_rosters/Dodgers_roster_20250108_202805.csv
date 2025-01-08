@@ -1,0 +1,61 @@
+player_id,fullName,position,jerseyNumber,status,birthDate,currentAge,height,weight,birthCity,birthCountry,batSide.description,pitchHand.description,mlbDebutDate
+605113,Nick Ahmed,Shortstop,12,Minor League Contract,1990-03-15,34,"6' 2""",201,East Longmeadow,USA,Right,Right,2014-06-29
+607455,Anthony Banda,Pitcher,43,Active,1993-08-10,31,"6' 2""",221,Corpus Christi,USA,Left,Left,2017-07-22
+605131,Austin Barnes,Catcher,15,Active,1989-12-28,35,"5' 10""",187,Riverside,USA,Right,Right,2015-05-24
+605141,Mookie Betts,Shortstop,50,Active,1992-10-07,32,"5' 9""",180,Nashville,USA,Right,Right,2014-06-29
+624415,Cavan Biggio,Second Base,6,Released,1995-04-11,29,"6' 2""",200,Houston,USA,Left,Right,2019-05-24
+518489,Ryan Brasier,Pitcher,57,Active,1987-08-26,37,"6' 0""",223,Wichita Falls,USA,Right,Right,2013-05-02
+641401,Connor Brogdon,Pitcher,75,Injured 60-Day,1995-01-29,29,"6' 6""",205,Clovis,USA,Right,Right,2020-08-13
+621111,Walker Buehler,Pitcher,21,Active,1994-07-28,30,"6' 2""",185,Lexington,USA,Right,Right,2017-09-07
+676508,Ben Casparius,Pitcher,78,Active,1999-02-11,25,"6' 2""",215,Westport,USA,Right,Right,2024-08-31
+622503,Nabil Crismatt,Pitcher,70,Minor League Contract,1994-12-25,30,"6' 1""",220,Barranquilla,Colombia,Right,Right,2020-08-17
+669242,Tommy Edman,Outfielder,25,Active,1995-05-09,29,"5' 10""",193,Pontiac,USA,Switch,Right,2019-06-08
+676439,Hunter Feduccia,Catcher,67,Forty Man,1997-06-05,27,"6' 1""",215,Lake Charles,USA,Left,Right,2024-07-31
+656420,J.P. Feyereisen,Pitcher,45,Minor League Contract,1993-02-07,31,"6' 2""",215,River Falls,USA,Right,Right,2020-07-24
+656427,Jack Flaherty,Pitcher,0,Active,1995-10-15,29,"6' 4""",225,Burbank,USA,Right,Right,2017-09-01
+518692,Freddie Freeman,First Base,5,Active,1989-09-12,35,"6' 5""",220,Villa Park,USA,Left,Right,2010-09-01
+607192,Tyler Glasnow,Pitcher,31,Injured 60-Day,1993-08-23,31,"6' 8""",225,Newhall,USA,Left,Right,2016-07-07
+660813,Brusdar Graterol,Pitcher,48,Active,1998-08-26,26,"6' 1""",265,Calabozo,Venezuela,Right,Right,2019-09-01
+675627,Michael Grove,Pitcher,29,Forty Man,1996-12-18,28,"6' 3""",200,Wheeling,USA,Right,Right,2022-05-15
+683618,Edgardo Henriquez,Pitcher,60,Forty Man,2002-06-24,22,"6' 4""",200,Cumana,Venezuela,Right,Right,2024-09-24
+622694,Elieser Hernández,Pitcher,52,Minor League Contract,1995-05-03,29,"6' 1""",214,Ocumare del Tuy,Venezuela,Right,Right,2018-05-10
+571771,Enrique Hernández,Third Base,8,Active,1991-08-24,33,"5' 11""",195,San Juan,Puerto Rico,Right,Right,2014-07-01
+606192,Teoscar Hernández,Outfielder,37,Active,1992-10-15,32,"6' 2""",215,Cotui,Dominican Republic,Right,Right,2016-08-12
+518792,Jason Heyward,Outfielder,23,Released,1989-08-09,35,"6' 5""",240,Ridgewood,USA,Left,Left,2010-04-05
+641703,Brent Honeywell,Pitcher,40,Active,1995-03-31,29,"6' 2""",195,Augusta,USA,Right,Right,2021-04-11
+543339,Daniel Hudson,Pitcher,41,Active,1987-03-09,37,"6' 3""",215,Lynchburg,USA,Right,Right,2009-09-04
+669165,Kyle Hurt,Pitcher,63,Forty Man,1998-05-30,26,"6' 3""",240,Rancho Santa Fe,USA,Right,Right,2023-09-12
+523260,Joe Kelly,Pitcher,99,Forty Man,1988-06-09,36,"6' 1""",174,Anaheim,USA,Right,Right,2012-06-10
+477132,Clayton Kershaw,Pitcher,22,Forty Man,1988-03-19,36,"6' 4""",225,Dallas,USA,Left,Left,2008-05-25
+595281,Kevin Kiermaier,Outfielder,93,Forty Man,1990-04-22,34,"6' 1""",210,Fort Wayne,USA,Left,Right,2013-09-30
+689017,Landon Knack,Pitcher,96,Active,1997-07-15,27,"6' 2""",220,Johnson City,USA,Left,Right,2024-04-17
+656629,Michael Kopech,Pitcher,45,Active,1996-04-30,28,"6' 3""",220,Longview,USA,Right,Right,2018-08-21
+659275,Dinelson Lamet,Pitcher,94,Minor League Contract,1992-07-18,32,"6' 3""",228,Santiago,Dominican Republic,Right,Right,2017-05-25
+656657,Zach Logue,Pitcher,62,Forty Man,1996-04-23,28,"6' 0""",165,Mason,USA,Left,Left,2022-04-19
+666158,Gavin Lux,Second Base,9,Active,1997-11-23,27,"6' 2""",190,Kenosha,USA,Left,Right,2019-09-02
+676272,Bobby Miller,Pitcher,28,Forty Man,1999-04-05,25,"6' 5""",220,Elk Grove Village,USA,Left,Right,2023-05-23
+571970,Max Muncy,Third Base,13,Active,1990-08-25,34,"6' 0""",215,Midland,USA,Left,Right,2015-04-25
+660271,Shohei Ohtani,Two-Way Player,17,Active,1994-07-05,30,"6' 4""",210,Oshu,Japan,Left,Right,2018-03-29
+681546,James Outman,Outfielder,33,Forty Man,1997-05-14,27,"6' 2""",215,Redwood City,USA,Left,Right,2022-07-31
+681624,Andy Pages,Outfielder,44,Active,2000-12-08,24,"6' 0""",212,Havana,Cuba,Right,Right,2024-04-16
+572020,James Paxton,Pitcher,65,Traded,1988-11-06,36,"6' 4""",212,Ladner,Canada,Left,Left,2013-09-07
+656848,Michael Petersen,Pitcher,90,Claimed,1994-05-16,30,"6' 7""",195,Middlesex,United Kingdom,Right,Right,2024-06-18
+623465,Evan Phillips,Pitcher,59,Forty Man,1994-09-11,30,"6' 2""",215,Salisbury,USA,Right,Right,2018-07-03
+598286,Nick Ramirez,Pitcher,64,Minor League Contract,1989-08-01,35,"6' 4""",232,Anaheim Hills,USA,Left,Left,2019-05-11
+670990,Yohan Ramírez,Pitcher,46,Claimed,1995-05-06,29,"6' 4""",212,Villa Mella,Dominican Republic,Right,Right,2020-07-24
+500743,Miguel Rojas,Shortstop,11,Active,1989-02-24,35,"6' 0""",188,Los Teques,Venezuela,Right,Right,2014-06-06
+642708,Amed Rosario,Second Base,27,Claimed,1995-11-20,29,"6' 2""",190,Santo Domingo Centro,Dominican Republic,Right,Right,2017-08-01
+689981,River Ryan,Pitcher,77,Injured 60-Day,1998-08-17,26,"6' 2""",195,Charlotte,USA,Right,Right,2024-07-22
+674285,Eduardo Salazar,Pitcher,60,Claimed,1998-05-05,26,"6' 2""",177,Cumana,Venezuela,Right,Right,2023-05-24
+669257,Will Smith,Catcher,16,Active,1995-03-28,29,"5' 10""",195,Louisville,USA,Right,Right,2019-05-28
+694813,Gavin Stone,Pitcher,35,Injured 60-Day,1998-10-15,26,"6' 1""",175,Lake City,USA,Right,Right,2023-05-03
+621035,Chris Taylor,Outfielder,3,Active,1990-08-29,34,"6' 1""",196,Virginia Beach,USA,Right,Right,2014-07-24
+666211,Taylor Trammell,Outfielder,6,Claimed,1997-09-13,27,"6' 2""",220,Powder Springs,USA,Left,Left,2021-04-01
+595014,Blake Treinen,Pitcher,49,Active,1988-06-30,36,"6' 5""",225,Wichita,USA,Right,Right,2014-04-12
+676568,Ricky Vanasco,Pitcher,61,Traded,1998-10-13,26,"6' 3""",180,Morriston,USA,Right,Right,2024-04-15
+678246,Miguel Vargas,Outfielder,27,Traded,1999-11-17,25,"6' 2""",205,La Habana,Cuba,Right,Right,2022-08-03
+681402,Gus Varland,Pitcher,58,Claimed,1996-11-06,28,"6' 1""",213,Maplewood,USA,Left,Right,2023-03-30
+681911,Alex Vesia,Pitcher,51,Active,1996-04-11,28,"6' 1""",209,Alpine,USA,Left,Left,2020-07-25
+680736,Justin Wrobleski,Pitcher,70,Forty Man,2000-07-14,24,"6' 1""",194,Hoffman Estates,USA,Left,Left,2024-07-07
+808967,Yoshinobu Yamamoto,Pitcher,18,Active,1998-08-17,26,"5' 10""",176,Bizen,Japan,Right,Right,2024-03-21
+642232,Ryan Yarbrough,Pitcher,56,Traded,1991-12-31,33,"6' 5""",215,Austin,USA,Right,Left,2018-03-31
