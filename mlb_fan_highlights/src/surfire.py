@@ -35,7 +35,7 @@ import logging
 from typing import Dict, Union
 from datetime import datetime
 
-def get_player_highest_ops(season: int) -> Dict[str, Union[str, float]]:
+def get_player_highest_ops(year: int) -> Dict[str, Union[str, float]]:
     """Returns the player with the highest OPS (On-base Plus Slugging) for a given season.
 
     Args:
@@ -53,10 +53,10 @@ def get_player_highest_ops(season: int) -> Dict[str, Union[str, float]]:
     # Input validation
     current_year = datetime.now().year
     
-    if not isinstance(season, int):
+    if not isinstance(year, int):
         raise ValueError("Season must be an integer")
         
-    if season < 1876 or season > current_year:
+    if year < 1876 or year > current_year:
         raise ValueError(f"Season must be between 1876 and {current_year}")
 
     try:
@@ -64,26 +64,23 @@ def get_player_highest_ops(season: int) -> Dict[str, Union[str, float]]:
         SELECT
             first_name,
             last_name,
-            on_base_plus_slugging,
-            team_name,
-            games_played,
-            at_bats
+            on_base_plus_slg,
+            ab
         FROM
-            `mlb_data.combined_player_stats`
+            `mlb_data.player_stats`
         WHERE
-            season = @season
-            AND on_base_plus_slugging IS NOT NULL
-            AND on_base_plus_slugging >= 0
-            AND games_played >= 10  -- Minimum games threshold
-            AND at_bats >= 30      -- Minimum at-bats threshold
+            season = @year
+            AND on_base_plus_slg IS NOT NULL
+            AND on_base_plus_slug >= 0
+            AND ab >= 30      -- Minimum at-bats threshold
         QUALIFY
             ROW_NUMBER() OVER (PARTITION BY season 
-                             ORDER BY on_base_plus_slugging DESC) = 1
+                             ORDER BY on_base_plus_slg DESC) = 1
         """
 
         job_config = bigquery.QueryJobConfig(
             query_parameters=[
-                bigquery.ScalarQueryParameter("season", "INTEGER", season)
+                bigquery.ScalarQueryParameter("year", "INTEGER", year)
             ]
         )
 
@@ -92,8 +89,8 @@ def get_player_highest_ops(season: int) -> Dict[str, Union[str, float]]:
         results = list(query_job.result(timeout=30))  # 30 second timeout
         
         if not results:
-            logging.warning(f"No qualified players found for season {season}")
-            raise IndexError(f"No qualified players found for season {season}")
+            logging.warning(f"No qualified players found for season {year}")
+            raise IndexError(f"No qualified players found for season {year}")
             
         result_dict = dict(results[0])
         
@@ -125,7 +122,7 @@ def get_player_highest_ops(season: int) -> Dict[str, Union[str, float]]:
         return result_dict
 
     except IndexError as e:
-        logging.error(f"No data found for season {season}")
+        logging.error(f"No data found for season {year}")
         raise
 
     except exceptions.Timeout as e:
@@ -153,428 +150,6 @@ def get_player_highest_ops(season: int) -> Dict[str, Union[str, float]]:
         raise
 
 
-def calculate_team_home_advantage(team_name: str) -> Dict[str, Union[str, float]]:
-    """Calculates the home field advantage statistics for a specific team.
-    
-    Args:
-        team_name: The name of the MLB team
-    
-    Returns:
-        Dict: Analysis of the team's home field advantage including win percentage and scoring averages
-    
-    Raises:
-        ValueError: If team_name is invalid
-        IndexError: If no data is found for the given team
-        BigQueryError: If there's an issue with the BigQuery execution
-        Exception: For other unexpected errors
-    """
-    # Input validation
-    if not isinstance(team_name, str):
-        raise ValueError("Team name must be a string")
-        
-    if not team_name.strip():
-        raise ValueError("Team name cannot be empty")
-
-    try:
-        query = """
-        WITH GameStats AS (
-            SELECT
-                team_name,
-                home_score,
-                away_score,
-                COUNT(*) OVER () as total_games
-            FROM
-                `mlb_data.combined_player_stats`
-            WHERE
-                team_name = @team_name
-                AND home_score IS NOT NULL
-                AND away_score IS NOT NULL
-                AND home_score >= 0
-                AND away_score >= 0
-        )
-        SELECT
-            team_name,
-            COUNTIF(home_score > away_score) * 100.0 / COUNT(*) AS home_win_percentage,
-            AVG(home_score) AS avg_home_runs,
-            AVG(away_score) AS avg_away_runs,
-            COUNT(*) as games_analyzed,
-            COUNTIF(home_score > away_score) as home_wins,
-            COUNTIF(home_score < away_score) as home_losses,
-            COUNTIF(home_score = away_score) as home_ties
-        FROM
-            GameStats
-        GROUP BY
-            team_name
-        HAVING
-            COUNT(*) >= 10  -- Minimum games threshold
-        """
-
-        job_config = bigquery.QueryJobConfig(
-            query_parameters=[
-                bigquery.ScalarQueryParameter("team_name", "STRING", team_name)
-            ]
-        )
-
-        # Execute query with timeout
-        query_job = bq_client.query(query, job_config=job_config)
-        results = list(query_job.result(timeout=30))  # 30 second timeout
-        
-        if not results:
-            logging.warning(f"No data found for team: {team_name}")
-            raise IndexError(f"No data found for team: {team_name}")
-            
-        result_dict = dict(results[0])
-        
-        # Validate required fields
-        required_fields = ['team_name', 'home_win_percentage', 'avg_home_runs', 
-                         'avg_away_runs', 'games_analyzed']
-        if not all(field in result_dict for field in required_fields):
-            logging.error("Missing required fields in query result")
-            raise ValueError("Incomplete team data returned from query")
-            
-        # Validate numeric values
-        if result_dict['games_analyzed'] < 10:
-            logging.warning(f"Limited sample size: only {result_dict['games_analyzed']} games analyzed")
-            
-        if not (0 <= result_dict['home_win_percentage'] <= 100):
-            logging.error(f"Invalid win percentage: {result_dict['home_win_percentage']}")
-            raise ValueError("Invalid win percentage calculated")
-            
-        if (result_dict['avg_home_runs'] < 0 or 
-            result_dict['avg_away_runs'] < 0 or 
-            result_dict['avg_home_runs'] > 30 or  # Reasonable upper limit for average runs
-            result_dict['avg_away_runs'] > 30):
-            logging.warning("Suspicious average run values detected")
-            
-        # Round numeric values for consistency
-        result_dict['home_win_percentage'] = round(result_dict['home_win_percentage'], 2)
-        result_dict['avg_home_runs'] = round(result_dict['avg_home_runs'], 2)
-        result_dict['avg_away_runs'] = round(result_dict['avg_away_runs'], 2)
-        
-        # Calculate home field advantage
-        result_dict['run_differential'] = round(result_dict['avg_home_runs'] - result_dict['avg_away_runs'], 2)
-        
-        # Remove unnecessary fields
-        for field in ['home_ties', 'games_analyzed']:
-            result_dict.pop(field, None)
-            
-        return result_dict
-
-    except IndexError as e:
-        logging.error(f"No data found for team {team_name}")
-        raise
-
-    except exceptions.Timeout as e:
-        logging.error(f"Query timed out: {e}")
-        raise
-
-    except exceptions.NotFound as e:
-        logging.error(f"Table or dataset not found: {e}")
-        raise
-
-    except exceptions.BadRequest as e:
-        logging.error(f"Invalid query or bad request: {e}")
-        raise
-
-    except exceptions.Forbidden as e:
-        logging.error(f"Permission denied accessing BigQuery: {e}")
-        raise
-
-    except exceptions.GoogleAPIError as e:
-        logging.error(f"BigQuery API error: {e}")
-        raise
-
-    except Exception as e:
-        logging.error(f"Unexpected error in calculate_team_home_advantage: {e}")
-        raise
-
-def analyze_player_performance(player_first_name: str, player_last_name: str) -> Dict[str, Union[str, float, int]]:
-    """Analyzes a player's career statistics and performance trends.
-    
-    Args:
-        player_first_name: Player's first name
-        player_last_name: Player's last name
-    
-    Returns:
-        Dict: Comprehensive analysis of the player's performance
-    
-    Raises:
-        ValueError: If player name parameters are invalid
-        IndexError: If no data is found for the player
-        BigQueryError: If there's an issue with the BigQuery execution
-        Exception: For other unexpected errors
-    """
-    # Input validation
-    if not isinstance(player_first_name, str) or not isinstance(player_last_name, str):
-        raise ValueError("Player names must be strings")
-        
-    if not player_first_name.strip() or not player_last_name.strip():
-        raise ValueError("Player names cannot be empty")
-        
-    # Remove extra whitespace and capitalize names
-    player_first_name = player_first_name.strip().title()
-    player_last_name = player_last_name.strip().title()
-
-    try:
-        query = """
-        WITH PlayerStats AS (
-            SELECT
-                first_name,
-                last_name,
-                season,
-                batting_average,
-                homeruns,
-                stolen_bases,
-                games_played,
-                at_bats
-            FROM
-                `mlb_data.combined_player_stats`
-            WHERE
-                first_name = @player_first_name
-                AND last_name = @player_last_name
-                AND batting_average IS NOT NULL
-                AND batting_average >= 0
-                AND batting_average <= 1
-                AND games_played > 0
-        )
-        SELECT
-            first_name,
-            last_name,
-            AVG(batting_average) as career_avg,
-            SUM(homeruns) as total_hr,
-            SUM(stolen_bases) as total_sb,
-            COUNT(DISTINCT season) as seasons_played,
-            SUM(games_played) as total_games,
-            SUM(at_bats) as total_at_bats,
-            MIN(season) as first_season,
-            MAX(season) as last_season
-        FROM
-            PlayerStats
-        GROUP BY
-            first_name,
-            last_name
-        HAVING
-            COUNT(DISTINCT season) > 0
-        """
-
-        job_config = bigquery.QueryJobConfig(
-            query_parameters=[
-                bigquery.ScalarQueryParameter("player_first_name", "STRING", player_first_name),
-                bigquery.ScalarQueryParameter("player_last_name", "STRING", player_last_name)
-            ]
-        )
-
-        # Execute query with timeout
-        query_job = bq_client.query(query, job_config=job_config)
-        results = list(query_job.result(timeout=30))  # 30 second timeout
-        
-        if not results:
-            logging.warning(f"No data found for player: {player_first_name} {player_last_name}")
-            raise IndexError(f"No data found for player: {player_first_name} {player_last_name}")
-            
-        result_dict = dict(results[0])
-        
-        # Validate required fields
-        required_fields = ['career_avg', 'total_hr', 'total_sb', 'seasons_played', 
-                         'total_games', 'total_at_bats']
-        if not all(field in result_dict for field in required_fields):
-            logging.error("Missing required fields in query result")
-            raise ValueError("Incomplete player data returned from query")
-            
-        # Validate numeric values
-        if result_dict['seasons_played'] <= 0:
-            logging.error("Invalid seasons played count")
-            raise ValueError("Invalid seasons played count")
-            
-        if not (0 <= result_dict['career_avg'] <= 1):
-            logging.warning(f"Suspicious career average: {result_dict['career_avg']}")
-            
-        if result_dict['total_hr'] < 0 or result_dict['total_sb'] < 0:
-            logging.error("Negative statistics detected")
-            raise ValueError("Invalid negative statistics found")
-            
-        # Calculate additional statistics
-        result_dict['games_per_season'] = round(result_dict['total_games'] / result_dict['seasons_played'], 1)
-        result_dict['career_length'] = result_dict['last_season'] - result_dict['first_season'] + 1
-        
-        # Round numeric values for consistency
-        result_dict['career_avg'] = round(result_dict['career_avg'], 3)
-        
-        # Remove unnecessary fields
-        for field in ['first_name', 'last_name']:
-            result_dict.pop(field, None)
-            
-        return result_dict
-
-    except IndexError as e:
-        logging.error(f"No data found for player {player_first_name} {player_last_name}")
-        raise
-
-    except exceptions.Timeout as e:
-        logging.error(f"Query timed out: {e}")
-        raise
-
-    except exceptions.NotFound as e:
-        logging.error(f"Table or dataset not found: {e}")
-        raise
-
-    except exceptions.BadRequest as e:
-        logging.error(f"Invalid query or bad request: {e}")
-        raise
-
-    except exceptions.Forbidden as e:
-        logging.error(f"Permission denied accessing BigQuery: {e}")
-        raise
-
-    except exceptions.GoogleAPIError as e:
-        logging.error(f"BigQuery API error: {e}")
-        raise
-
-    except Exception as e:
-        logging.error(f"Unexpected error in analyze_player_performance: {e}")
-        raise
-
-def analyze_weight_performance(min_weight: int, max_weight: int) -> Dict[str, Union[float, int]]:
-    """Analyzes batting performance statistics for players within a weight range.
-    
-    Args:
-        min_weight: Minimum player weight
-        max_weight: Maximum player weight
-    
-    Returns:
-        Dict: Batting performance statistics including averages and player count
-    
-    Raises:
-        ValueError: If weight parameters are invalid
-        IndexError: If no data is found for the weight range
-        BigQueryError: If there's an issue with the BigQuery execution
-        Exception: For other unexpected errors
-    """
-    # Input validation
-    if not isinstance(min_weight, int) or not isinstance(max_weight, int):
-        raise ValueError("Weight values must be integers")
-        
-    if min_weight < 100 or max_weight > 400:  # Reasonable MLB player weight range
-        raise ValueError("Weight must be between 100 and 400 pounds")
-        
-    if min_weight > max_weight:
-        raise ValueError("Minimum weight must be less than maximum weight")
-        
-    if max_weight - min_weight < 10:
-        raise ValueError("Weight range must be at least 10 pounds")
-
-    try:
-        query = """
-        WITH PlayerStats AS (
-            SELECT
-                player_id,
-                weight,
-                batting_average,
-                homeruns,
-                at_bats,
-                games_played
-            FROM
-                `mlb_data.combined_player_stats`
-            WHERE
-                weight BETWEEN @min_weight AND @max_weight
-                AND weight IS NOT NULL
-                AND batting_average IS NOT NULL
-                AND batting_average BETWEEN 0 AND 1
-                AND at_bats >= 200
-                AND games_played >= 20
-        )
-        SELECT
-            AVG(batting_average) AS avg_batting_average,
-            AVG(homeruns) AS avg_homeruns,
-            COUNT(DISTINCT player_id) AS player_count,
-            MIN(weight) AS min_weight_found,
-            MAX(weight) AS max_weight_found,
-            AVG(weight) AS avg_weight,
-            MIN(batting_average) AS min_batting_avg,
-            MAX(batting_average) AS max_batting_avg
-        FROM
-            PlayerStats
-        HAVING
-            COUNT(DISTINCT player_id) > 0
-        """
-
-        job_config = bigquery.QueryJobConfig(
-            query_parameters=[
-                bigquery.ScalarQueryParameter("min_weight", "INT64", min_weight),
-                bigquery.ScalarQueryParameter("max_weight", "INT64", max_weight)
-            ]
-        )
-
-        # Execute query with timeout
-        query_job = bq_client.query(query, job_config=job_config)
-        results = list(query_job.result(timeout=30))  # 30 second timeout
-        
-        if not results:
-            logging.warning(f"No data found for weight range {min_weight}-{max_weight}")
-            raise IndexError(f"No data found for weight range {min_weight}-{max_weight}")
-            
-        result_dict = dict(results[0])
-        
-        # Validate required fields
-        required_fields = ['avg_batting_average', 'avg_homeruns', 'player_count']
-        if not all(field in result_dict for field in required_fields):
-            logging.error("Missing required fields in query result")
-            raise ValueError("Incomplete data returned from query")
-            
-        # Validate player count
-        if result_dict['player_count'] <= 0:
-            logging.error("No qualifying players found")
-            raise ValueError("No qualifying players found in the specified weight range")
-            
-        # Validate numeric values
-        if not (0 <= result_dict['avg_batting_average'] <= 1):
-            logging.warning(f"Suspicious average batting average: {result_dict['avg_batting_average']}")
-            
-        if result_dict['avg_homeruns'] < 0:
-            logging.error("Negative home run average detected")
-            raise ValueError("Invalid negative statistics found")
-            
-        # Add derived statistics
-        result_dict['weight_range'] = max_weight - min_weight
-        
-        # Round numeric values for consistency
-        result_dict['avg_batting_average'] = round(result_dict['avg_batting_average'], 3)
-        result_dict['avg_homeruns'] = round(result_dict['avg_homeruns'], 1)
-        result_dict['avg_weight'] = round(result_dict.get('avg_weight', 0), 1)
-        
-        # Remove unnecessary fields
-        for field in ['min_weight_found', 'max_weight_found']:
-            result_dict.pop(field, None)
-            
-        return result_dict
-
-    except IndexError as e:
-        logging.error(f"No data found for weight range {min_weight}-{max_weight}")
-        raise
-
-    except exceptions.Timeout as e:
-        logging.error(f"Query timed out: {e}")
-        raise
-
-    except exceptions.NotFound as e:
-        logging.error(f"Table or dataset not found: {e}")
-        raise
-
-    except exceptions.BadRequest as e:
-        logging.error(f"Invalid query or bad request: {e}")
-        raise
-
-    except exceptions.Forbidden as e:
-        logging.error(f"Permission denied accessing BigQuery: {e}")
-        raise
-
-    except exceptions.GoogleAPIError as e:
-        logging.error(f"BigQuery API error: {e}")
-        raise
-
-    except Exception as e:
-        logging.error(f"Unexpected error in analyze_weight_performance: {e}")
-        raise
 
 
 def analyze_team_strikeouts(team_name: str, season: int) -> Dict[str, Union[str, float, int]]:
@@ -3847,12 +3422,9 @@ def generate_mlb_analysis(contents: str) -> str:
             config=GenerateContentConfig(
                 tools=[
                     get_player_highest_ops,
-                    analyze_player_performance,
-                    calculate_team_home_advantage,
                     analyze_position_slugging,
                     analyze_team_strikeouts,
                     analyze_monthly_home_runs,
-                    analyze_weight_performance,
                     analyze_homerun_win_correlation,
                     analyze_position_ops_percentile,
                     analyze_position_batting_efficiency,
