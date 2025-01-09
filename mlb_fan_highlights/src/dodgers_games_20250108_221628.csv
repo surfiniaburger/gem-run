@@ -1,0 +1,11 @@
+game_id,official_date,season,home_team_id,home_team_name,home_score,away_team_id,away_team_name,away_score,venue_name,status,dodgers_win,dodgers_margin
+775296,2024-10-30,2024,147,New York Yankees,6,119,Los Angeles Dodgers,7,Yankee Stadium,Final,True,1.0
+775297,2024-10-29,2024,147,New York Yankees,11,119,Los Angeles Dodgers,4,Yankee Stadium,Final,False,-7.0
+775298,2024-10-28,2024,147,New York Yankees,2,119,Los Angeles Dodgers,4,Yankee Stadium,Final,True,2.0
+775294,2024-10-26,2024,119,Los Angeles Dodgers,4,147,New York Yankees,2,Dodger Stadium,Final,True,2.0
+775300,2024-10-25,2024,119,Los Angeles Dodgers,6,147,New York Yankees,3,Dodger Stadium,Final,True,3.0
+775302,2024-10-20,2024,119,Los Angeles Dodgers,10,121,New York Mets,5,Dodger Stadium,Final,True,5.0
+775299,2024-10-18,2024,121,New York Mets,12,119,Los Angeles Dodgers,6,Citi Field,Final,False,-6.0
+775303,2024-10-17,2024,121,New York Mets,2,119,Los Angeles Dodgers,10,Citi Field,Final,True,8.0
+775305,2024-10-16,2024,121,New York Mets,0,119,Los Angeles Dodgers,8,Citi Field,Final,True,8.0
+775306,2024-10-14,2024,119,Los Angeles Dodgers,3,121,New York Mets,7,Dodger Stadium,Final,False,-4.0

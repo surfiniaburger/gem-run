@@ -65,6 +65,7 @@ def process_game_plays(game_pk: int) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     url = f'https://statsapi.mlb.com/api/v1.1/game/{game_pk}/feed/live'
     game_data = call_mlb_api(url)
+   
     
     # Process plays
     plays_list = []
@@ -215,7 +216,7 @@ def process_recent_games(n_games: int = 5) -> Dict[str, pd.DataFrame]:
 if __name__ == "__main__":
     # Process last 5 games
     logger.info("Processing recent Dodgers games...")
-    results = process_recent_games(1)
+    results = process_recent_games(10)
     
     # Save results to CSV files
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
