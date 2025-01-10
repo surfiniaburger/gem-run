@@ -3230,6 +3230,91 @@ def fetch_top_players_by_launch_angle(limit: int = 10) -> list:
         raise
 
 
+def fetch_roster_players(limit: int = 1000) -> list:
+    """
+    Fetches players from the Dodgers MLB roster.
+
+    Args:
+        limit (int): Maximum number of results to return. Must be between 1 and 1000.
+
+    Returns:
+        list: A list of dictionaries containing player names.
+
+    Raises:
+        ValueError: If the limit parameter is invalid.
+        BigQueryError: If there's an issue with the BigQuery execution.
+        Exception: For other unexpected errors.
+    """
+    # Input validation
+    if not isinstance(limit, int):
+        raise ValueError("Limit must be an integer")
+    if limit < 1 or limit > 1000:
+        raise ValueError("Limit must be between 1 and 1000")
+
+    try:
+        # Define the query with parameterized limit
+        query = """
+        SELECT 
+            full_name
+        FROM 
+            `gem-rush-007.dodgers_mlb_data_2024.roster`
+        WHERE
+            status = "Active"
+        LIMIT @limit
+        """
+        
+        # Define the query parameters
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("limit", "INT64", limit),
+            ]
+        )
+        
+        # Initialize BigQuery client
+        bq_client = bigquery.Client()
+        
+        # Execute the query with parameters
+        query_job = bq_client.query(query, job_config=job_config)
+        
+        # Fetch and process the results with validation
+        results = []
+        for row in query_job:
+            row_dict = dict(row)
+            
+            # Validate required fields
+            if not row_dict.get('full_name'):
+                logging.warning("Skipping record with missing name information")
+                continue
+            
+            results.append(row_dict)
+        
+        if not results:
+            logging.warning("Query returned no results")
+            return []
+        
+        return results
+    
+    except exceptions.NotFound as e:
+        logging.error(f"Table or dataset not found: {e}")
+        raise
+    
+    except exceptions.BadRequest as e:
+        logging.error(f"Invalid query or bad request: {e}")
+        raise
+    
+    except exceptions.Forbidden as e:
+        logging.error(f"Permission denied: {e}")
+        raise
+    
+    except exceptions.GoogleAPIError as e:
+        logging.error(f"BigQuery API error: {e}")
+        raise
+    
+    except Exception as e:
+        logging.error(f"Unexpected error in fetch_roster_players: {e}")
+        raise
+
+
 def compare_rookie_season_to_veteran(rookie_name: str, veteran_name: str, stat_categories: str = ''):
     """
     Compares a rookie's stats to a veteran player's stats in their early career.
@@ -3453,6 +3538,7 @@ def generate_mlb_analysis(contents: str) -> str:
                     fetch_top_players_by_edge_percent,  
                     fetch_top_players_by_walk_rate, 
                     fetch_top_players_by_launch_angle,  
+                    fetch_roster_players,
                 ],
                 temperature=0,  # Ensure deterministic output for consistent results
             ),
