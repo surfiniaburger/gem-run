@@ -13,7 +13,7 @@ from google.cloud import bigquery
 import os
 import logging
 from google.api_core import exceptions
-from typing import List, Dict, Union
+from typing import List, Dict, Union, Optional
 from datetime import datetime
 
 logging.basicConfig(
@@ -1244,110 +1244,6 @@ def analyze_ops_percentile_trends() -> list:
         
     except Exception as e:
         logging.error(f"Unexpected error in analyze_ops_percentile_trends: {e}")
-        raise
-
-
-def fetch_game_results(limit: int = 1000) -> list:
-    """
-    Fetches the game results where the status is 'Final' and formats the results.
-    
-    Args:
-        limit (int): Maximum number of results to return. Must be between 1 and 1000.
-    
-    Returns:
-        list: A list of formatted game results with columns including game_date, 
-              home_team_name, away_team_name, home_score, away_score, and game_result.
-    
-    Raises:
-        ValueError: If the limit parameter is invalid.
-        BigQueryError: If there's an issue with the BigQuery execution.
-        Exception: For other unexpected errors.
-    """
-    # Input validation
-    if not isinstance(limit, int):
-        raise ValueError("Limit must be an integer")
-    if limit < 1 or limit > 1000:
-        raise ValueError("Limit must be between 1 and 1000")
-
-    try:
-        # Define the query with parameterized limit
-        query = """
-        SELECT 
-          game_date,
-          home_team_name,
-          away_team_name,
-          home_score,
-          away_score,
-          CONCAT(home_team_name, ' defeated ', away_team_name, ' ', 
-                CAST(home_score AS STRING), '-', CAST(away_score AS STRING), 
-                ' on ', CAST(game_date AS STRING)) AS game_result
-        FROM 
-          `gem-rush-007.mlb_data_2024.games`
-        WHERE 
-          status = 'Final'
-        LIMIT @limit
-        """
-        
-        # Define the query parameters
-        job_config = bigquery.QueryJobConfig(
-            query_parameters=[
-                bigquery.ScalarQueryParameter("limit", "INT64", limit),
-            ]
-        )
-        
-        # Initialize BigQuery client
-        bq_client = bigquery.Client()
-        
-        # Execute the query with parameters
-        query_job = bq_client.query(query, job_config=job_config)
-        
-        # Ensure the query completes successfully
-        query_job.result()
-        
-        # Fetch and process the results
-        results = []
-        for row in query_job:
-            row_dict = dict(row)
-            # Validate and convert date object to ISO format string
-            if 'game_date' in row_dict and row_dict['game_date']:
-                try:
-                    row_dict['game_date'] = row_dict['game_date'].isoformat()
-                except AttributeError:
-                    logging.warning(f"Invalid date format for game_date: {row_dict['game_date']}")
-                    row_dict['game_date'] = None
-            
-            # Validate numeric fields
-            for field in ['home_score', 'away_score']:
-                if field in row_dict and not isinstance(row_dict[field], (int, float)):
-                    logging.warning(f"Invalid {field} value: {row_dict[field]}")
-                    row_dict[field] = None
-            
-            results.append(row_dict)
-            
-        if not results:
-            logging.warning("Query returned no results")
-            return []
-        
-        return results
-    
-    except exceptions.NotFound as e:
-        logging.error(f"Table or dataset not found: {e}")
-        raise
-    
-    except exceptions.BadRequest as e:
-        logging.error(f"Invalid query or bad request: {e}")
-        raise
-    
-    except exceptions.Forbidden as e:
-        logging.error(f"Permission denied: {e}")
-        raise
-    
-    except exceptions.GoogleAPIError as e:
-        logging.error(f"BigQuery API error: {e}")
-        raise
-    
-    except Exception as e:
-        logging.error(f"Unexpected error in fetch_game_results: {e}")
         raise
 
 
@@ -3315,6 +3211,886 @@ def fetch_roster_players(limit: int = 1000) -> list:
         raise
 
 
+def fetch_dodgers_games() -> list:
+    """
+    Fetches all Dodgers games (both home and away) with detailed game information.
+
+    Returns:
+        list: A list of dictionaries containing game details including:
+              - game_id
+              - official_date (in YYYY-MM-DD format)
+              - home/away team IDs and names
+              - game_type
+              - scores
+              - venue
+              - game status
+              - dodgers win/loss and margin
+
+    Raises:
+        BigQueryError: If there's an issue with the BigQuery execution.
+        Exception: For other unexpected errors.
+    """
+    try:
+        # Define the query
+        query = """
+        SELECT
+            game_id,
+            official_date,
+            home_team_id,
+            game_type,
+            home_team_name,
+            away_team_id,
+            away_team_name,
+            home_score,
+            away_score,
+            venue_name,
+            status,
+            dodgers_win,
+            dodgers_margin
+        FROM
+            `gem-rush-007.dodgers_mlb_data_2024.games`
+        WHERE
+            (home_team_id = 119 OR away_team_id = 119) 
+        """
+        # Initialize BigQuery client
+        bq_client = bigquery.Client()
+        
+        # Execute the query
+        query_job = bq_client.query(query)
+        
+        # Fetch and process the results with validation
+        results = []
+        for row in query_job:
+            row_dict = dict(row)
+            
+            # Convert date object to string
+            if row_dict.get('official_date'):
+                row_dict['official_date'] = row_dict['official_date'].strftime('%Y-%m-%d')
+            
+            # Validate required fields
+            required_fields = [
+                'game_id', 'official_date', 'home_team_id', 
+                'away_team_id', 'home_team_name', 'away_team_name'
+            ]
+            
+            if not all(row_dict.get(field) for field in required_fields):
+                logging.warning(f"Skipping record with missing required information: {row_dict.get('game_id', 'Unknown Game')}")
+                continue
+            
+            # Validate scores
+            try:
+                if row_dict.get('home_score') is not None:
+                    row_dict['home_score'] = int(row_dict['home_score'])
+                if row_dict.get('away_score') is not None:
+                    row_dict['away_score'] = int(row_dict['away_score'])
+            except (TypeError, ValueError) as e:
+                logging.warning(f"Invalid score data for game {row_dict['game_id']}: {e}")
+                continue
+            
+            # Validate margin
+            if row_dict.get('dodgers_margin') is not None:
+                try:
+                    row_dict['dodgers_margin'] = int(row_dict['dodgers_margin'])
+                except (TypeError, ValueError) as e:
+                    logging.warning(f"Invalid margin data for game {row_dict['game_id']}: {e}")
+                    continue
+            
+            results.append(row_dict)
+        
+        if not results:
+            logging.warning("Query returned no results")
+            return []
+        
+        return results
+    
+    except exceptions.NotFound as e:
+        logging.error(f"Table or dataset not found: {e}")
+        raise
+    
+    except exceptions.BadRequest as e:
+        logging.error(f"Invalid query or bad request: {e}")
+        raise
+    
+    except exceptions.Forbidden as e:
+        logging.error(f"Permission denied: {e}")
+        raise
+    
+    except exceptions.GoogleAPIError as e:
+        logging.error(f"BigQuery API error: {e}")
+        raise
+    
+    except Exception as e:
+        logging.error(f"Unexpected error in fetch_dodgers_games: {e}")
+        raise
+
+def fetch_dodgers_player_stats(limit: int = 100) -> list:
+    """
+    Fetches player statistics from Dodgers games.
+
+    Args:
+        limit (int, optional): Maximum number of player records to return. Defaults to 100.
+
+    Returns:
+        list: A list of dictionaries containing player statistics including:
+              - player_id
+              - full_name
+              - game_date
+              - at_bats
+              - hits
+              - home_runs
+              - rbi
+              - walks
+              - strikeouts
+              - batting_average
+              - on_base_percentage
+              - slugging_percentage
+    """
+    try:
+        query = """
+        SELECT
+            ps.player_id,
+            r.full_name,
+            g.official_date as game_date,
+            ps.at_bats,
+            ps.hits,
+            ps.home_runs,
+            ps.rbi,
+            ps.walks,
+            ps.strikeouts,
+            ps.batting_average,
+            ps.on_base_percentage,
+            ps.slugging_percentage
+        FROM
+            `gem-rush-007.dodgers_mlb_data_2024.player_stats` AS ps
+        JOIN 
+            `gem-rush-007.dodgers_mlb_data_2024.roster` AS r
+            ON ps.player_id = r.player_id
+        INNER JOIN 
+            `gem-rush-007.dodgers_mlb_data_2024.games` AS g 
+            ON ps.game_id = g.game_id
+        WHERE
+            (g.home_team_id = 119 OR g.away_team_id = 119)
+        ORDER BY 
+            g.official_date DESC
+        LIMIT @limit
+        """
+
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("limit", "INT64", limit)
+            ]
+        )
+        
+        query_job = bq_client.query(query, job_config=job_config)
+        results = list(query_job.result())
+        return [dict(row) for row in results]
+
+    except Exception as e:
+        logging.error(f"Error in fetch_dodgers_player_stats: {e}")
+        return []
+
+
+def fetch_dodgers_player_stats_by_opponent(opponent_team: str, limit: int = 100) -> list:
+    """
+    Fetches player statistics from Dodgers games against a specific opponent.
+
+    Args:
+        opponent_team (str): The name of the opponent team
+        limit (int, optional): Maximum number of records to return. Defaults to 100.
+
+    Returns:
+        list: A list of dictionaries containing player statistics
+    """
+    try:
+        query = """
+        SELECT
+            ps.player_id,
+            r.full_name,
+            ps.at_bats,
+            ps.hits,
+            ps.home_runs,
+            ps.rbi,
+            ps.walks,
+            ps.strikeouts,
+            ps.batting_average,
+            ps.on_base_percentage,
+            ps.slugging_percentage
+        FROM
+            `gem-rush-007.dodgers_mlb_data_2024.player_stats` AS ps
+        JOIN 
+            `gem-rush-007.dodgers_mlb_data_2024.roster` AS r
+            ON ps.player_id = r.player_id
+        INNER JOIN 
+            `gem-rush-007.dodgers_mlb_data_2024.games` AS g 
+            ON ps.game_id = g.game_id
+        WHERE
+            (g.home_team_id = 119 OR g.away_team_id = 119)
+            AND ((g.home_team_name = @opponent_team) OR (g.away_team_name = @opponent_team))
+        ORDER BY 
+            g.official_date DESC
+        LIMIT @limit
+        """
+
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("opponent_team", "STRING", opponent_team),
+                bigquery.ScalarQueryParameter("limit", "INT64", limit)
+            ]
+        )
+        
+        query_job = bq_client.query(query, job_config=job_config)
+        results = list(query_job.result())
+        return [dict(row) for row in results]
+
+    except Exception as e:
+        logging.error(f"Error in fetch_dodgers_player_stats_by_opponent: {e}")
+        return []
+
+def fetch_dodgers_player_stats_by_game_type(game_type: str, limit: int = 100) -> list:
+    """
+    Fetches player statistics from Dodgers games of a specific type (R for Regular Season, P for Postseason, etc.).
+
+    Args:
+        game_type (str): The type of game (R, P, etc.)
+        limit (int, optional): Maximum number of records to return. Defaults to 100.
+
+    Returns:
+        list: A list of dictionaries containing player statistics
+    """
+    try:
+        query = """
+        SELECT
+            ps.player_id,
+            r.full_name,
+            ps.at_bats,
+            ps.hits,
+            ps.home_runs,
+            ps.rbi,
+            ps.walks,
+            ps.strikeouts,
+            ps.batting_average,
+            ps.on_base_percentage,
+            ps.slugging_percentage
+        FROM
+            `gem-rush-007.dodgers_mlb_data_2024.player_stats` AS ps
+        JOIN 
+            `gem-rush-007.dodgers_mlb_data_2024.roster` AS r
+            ON ps.player_id = r.player_id
+        INNER JOIN 
+            `gem-rush-007.dodgers_mlb_data_2024.games` AS g 
+            ON ps.game_id = g.game_id
+        WHERE
+            (g.home_team_id = 119 OR g.away_team_id = 119)
+            AND g.game_type = @game_type
+        ORDER BY 
+            g.official_date DESC
+        LIMIT @limit
+        """
+
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("game_type", "STRING", game_type),
+                bigquery.ScalarQueryParameter("limit", "INT64", limit)
+            ]
+        )
+        
+        query_job = bq_client.query(query, job_config=job_config)
+        results = list(query_job.result())
+        return [dict(row) for row in results]
+
+    except Exception as e:
+        logging.error(f"Error in fetch_dodgers_player_stats_by_game_type: {e}")
+        return []
+
+def fetch_dodgers_plays(limit: int = 100) -> list:
+    """
+    Fetches plays from all Dodgers games.
+
+    Args:
+        limit (int, optional): Maximum number of plays to return. Defaults to 100.
+
+    Returns:
+        list: A list of dictionaries containing play details including:
+              - play_id
+              - inning
+              - half_inning
+              - event
+              - event_type
+              - description
+              - rbi
+              - is_scoring_play
+              - batter_name
+              - pitcher_name
+              - start_time
+              - end_time
+    """
+    try:
+        query = """
+        SELECT
+            p.play_id,
+            p.inning,
+            p.half_inning,
+            p.event,
+            p.event_type,
+            p.description,
+            p.rbi,
+            p.is_scoring_play,
+            r_batter.full_name as batter_name,
+            r_pitcher.full_name as pitcher_name,
+            p.start_time,
+            p.end_time
+        FROM
+            `gem-rush-007.dodgers_mlb_data_2024.plays` AS p
+        LEFT JOIN 
+            `gem-rush-007.dodgers_mlb_data_2024.roster` as r_batter 
+            ON p.batter_id = r_batter.player_id
+        LEFT JOIN 
+            `gem-rush-007.dodgers_mlb_data_2024.roster` as r_pitcher 
+            ON p.pitcher_id = r_pitcher.player_id
+        INNER JOIN 
+            `gem-rush-007.dodgers_mlb_data_2024.games` AS g 
+            ON p.game_id = g.game_id
+        WHERE
+            g.home_team_id = 119 OR g.away_team_id = 119
+        ORDER BY 
+            g.official_date DESC, p.start_time ASC
+        LIMIT @limit
+        """
+
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("limit", "INT64", limit)
+            ]
+        )
+        
+        query_job = bq_client.query(query, job_config=job_config)
+        results = list(query_job.result())
+        return [dict(row) for row in results]
+
+    except Exception as e:
+        logging.error(f"Error in fetch_dodgers_plays: {e}")
+        return []
+
+
+
+def fetch_dodgers_plays_by_opponent(opponent_team: str, limit: int = 100) -> list:
+    """
+    Fetches plays from Dodgers games against a specific opponent.
+
+    Args:
+        opponent_team (str): The name of the opponent team
+        limit (int, optional): Maximum number of plays to return. Defaults to 100.
+
+    Returns:
+        list: A list of dictionaries containing play details including:
+              - play_id
+              - inning
+              - half_inning
+              - event
+              - event_type
+              - description
+              - rbi
+              - is_scoring_play
+              - batter_name
+              - pitcher_name
+              - start_time
+              - end_time
+    """
+    try:
+        query = """
+        SELECT
+            p.play_id,
+            p.inning,
+            p.half_inning,
+            p.event,
+            p.event_type,
+            p.description,
+            p.rbi,
+            p.is_scoring_play,
+            r_batter.full_name as batter_name,
+            r_pitcher.full_name as pitcher_name,
+            p.start_time,
+            p.end_time
+        FROM
+            `gem-rush-007.dodgers_mlb_data_2024.plays` AS p
+        LEFT JOIN 
+            `gem-rush-007.dodgers_mlb_data_2024.roster` as r_batter 
+            ON p.batter_id = r_batter.player_id
+        LEFT JOIN 
+            `gem-rush-007.dodgers_mlb_data_2024.roster` as r_pitcher 
+            ON p.pitcher_id = r_pitcher.player_id
+        INNER JOIN 
+            `gem-rush-007.dodgers_mlb_data_2024.games` AS g 
+            ON p.game_id = g.game_id
+        WHERE
+            (g.home_team_id = 119 OR g.away_team_id = 119)
+            AND ((g.home_team_name = @opponent_team) OR (g.away_team_name = @opponent_team))
+        ORDER BY 
+            g.official_date DESC, p.start_time ASC
+        LIMIT @limit
+        """
+
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("opponent_team", "STRING", opponent_team),
+                bigquery.ScalarQueryParameter("limit", "INT64", limit)
+            ]
+        )
+        
+        query_job = bq_client.query(query, job_config=job_config)
+        results = list(query_job.result())
+        return [dict(row) for row in results]
+
+    except Exception as e:
+        logging.error(f"Error in fetch_dodgers_plays_by_opponent: {e}")
+        return []
+
+def fetch_dodgers_plays_by_game_type(game_type: str, limit: int = 100) -> list:
+    """
+    Fetches plays from Dodgers games of a specific type (R for Regular Season, P for Postseason, etc.).
+
+    Args:
+        game_type (str): The type of game (R, P, etc.)
+        limit (int, optional): Maximum number of plays to return. Defaults to 100.
+
+    Returns:
+        list: A list of dictionaries containing play details including:
+              - play_id
+              - inning
+              - half_inning
+              - event
+              - event_type
+              - description
+              - rbi
+              - is_scoring_play
+              - batter_name
+              - pitcher_name
+              - start_time
+              - end_time
+    """
+    try:
+        query = """
+        SELECT
+            p.play_id,
+            p.inning,
+            p.half_inning,
+            p.event,
+            p.event_type,
+            p.description,
+            p.rbi,
+            p.is_scoring_play,
+            r_batter.full_name as batter_name,
+            r_pitcher.full_name as pitcher_name,
+            p.start_time,
+            p.end_time
+        FROM
+            `gem-rush-007.dodgers_mlb_data_2024.plays` AS p
+        LEFT JOIN 
+            `gem-rush-007.dodgers_mlb_data_2024.roster` as r_batter 
+            ON p.batter_id = r_batter.player_id
+        LEFT JOIN 
+            `gem-rush-007.dodgers_mlb_data_2024.roster` as r_pitcher 
+            ON p.pitcher_id = r_pitcher.player_id
+        INNER JOIN 
+            `gem-rush-007.dodgers_mlb_data_2024.games` AS g 
+            ON p.game_id = g.game_id
+        WHERE
+            (g.home_team_id = 119 OR g.away_team_id = 119)
+            AND g.game_type = @game_type
+        ORDER BY 
+            g.official_date DESC, p.start_time ASC
+        LIMIT @limit
+        """
+
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("game_type", "STRING", game_type),
+                bigquery.ScalarQueryParameter("limit", "INT64", limit)
+            ]
+        )
+        
+        query_job = bq_client.query(query, job_config=job_config)
+        results = list(query_job.result())
+        return [dict(row) for row in results]
+
+    except Exception as e:
+        logging.error(f"Error in fetch_dodgers_plays_by_game_type: {e}")
+        return []
+
+
+
+def fetch_dodgers_games_by_opponent(opponent_team: str = 'New York Yankees', limit: int = 2) -> list:
+    """
+    Fetches Dodgers games against a specific opponent.
+
+    Args:
+        opponent_team (str, optional): Name of the opponent team. Defaults to 'New York Yankees'.
+        limit (int, optional): Number of most recent games to return. Defaults to 2.
+
+    Returns:
+        list: A list of dictionaries containing game information including:
+              - game_id
+              - official_date
+              - home_team_id
+              - home_team_name
+              - away_team_id
+              - away_team_name
+              - home_score
+              - away_score
+              - venue_name
+              - status
+              - dodgers_win
+              - dodgers_margin
+
+    Raises:
+        ValueError: If invalid parameters are provided.
+        BigQueryError: If there's an issue with the BigQuery execution.
+        Exception: For other unexpected errors.
+    """
+    try:
+        # Input validation
+        if not isinstance(limit, int) or limit <= 0:
+            raise ValueError("limit must be a positive integer")
+        if not isinstance(opponent_team, str) or not opponent_team.strip():
+            raise ValueError("opponent_team must be a non-empty string")
+
+        # Build the query
+        query = """
+        SELECT
+            game_id,
+            official_date,
+            home_team_id,
+            home_team_name,
+            away_team_id,
+            away_team_name,
+            home_score,
+            away_score,
+            venue_name,
+            status,
+            dodgers_win,
+            dodgers_margin
+        FROM
+            `gem-rush-007.dodgers_mlb_data_2024.games`
+        WHERE
+            (home_team_id = 119 OR away_team_id = 119)
+            AND ((home_team_name = @opponent_team) OR (away_team_name = @opponent_team))
+        ORDER BY official_date DESC
+        LIMIT @limit
+        """
+
+        # Set up query parameters
+        query_params = [
+            bigquery.ScalarQueryParameter("limit", "INT64", limit),
+            bigquery.ScalarQueryParameter("opponent_team", "STRING", opponent_team)
+        ]
+
+        # Configure and execute query
+        job_config = bigquery.QueryJobConfig(query_parameters=query_params)
+        bq_client = bigquery.Client()
+        query_job = bq_client.query(query, job_config=job_config)
+        
+        return process_game_results(query_job)
+
+    except Exception as e:
+        logging.error(f"Unexpected error in fetch_dodgers_games_by_opponent: {e}")
+        raise
+    except exceptions.BadRequest as e:
+        logging.error(f"Invalid query or bad request: {e}")
+        raise
+    
+    except exceptions.Forbidden as e:
+        logging.error(f"Permission denied: {e}")
+        raise
+    
+    except exceptions.GoogleAPIError as e:
+        logging.error(f"BigQuery API error: {e}")
+        raise
+
+    except Exception as e:
+        logging.error(f"Unexpected error in fetch_dodgers_games: {e}")
+        raise
+
+def fetch_dodgers_games_by_type(game_type: str = 'R', limit: int = 2) -> list:
+    """
+    Fetches Dodgers games by game type.
+
+    Args:
+        game_type (str, optional): Type of game ('R' for Regular Season, 'L' for League Championship, 
+                                 'D' for Division Series, 'W' for World Series, etc.). 
+                                 Defaults to 'R'.
+        limit (int, optional): Number of most recent games to return. Defaults to 2.
+
+    Returns:
+        list: A list of dictionaries containing game information including:
+              - game_id
+              - official_date
+              - home_team_id
+              - home_team_name
+              - away_team_id
+              - away_team_name
+              - home_score
+              - away_score
+              - venue_name
+              - status
+              - dodgers_win
+              - dodgers_margin
+
+    Raises:
+        ValueError: If invalid parameters are provided.
+        BigQueryError: If there's an issue with the BigQuery execution.
+        Exception: For other unexpected errors.
+    """
+    try:
+        # Input validation
+        if not isinstance(limit, int) or limit <= 0:
+            raise ValueError("limit must be a positive integer")
+        if not isinstance(game_type, str) or not game_type.strip():
+            raise ValueError("game_type must be a non-empty string")
+
+        # Build the query
+        query = """
+        SELECT
+            game_id,
+            official_date,
+            home_team_id,
+            home_team_name,
+            away_team_id,
+            away_team_name,
+            home_score,
+            away_score,
+            venue_name,
+            status,
+            dodgers_win,
+            dodgers_margin
+        FROM
+            `gem-rush-007.dodgers_mlb_data_2024.games`
+        WHERE
+            (home_team_id = 119 OR away_team_id = 119)
+            AND game_type = @game_type
+        ORDER BY official_date DESC
+        LIMIT @limit
+        """
+
+        # Set up query parameters
+        query_params = [
+            bigquery.ScalarQueryParameter("limit", "INT64", limit),
+            bigquery.ScalarQueryParameter("game_type", "STRING", game_type)
+        ]
+
+        # Configure and execute query
+        job_config = bigquery.QueryJobConfig(query_parameters=query_params)
+        bq_client = bigquery.Client()
+        query_job = bq_client.query(query, job_config=job_config)
+        
+        return process_game_results(query_job)
+
+    except Exception as e:
+        logging.error(f"Unexpected error in fetch_dodgers_games_by_type: {e}")
+        raise
+    except exceptions.BadRequest as e:
+        logging.error(f"Invalid query or bad request: {e}")
+        raise
+    
+    except exceptions.Forbidden as e:
+        logging.error(f"Permission denied: {e}")
+        raise
+    
+    except exceptions.GoogleAPIError as e:
+        logging.error(f"BigQuery API error: {e}")
+        raise
+    
+    except Exception as e:
+        logging.error(f"Unexpected error in fetch_dodgers_games: {e}")
+        raise
+
+def process_game_results(query_job):
+    """
+    Helper function to process query results and validate data.
+
+    Args:
+        query_job: BigQuery query job result
+
+    Returns:
+        list: Processed and validated results
+    """
+    results = []
+    for row in query_job:
+        row_dict = dict(row)
+        
+        # Convert date object to string if present
+        if row_dict.get('official_date'):
+            row_dict['official_date'] = row_dict['official_date'].strftime('%Y-%m-%d')
+        
+        # Validate required fields
+        required_fields = ['game_id', 'official_date']
+        if not all(row_dict.get(field) for field in required_fields):
+            logging.warning(f"Skipping record with missing required information: {row_dict.get('game_id', 'Unknown Game')}")
+            continue
+        
+        # Validate numeric fields
+        numeric_fields = ['home_score', 'away_score', 'dodgers_margin']
+        for field in numeric_fields:
+            try:
+                if row_dict.get(field) is not None:
+                    row_dict[field] = int(row_dict[field])
+            except (TypeError, ValueError) as e:
+                logging.warning(f"Invalid {field} data for game {row_dict['game_id']}: {e}")
+                row_dict[field] = None
+        
+        results.append(row_dict)
+    
+    if not results:
+        logging.warning("Query returned no results")
+        return []
+    
+    return results
+    
+
+
+def fetch_player_game_stats(game_ids: list = None, player_ids: list = None) -> list:
+    """
+    Fetches player statistics for specified games and/or players.
+
+    Args:
+        game_ids (list, optional): List of game IDs to filter by. If None, no game filtering.
+        player_ids (list, optional): List of player IDs to filter by. If None, all players included.
+
+    Returns:
+        list: A list of dictionaries containing player stats including:
+              - player_id
+              - full_name
+              - at_bats
+              - hits
+              - home_runs
+              - rbi
+              - walks
+              - strikeouts
+              - batting_average
+              - on_base_percentage
+              - slugging_percentage
+
+    Raises:
+        ValueError: If invalid parameters are provided.
+        BigQueryError: If there's an issue with the BigQuery execution.
+        Exception: For other unexpected errors.
+    """
+    try:
+        # Input validation
+        if game_ids is not None and not isinstance(game_ids, list):
+            raise ValueError("game_ids must be a list or None")
+        if player_ids is not None and not isinstance(player_ids, list):
+            raise ValueError("player_ids must be a list or None")
+
+        # Build the base query
+        query = """
+        SELECT
+            ps.player_id,
+            r.full_name,
+            ps.at_bats,
+            ps.hits,
+            ps.home_runs,
+            ps.rbi,
+            ps.walks,
+            ps.strikeouts,
+            ps.batting_average,
+            ps.on_base_percentage,
+            ps.slugging_percentage
+        FROM
+            `gem-rush-007.dodgers_mlb_data_2024.player_stats` AS ps
+        JOIN 
+            `gem-rush-007.dodgers_mlb_data_2024.roster` AS r
+        ON 
+            ps.player_id = r.player_id
+        """
+
+
+        # Initialize parameters list and WHERE conditions
+        query_params = []
+        where_conditions = []
+
+        # Add game_id filter if provided
+        if game_ids:
+            where_conditions.append("ps.game_id IN UNNEST(@game_id_list)")
+            query_params.append(
+                bigquery.ArrayQueryParameter("game_id_list", "STRING", game_ids)
+            )
+
+        # Add player_id filter if provided
+        if player_ids:
+            where_conditions.append("ps.player_id IN UNNEST(@player_id_list)")
+            query_params.append(
+                bigquery.ArrayQueryParameter("player_id_list", "STRING", player_ids)
+            )
+
+        # Add WHERE clause if there are any conditions
+        if where_conditions:
+            query += "\nWHERE " + " AND ".join(where_conditions)
+        # Configure the query
+        job_config = bigquery.QueryJobConfig(query_parameters=query_params)
+        
+        # Initialize BigQuery client
+        bq_client = bigquery.Client()
+        
+        # Execute the query
+        query_job = bq_client.query(query, job_config=job_config)
+        
+        # Fetch and process the results with validation
+        results = []
+        for row in query_job:
+            row_dict = dict(row)
+            
+            # Validate required fields
+            required_fields = ['player_id', 'full_name']
+            if not all(row_dict.get(field) for field in required_fields):
+                logging.warning(f"Skipping record with missing required information: {row_dict.get('player_id', 'Unknown Player')}")
+                continue
+            
+            # Validate numeric fields
+            numeric_fields = [
+                'at_bats', 'hits', 'home_runs', 'rbi', 'walks', 'strikeouts',
+                'batting_average', 'on_base_percentage', 'slugging_percentage'
+            ]
+            
+            for field in numeric_fields:
+                try:
+                    if row_dict.get(field) is not None:
+                        if field in ['batting_average', 'on_base_percentage', 'slugging_percentage']:
+                            row_dict[field] = float(row_dict[field])
+                        else:
+                            row_dict[field] = int(row_dict[field])
+                except (TypeError, ValueError) as e:
+                    logging.warning(f"Invalid {field} data for player {row_dict['full_name']}: {e}")
+                    row_dict[field] = None
+            
+            results.append(row_dict)
+        
+        if not results:
+            logging.warning("Query returned no results")
+            return []
+        
+        return results
+    
+    except exceptions.NotFound as e:
+        logging.error(f"Table or dataset not found: {e}")
+        raise
+    
+    except exceptions.BadRequest as e:
+        logging.error(f"Invalid query or bad request: {e}")
+        raise
+    
+    except exceptions.Forbidden as e:
+        logging.error(f"Permission denied: {e}")
+        raise
+    
+    except exceptions.GoogleAPIError as e:
+        logging.error(f"BigQuery API error: {e}")
+        raise
+    
+    except Exception as e:
+        logging.error(f"Unexpected error in fetch_player_game_stats: {e}")
+        raise
+
+
 def compare_rookie_season_to_veteran(rookie_name: str, veteran_name: str, stat_categories: str = ''):
     """
     Compares a rookie's stats to a veteran player's stats in their early career.
@@ -3522,10 +4298,10 @@ def generate_mlb_analysis(contents: str) -> str:
                     compare_rookie_season_to_veteran,
                     identify_undervalued_players,
                     predict_matchup_outcome_by_stats,
-                    fetch_game_results,
+                  
                     fetch_team_performance_by_venue,
-                    fetch_upcoming_games,
-                    fetch_player_season_stats,
+                   
+                   
                     fetch_top_batting_stats,
                     fetch_top_exit_velocity,
                     fetch_top_players_by_xwoba,
@@ -3539,6 +4315,15 @@ def generate_mlb_analysis(contents: str) -> str:
                     fetch_top_players_by_walk_rate, 
                     fetch_top_players_by_launch_angle,  
                     fetch_roster_players,
+                    fetch_dodgers_games,
+                    fetch_dodgers_games_by_opponent,
+                    fetch_dodgers_games_by_type,
+                    fetch_dodgers_plays,
+                    fetch_dodgers_plays_by_opponent,
+                    fetch_dodgers_plays_by_game_type,
+                    fetch_dodgers_player_stats,
+                    fetch_dodgers_player_stats_by_game_type,
+                    fetch_dodgers_player_stats_by_opponent,
                 ],
                 temperature=0,  # Ensure deterministic output for consistent results
             ),

@@ -367,8 +367,8 @@ def main():
     logger.info("Starting Dodgers data processing...")
     
     try:
-        # Process last 10 games
-        process_recent_games(DATASET_ID, n_games=10)
+        # Process last 50 games
+        process_recent_games(DATASET_ID, n_games=50)
         logger.info("Successfully completed data processing and upload")
         
     except Exception as e:
