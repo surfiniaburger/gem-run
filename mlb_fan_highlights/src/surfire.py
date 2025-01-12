@@ -4113,8 +4113,7 @@ def fetch_player_plays(player_name: str, limit: int = 100) -> list:
             p.description,
             p.start_time,
             g.official_date as game_date,
-            r.full_name as batter_name,
-            r.full_name as pitcher_name
+         
         FROM
             `gem-rush-007.dodgers_mlb_data_2024.plays` AS p
         INNER JOIN 
@@ -4122,10 +4121,8 @@ def fetch_player_plays(player_name: str, limit: int = 100) -> list:
             ON p.game_id = g.game_id
         INNER JOIN
             `gem-rush-007.dodgers_mlb_data_2024.roster` AS r
-            ON p.batter_id = r.player_id
-        INNER JOIN
-            `gem-rush-007.dodgers_mlb_data_2024.roster` AS r_pitcher
-            ON p.pitcher_id = r.player_id
+            ON (p.batter_id = r.player_id OR p.pitcher_id = r.player_id)
+        
         WHERE
             r.full_name = @player_name
             AND (g.home_team_id = 119 OR g.away_team_id = 119)
@@ -4144,7 +4141,18 @@ def fetch_player_plays(player_name: str, limit: int = 100) -> list:
         
         query_job = bq_client.query(query, job_config=job_config)
         results = list(query_job.result())
-        return [dict(row) for row in results]
+
+        # Convert the results to dictionaries and format datetime objects
+        formatted_results = []
+        for row in results:
+            row_dict = dict(row)
+            # Convert datetime objects to ISO format strings
+            if 'start_time' in row_dict and row_dict['start_time']:
+                row_dict['start_time'] = row_dict['start_time'].isoformat()
+            if 'game_date' in row_dict and row_dict['game_date']:
+                row_dict['game_date'] = row_dict['game_date'].isoformat()
+            formatted_results.append(row_dict)
+        return formatted_results
 
     except Exception as e:
         logging.error(f"Error in fetch_player_plays: {e}")
