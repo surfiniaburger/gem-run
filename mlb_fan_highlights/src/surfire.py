@@ -4091,6 +4091,180 @@ def fetch_player_game_stats(game_ids: list = None, player_ids: list = None) -> l
         raise
 
 
+def fetch_player_plays(player_name: str, limit: int = 100) -> list:
+    """
+    Fetches play-by-play data for a specific player from Dodgers games.
+
+    Args:
+        player_name (str): Full name of the player
+        limit (int, optional): Maximum number of plays to return. Defaults to 100.
+
+    Returns:
+        list: A list of dictionaries containing play-by-play data
+    """
+    try:
+        query = """
+        SELECT
+            p.play_id,
+            p.inning,
+            p.half_inning,
+            p.event,
+            p.event_type,
+            p.description,
+            p.start_time,
+            g.official_date as game_date,
+            r.full_name as batter_name,
+            r.full_name as pitcher_name
+        FROM
+            `gem-rush-007.dodgers_mlb_data_2024.plays` AS p
+        INNER JOIN 
+            `gem-rush-007.dodgers_mlb_data_2024.games` AS g 
+            ON p.game_id = g.game_id
+        INNER JOIN
+            `gem-rush-007.dodgers_mlb_data_2024.roster` AS r
+            ON p.batter_id = r.player_id
+        INNER JOIN
+            `gem-rush-007.dodgers_mlb_data_2024.roster` AS r_pitcher
+            ON p.pitcher_id = r.player_id
+        WHERE
+            r.full_name = @player_name
+            AND (g.home_team_id = 119 OR g.away_team_id = 119)
+        ORDER BY 
+            g.official_date DESC,
+            p.start_time ASC
+        LIMIT @limit
+        """
+
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("player_name", "STRING", player_name),
+                bigquery.ScalarQueryParameter("limit", "INT64", limit)
+            ]
+        )
+        
+        query_job = bq_client.query(query, job_config=job_config)
+        results = list(query_job.result())
+        return [dict(row) for row in results]
+
+    except Exception as e:
+        logging.error(f"Error in fetch_player_plays: {e}")
+        return []
+
+def fetch_player_plays_by_opponent(player_name: str, opponent_team: str, limit: int = 100) -> list:
+    """
+    Fetches play-by-play data for a specific player against a specific opponent.
+
+    Args:
+        player_name (str): Full name of the player
+        opponent_team (str): Name of the opponent team
+        limit (int, optional): Maximum number of plays to return. Defaults to 100.
+
+    Returns:
+        list: A list of dictionaries containing play-by-play data
+    """
+    try:
+        query = """
+        SELECT
+            p.play_id,
+            p.inning,
+            p.half_inning,
+            p.event,
+            p.event_type,
+            p.description,
+            p.start_time,
+            g.official_date as game_date
+        FROM
+            `gem-rush-007.dodgers_mlb_data_2024.plays` AS p
+        INNER JOIN 
+            `gem-rush-007.dodgers_mlb_data_2024.games` AS g 
+            ON p.game_id = g.game_id
+        INNER JOIN
+            `gem-rush-007.dodgers_mlb_data_2024.roster` AS r
+            ON p.batter_id = r.player_id
+        WHERE
+            r.full_name = @player_name
+            AND (g.home_team_id = 119 OR g.away_team_id = 119)
+            AND ((g.home_team_name = @opponent_team) OR (g.away_team_name = @opponent_team))
+        ORDER BY 
+            g.official_date DESC,
+            p.start_time ASC
+        LIMIT @limit
+        """
+
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("player_name", "STRING", player_name),
+                bigquery.ScalarQueryParameter("opponent_team", "STRING", opponent_team),
+                bigquery.ScalarQueryParameter("limit", "INT64", limit)
+            ]
+        )
+        
+        query_job = bq_client.query(query, job_config=job_config)
+        results = list(query_job.result())
+        return [dict(row) for row in results]
+
+    except Exception as e:
+        logging.error(f"Error in fetch_player_plays_by_opponent: {e}")
+        return []
+
+def fetch_player_plays_by_game_type(player_name: str, game_type: str, limit: int = 100) -> list:
+    """
+    Fetches play-by-play data for a specific player from games of a specific type.
+
+    Args:
+        player_name (str): Full name of the player
+        game_type (str): Type of game (R for Regular Season, P for Postseason, etc.)
+        limit (int, optional): Maximum number of plays to return. Defaults to 100.
+
+    Returns:
+        list: A list of dictionaries containing play-by-play data
+    """
+    try:
+        query = """
+        SELECT
+            p.play_id,
+            p.inning,
+            p.half_inning,
+            p.event,
+            p.event_type,
+            p.description,
+            p.start_time,
+            g.official_date as game_date
+        FROM
+            `gem-rush-007.dodgers_mlb_data_2024.plays` AS p
+        INNER JOIN 
+            `gem-rush-007.dodgers_mlb_data_2024.games` AS g 
+            ON p.game_id = g.game_id
+        INNER JOIN
+            `gem-rush-007.dodgers_mlb_data_2024.roster` AS r
+            ON p.batter_id = r.player_id
+        WHERE
+            r.full_name = @player_name
+            AND (g.home_team_id = 119 OR g.away_team_id = 119)
+            AND g.game_type = @game_type
+        ORDER BY 
+            g.official_date DESC,
+            p.start_time ASC
+        LIMIT @limit
+        """
+
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("player_name", "STRING", player_name),
+                bigquery.ScalarQueryParameter("game_type", "STRING", game_type),
+                bigquery.ScalarQueryParameter("limit", "INT64", limit)
+            ]
+        )
+        
+        query_job = bq_client.query(query, job_config=job_config)
+        results = list(query_job.result())
+        return [dict(row) for row in results]
+
+    except Exception as e:
+        logging.error(f"Error in fetch_player_plays_by_game_type: {e}")
+        return []
+
+
 def compare_rookie_season_to_veteran(rookie_name: str, veteran_name: str, stat_categories: str = ''):
     """
     Compares a rookie's stats to a veteran player's stats in their early career.
@@ -4263,7 +4437,8 @@ def predict_matchup_outcome_by_stats(home_team_name: str, away_team_name: str, s
         logging.error(f"Error in predict_matchup_outcome_by_stats: {e}")
         return []
 
-def generate_mlb_analysis(contents: str) -> str:
+
+def generate_mlb_analysis(contents: str) -> tuple[str, str]:
     """
     Generates MLB analysis using Gemini with specified tools.
 
@@ -4271,10 +4446,10 @@ def generate_mlb_analysis(contents: str) -> str:
         contents: The prompt or question for the analysis.
 
     Returns:
-        The text response from the Gemini model.  Returns an empty string if there's an error.
+        A tuple containing (text_response, iframe_html) where iframe_html may be None.
     """
-    client = genai.Client(vertexai=True, project="gem-rush-007", location="us-central1")  # Initialize client only once
-    MODEL_ID = "gemini-2.0-flash-exp"  # Define Model ID only once
+    client = genai.Client(vertexai=True, project="gem-rush-007", location="us-central1")
+    MODEL_ID = "gemini-2.0-flash-exp"
 
     try:
         response = client.models.generate_content(
@@ -4282,6 +4457,7 @@ def generate_mlb_analysis(contents: str) -> str:
             contents=contents,
             config=GenerateContentConfig(
                 tools=[
+                    # ... existing tools ...
                     get_player_highest_ops,
                     analyze_position_slugging,
                     analyze_team_strikeouts,
@@ -4314,6 +4490,7 @@ def generate_mlb_analysis(contents: str) -> str:
                     fetch_top_players_by_edge_percent,  
                     fetch_top_players_by_walk_rate, 
                     fetch_top_players_by_launch_angle,  
+                    
                     fetch_roster_players,
                     fetch_dodgers_games,
                     fetch_dodgers_games_by_opponent,
@@ -4324,11 +4501,16 @@ def generate_mlb_analysis(contents: str) -> str:
                     fetch_dodgers_player_stats,
                     fetch_dodgers_player_stats_by_game_type,
                     fetch_dodgers_player_stats_by_opponent,
+                    fetch_player_plays_by_game_type,
+                    fetch_player_plays_by_opponent,
+                    fetch_player_plays,
                 ],
-                temperature=0,  # Ensure deterministic output for consistent results
+                temperature=0,
             ),
         )
+
         return response.text
+
     except Exception as e:
         print(f"An error occurred: {e}")
-        return ""
+        return "", None
