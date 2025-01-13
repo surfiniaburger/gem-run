@@ -16,7 +16,6 @@ from google.api_core import exceptions
 from typing import List, Dict, Union, Optional
 from datetime import datetime
 import urllib.parse
-import json
 
 
 logging.basicConfig(
@@ -4548,64 +4547,14 @@ def generate_mlb_analysis(contents: str) -> dict:
 
     # Structure the prompt to explicitly request tool usage
     structured_prompt = f"""
-     You are a sophisticated sports podcast script generator. Your task is to create compelling scripts based on user preferences and data. Here is the breakdown of your responsibilities:
-
-    **Step 1: Understand User Preferences**
-        *   Carefully analyze the user's request provided in the "Question" field. This will include information about the team, player, the time frame, type of game (if specified), and any specific aspects they want to be covered.
-        *   Identify what type of data is most important to the user (e.g. player highlights, team game summaries, game analysis).
-        * Determine which information to highlight based on the data provided and user preferences.
-    **Step 2: Data Fetching and Analysis**
-        *   Based on your understanding of the user preferences, select the most appropriate tools from the available list to fetch the necessary data. Use multiple tools if necessary to gather all the information.
-        *   Analyze the fetched data, focus on identifying key events, stats, and interesting information for the podcast script (e.g., home runs, close plays, wins, losses, player performance).
-        *   If user select games from the past, make sure to use this as the primary source of information.
-        *  If the user specifies a particular player, then prioritize their performance in the game.
-    **Step 3: Multi-Speaker Script Generation**
-        *   Create a script with multiple speakers. At a minimum you must use the following three speakers.
-            *   **Play-by-play Announcer:** This speaker describes the events as they happen. Use a neutral and clear voice.
-            *   **Color Commentator:** This speaker provides analysis and insights. Use a voice that is more insightful and analytical.
-            *   **Player Quotes (Simulated):** This speaker uses simulated quotes from the players involved in a play. Use a more casual and personal tone for this speaker.
-        *  Structure the script so that for each key event you utilize all three speakers to convey the information.
-        *    Include the following information in your script for each play, if available.
-            *   Player names
-            *   Team names
-            *   Inning
-            *   Description of what happened
-            *    Other relevant stats if available
-        *   Use transitions between plays to make it sound like a coherent narrative.
-        *  Keep a neutral tone and try to avoid personal opinion unless specified by the user.
-    **Step 4: Language Support**
-        *  Translate the final script and any associated text using the provided translation tools to support the users preferred language.
-        *   The language may or may not be specified by the user. If the language is not specified assume the user speaks English.
-        *   All components of the script should be translated including any text based data you will use to generate the podcast.
-    **Step 5: Audio Generation Output**
-        *   Format the final output so that it contains the speaker, and the content.
-        *   For example:
-         ```
-             [
-              {
-              "speaker": "Play-by-play Announcer",
-              "text": "Here's the pitch, swung on and a long drive..."
-              },
-              {
-              "speaker": "Color Commentator",
-               "text": "Unbelievable power from [Player Name] there, that was a no doubter."
-               },
-             {
-               "speaker": "Player Quotes",
-               "text": "I knew I was gonna hit that out of the park!"
-               }
-              ]
-           ```
-        *    Provide all the output in a single json array.
-        
-    **Example Input:**
-        Question: Create a podcast for the last 2 games of the dodgers and include Mookie Betts highlights in spanish.
-
-    **Your Output must be a Json array, with each item containing the "speaker" and "text". Your output must also contain the translated script for each section in spanish**
-
+    To answer this question, please:
+    1. Use the appropriate tools to fetch and analyze the data
+    2. Analyze the data and provide insights
+    3. Include both a text analysis and visualization provided by looker studio
+    
     Question: {contents}
-
-    Remember to prioritize all the steps, and ensure you generate a compelling and informative podcast script.
+    
+     Remember to use the fetch_player_plays function, , fetch_team_performance_by_venue, etc. to get the data and generate a visualization link.
     """
 
     try:
@@ -4664,16 +4613,12 @@ def generate_mlb_analysis(contents: str) -> dict:
             ),
         )
 
-        try:
-            text_response = json.loads(response.text)
-            return text_response
-        except json.JSONDecodeError as e:
-             logging.error(f"JSON Decode Error in generate_mlb_analysis : {e} , response was {response.text}")
-             return {
-                "error": f"JSON Decode Error in generate_mlb_analysis : {e}, please check the logs"
-            }
+        text_response = response.text
+        return text_response
+
     except Exception as e:
         logging.error(f"Error in generate_mlb_analysis: {e}")
         return {
-            "error": f"An error occurred: {e}",
+            "text": str(e),
+            "iframe_url": None
         }
