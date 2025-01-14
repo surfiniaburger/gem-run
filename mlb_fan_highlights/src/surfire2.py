@@ -4310,6 +4310,49 @@ def fetch_player_plays_by_opponent(player_name: str, opponent_team: str, limit: 
         logging.error(f"Error in fetch_player_plays_by_opponent: {e}")
         return []
 
+def fetch_all_mlb_teams(limit: int = 1000) -> list:
+    """
+    Fetches all MLB teams from the teams table.
+
+    Args:
+        limit (int, optional): Maximum number of teams to return. Defaults to 1000.
+
+    Returns:
+        list: A list of dictionaries containing team information
+    """
+    try:
+        query = """
+        SELECT
+        
+            name,
+            
+        FROM
+            `gem-rush-007.dodgers_mlb_data_2024.teams`
+        WHERE
+            active = true
+            AND season = 2024
+        ORDER BY 
+            league_name,
+            division_name,
+            team_name
+        LIMIT @limit
+        """
+
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("limit", "INT64", limit)
+            ]
+        )
+        
+        query_job = bq_client.query(query, job_config=job_config)
+        results = list(query_job.result())
+        return [dict(row) for row in results]
+
+    except Exception as e:
+        logging.error(f"Error in fetch_all_mlb_teams: {e}")
+        return []
+
+
 def fetch_player_plays_by_game_type(player_name: str, game_type: str, limit: int = 100) -> list:
     """
     Fetches play-by-play data for a specific player from games of a specific type.
@@ -4550,11 +4593,9 @@ def generate_mlb_analysis(contents: str) -> dict:
     To answer this question, please:
     1. Use the appropriate tools to fetch and analyze the data
     2. Analyze the data and provide insights
-    3. Include both a text analysis and visualization provided by looker studio
-    
+   
     Question: {contents}
-    
-     Remember to use the fetch_player_plays function, , fetch_team_performance_by_venue, etc. to get the data and generate a visualization link.
+
     """
 
     try:
@@ -4608,6 +4649,7 @@ def generate_mlb_analysis(contents: str) -> dict:
                     fetch_player_plays_by_game_type,
                     fetch_player_plays_by_opponent,
                     fetch_player_by_name,
+                    fetch_all_mlb_teams,
                 ],
                 temperature=0,
             ),
