@@ -3,6 +3,53 @@ from surfire2 import generate_mlb_analysis
 from pod import generate_mlb_podcast_with_audio
 from pall import generate_spanish_audio
 from jap import generate_japanese_audio
+from firebase_config import firebase_admin
+from firebase_admin import auth
+
+def create_user_profile(uid, email):
+    """Creates a user profile in firebase, if one does not exist"""
+    try:
+        # Get the user, if user does not exist, this will throw exception
+        user = auth.get_user(uid)
+        print(f"user found, user profile : {user}")
+    except auth.UserNotFoundError:
+        # If not create the user profile, with email as additional information
+        user = auth.create_user(uid=uid, email = email)
+        print(f"user created, user profile : {user}")
+    except Exception as e:
+        print(f"error while creating user profile {e}")
+
+def sign_in_or_sign_up():
+    """Displays sign in or sign up form."""
+    
+    auth_type = st.radio("Sign In or Sign Up", ["Sign In", "Sign Up"])
+    email = st.text_input("Email")
+    password = st.text_input("Password", type="password")
+
+    if st.button(auth_type):
+            try:
+                if auth_type == "Sign In":
+                  user = auth.get_user_by_email(email)
+                  auth_user = auth.get_user(user.uid)
+                  # Handle sign in logic (not directly within Streamlit, this is done in firebase, we just need to verify user)
+                  st.session_state['user'] = auth_user
+                  st.success(f"Signed in successfully as {email}")
+                  create_user_profile(user.uid, email)
+                else:
+                  user = auth.create_user(email=email, password=password)
+                  auth_user = auth.get_user(user.uid)
+                  # Handle sign up logic (not directly within Streamlit, this is done in firebase, we just need to verify user)
+                  st.session_state['user'] = auth_user
+                  st.success(f"Signed up successfully as {email}")
+                  create_user_profile(user.uid, email)
+
+            except auth.EmailAlreadyExistsError:
+                 st.error(f"Email already exist. Please sign in")
+            except auth.UserNotFoundError:
+                 st.error(f"No user with this email found. Please sign up or check your email")
+            except Exception as e:
+                st.error(f"An error occurred: {str(e)}")
+
 @st.cache_data(ttl=3600)  # Cache for 1 hour
 def get_mlb_teams():
     """Fetch all current MLB teams using the analysis engine."""
@@ -39,6 +86,13 @@ def main():
     st.title("MLB Podcast Generator")
     st.write("Customize your MLB podcast by selecting your preferences below.")
 
+    # If a user does not exist in the session, create authentication
+    if 'user' not in st.session_state:
+      sign_in_or_sign_up()
+      return
+    else:
+      st.write(f"Logged in as: {st.session_state['user'].email}")
+    
     # Fetch MLB teams
     mlb_teams = get_mlb_teams()
     
@@ -107,7 +161,6 @@ def main():
             )
             
             try:
-
                 # Select the appropriate audio generation function based on language
                 if selected_language.lower() == "english":
                     audio_file = generate_mlb_podcast_with_audio(
@@ -115,13 +168,13 @@ def main():
                         output_filename="mlb_podcast.mp3"
                     )
                 elif selected_language.lower() == "japanese":
-                    audio_file = generate_japanese_audio(
+                     audio_file = generate_japanese_audio(
                         contents,
                         language=selected_language,
                         output_filename="mlb_podcast.mp3"
                     )
                 elif selected_language.lower() == "spanish":
-                    audio_file = generate_spanish_audio(
+                     audio_file = generate_spanish_audio(
                         contents,
                         language=selected_language,
                         output_filename="mlb_podcast.mp3"
