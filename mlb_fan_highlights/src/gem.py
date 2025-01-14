@@ -1,6 +1,6 @@
 import streamlit as st
 import streamlit.components.v1 as components
-from surfire import generate_mlb_analysis
+from surfire2 import generate_mlb_analysis
 import logging
 
 # Configure logging
