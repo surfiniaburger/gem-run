@@ -4541,24 +4541,26 @@ def predict_matchup_outcome_by_stats(home_team_name: str, away_team_name: str, s
         logging.error(f"Error in predict_matchup_outcome_by_stats: {e}")
         return []
 
-def generate_mlb_analysis(contents: str) -> dict:
+def generate_mlb_podcasts(contents: str) -> dict:
    
     client = genai.Client(vertexai=True, project="gem-rush-007", location="us-central1")
     MODEL_ID = "gemini-2.0-flash-exp"
 
     # Structure the prompt to explicitly request tool usage
     structured_prompt = f"""
-     You are a sophisticated sports podcast script generator. Your task is to create compelling scripts based on user preferences and data. Here is the breakdown of your responsibilities:
+         You are a sophisticated sports podcast script generator. Your task is to create compelling scripts based on user preferences and data. Here is the breakdown of your responsibilities:
 
     **Step 1: Understand User Preferences**
         *   Carefully analyze the user's request provided in the "Question" field. This will include information about the team, player, the time frame, type of game (if specified), and any specific aspects they want to be covered.
         *   Identify what type of data is most important to the user (e.g. player highlights, team game summaries, game analysis).
         * Determine which information to highlight based on the data provided and user preferences.
+
     **Step 2: Data Fetching and Analysis**
         *   Based on your understanding of the user preferences, select the most appropriate tools from the available list to fetch the necessary data. Use multiple tools if necessary to gather all the information.
         *   Analyze the fetched data, focus on identifying key events, stats, and interesting information for the podcast script (e.g., home runs, close plays, wins, losses, player performance).
         *   If user select games from the past, make sure to use this as the primary source of information.
         *  If the user specifies a particular player, then prioritize their performance in the game.
+
     **Step 3: Multi-Speaker Script Generation**
         *   Create a script with multiple speakers. At a minimum you must use the following three speakers.
             *   **Play-by-play Announcer:** This speaker describes the events as they happen. Use a neutral and clear voice.
@@ -4573,35 +4575,34 @@ def generate_mlb_analysis(contents: str) -> dict:
             *    Other relevant stats if available
         *   Use transitions between plays to make it sound like a coherent narrative.
         *  Keep a neutral tone and try to avoid personal opinion unless specified by the user.
+
     **Step 4: Language Support**
         *  Translate the final script and any associated text using the provided translation tools to support the users preferred language.
         *   The language may or may not be specified by the user. If the language is not specified assume the user speaks English.
         *   All components of the script should be translated including any text based data you will use to generate the podcast.
+
+    
     **Step 5: Audio Generation Output**
         *   Format the final output so that it contains the speaker, and the content.
+        *   Your response must be a valid JSON array without any markdown formatting or code blocks.
         *   For example:
-         ```
-             [
-              {
-              "speaker": "Play-by-play Announcer",
-              "text": "Here's the pitch, swung on and a long drive..."
-              },
-              {
-              "speaker": "Color Commentator",
-               "text": "Unbelievable power from [Player Name] there, that was a no doubter."
-               },
-             {
-               "speaker": "Player Quotes",
-               "text": "I knew I was gonna hit that out of the park!"
-               }
-              ]
-           ```
-        *    Provide all the output in a single json array.
+            [
+                {{
+                    "speaker": "Play-by-play Announcer",
+                    "text": "Here's the pitch, swung on and a long drive..."
+                }},
+                {{
+                    "speaker": "Color Commentator",
+                    "text": "Unbelievable power from [Player Name] there, that was a no doubter."
+                }},
+                {{
+                    "speaker": "Player Quotes",
+                    "text": "I knew I was gonna hit that out of the park!"
+                }}
+            ]
+        *    Provide all the output in a single json array without any markdown formatting.
         
-    **Example Input:**
-        Question: Create a podcast for the last 2 games of the dodgers and include Mookie Betts highlights in spanish.
-
-    **Your Output must be a Json array, with each item containing the "speaker" and "text". Your output must also contain the translated script for each section in spanish**
+    **Your Output must be a pure JSON array without any markdown code blocks or formatting. Just the raw JSON.**
 
     Question: {contents}
 
@@ -4664,13 +4665,30 @@ def generate_mlb_analysis(contents: str) -> dict:
             ),
         )
 
+
         try:
-            text_response = json.loads(response.text)
+            # Clean the response text by removing markdown code block syntax
+            text = response.text
+            if text.startswith("```"):
+                # Find the first newline after the opening ```
+                start_idx = text.find("\n") + 1
+                # Find the last ``` and exclude everything after it
+                end_idx = text.rfind("```")
+                if end_idx == -1:  # If no closing ```, just remove the opening
+                    text = text[start_idx:]
+                else:
+                    text = text[start_idx:end_idx].strip()
+            
+            # Remove any "json" or other language identifier that might appear
+            text = text.replace("json\n", "")
+            
+            # Parse the cleaned JSON
+            text_response = json.loads(text)
             return text_response
         except json.JSONDecodeError as e:
-             logging.error(f"JSON Decode Error in generate_mlb_analysis : {e} , response was {response.text}")
-             return {
-                "error": f"JSON Decode Error in generate_mlb_analysis : {e}, please check the logs"
+            logging.error(f"JSON Decode Error in generate_mlb_analysis: {e}, response was {text}")
+            return {
+                "error": f"JSON Decode Error in generate_mlb_analysis: {e}, please check the logs"
             }
     except Exception as e:
         logging.error(f"Error in generate_mlb_analysis: {e}")

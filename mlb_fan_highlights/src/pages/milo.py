@@ -1,121 +1,152 @@
 import streamlit as st
-from surfire import generate_mlb_analysis  # Assuming your generate_mlb_analysis is in surfire.py
-import json
+from surfire2 import generate_mlb_analysis
+from surfire import generate_mlb_podcasts
+@st.cache_data(ttl=3600)  # Cache for 1 hour
+def get_mlb_teams():
+    """Fetch all current MLB teams using the analysis engine."""
+    prompt = "List all current MLB teams."
+    try:
+        analysis_result = generate_mlb_analysis(prompt)
+        # Assuming the result is a string with team names separated by commas
+        teams_list = analysis_result.split(':')[-1].strip()
+        # Handle the "and" in the list by replacing it with a comma
+        teams_list = teams_list.replace(' and ', ', ')
+        # Split and clean the list
+        return [team.strip() for team in teams_list.split(',') if team.strip()]
+    except Exception as e:
+        st.error(f"Error fetching teams: {str(e)}")
+        return []
+
+@st.cache_data(ttl=3600)  # Cache for 1 hour
+def get_players_for_team(team):
+    """Fetch active players for a selected team using the analysis engine."""
+    prompt = f"List all current players on the {team} roster."
+    try:
+        analysis_result = generate_mlb_analysis(prompt)
+        # Assuming the result is a string with player names separated by commas
+        players_list = analysis_result.split(':')[-1].strip()
+        # Handle the "and" in the list by replacing it with a comma
+        players_list = players_list.replace(' and ', ', ')
+        # Split and clean the list
+        return [player.strip() for player in players_list.split(',') if player.strip()]
+    except Exception as e:
+        st.error(f"Error fetching players: {str(e)}")
+        return []
 
 def main():
     st.title("MLB Podcast Generator")
     st.write("Customize your MLB podcast by selecting your preferences below.")
 
-    # --- User Input ---
-    with st.expander("Customize your podcast options"):
-          # Player Selection
-          player_options = [
-              "Shohei Ohtani",
-              "Mookie Betts",
-              "Freddie Freeman",
-              "Max Muncy",
-              "Will Smith",
-              "Gavin Lux",
-          ]  # Replace with a dynamic list if needed
-          selected_players = st.multiselect("Select players (optional)", player_options,default=[])
+    # Fetch MLB teams
+    mlb_teams = get_mlb_teams()
+    
+    if not mlb_teams:
+        st.error("Unable to fetch MLB teams. Please try again later.")
+        return
 
-          # Timeframe Selection
-          timeframe_options = ["Last game", "Last X games", "Specific date", "Date Range"]
-          selected_timeframe = st.selectbox("Select Timeframe", timeframe_options)
+    with st.expander("Customize your podcast options", expanded=True):
+        # Primary team selection
+        selected_team = st.selectbox("Select Primary Team", [""] + mlb_teams)
 
-          timeframe_value = None
-          if selected_timeframe == "Last X games":
-               timeframe_value = st.number_input("Enter number of games", min_value=1, step=1)
-          elif selected_timeframe == "Specific date":
-               timeframe_value = st.date_input("Select date")
-          elif selected_timeframe == "Date Range":
-               col1, col2 = st.columns(2)
-               with col1:
-                   start_date = st.date_input("Start Date")
-               with col2:
-                    end_date = st.date_input("End Date")
-               timeframe_value = (start_date, end_date)
+        # Player Selection (dependent on team selection)
+        selected_players = []
+        if selected_team:
+            available_players = get_players_for_team(selected_team)
+            if available_players:
+                selected_players = st.multiselect(
+                    "Select players to highlight (optional)",
+                    available_players
+                )
+            else:
+                st.warning(f"Unable to fetch players for {selected_team}.")
 
+        # Timeframe Selection
+        timeframe_options = ["Last game", "Last X games", "Specific date", "Date Range"]
+        selected_timeframe = st.selectbox("Select Timeframe", timeframe_options)
 
-          # Game Type Selection
-          game_type_options = [
-              "Any",
-              "Regular season",
-              "World Series",
-               "Spring Training",
-          ]  # Add additional game types
-          selected_game_type = st.selectbox("Select Game Type", game_type_options)
+        timeframe_value = None
+        if selected_timeframe == "Last X games":
+            timeframe_value = st.number_input("Enter number of games", min_value=1, max_value=162, step=1)
+        elif selected_timeframe == "Specific date":
+            timeframe_value = st.date_input("Select date")
+        elif selected_timeframe == "Date Range":
+            col1, col2 = st.columns(2)
+            with col1:
+                start_date = st.date_input("Start Date")
+            with col2:
+                end_date = st.date_input("End Date")
+            timeframe_value = (start_date, end_date)
 
-          # Team Selection
-          team_options = [
-               "Any",
-               "New York Yankees",
-               "Boston Red Sox",
-               "San Francisco Giants",
-              "Los Angeles Angels",
-               "New York Mets",
+        # Game Type Selection
+        game_type_options = ["Any", "Regular season", "World Series", "Spring Training"]
+        selected_game_type = st.selectbox("Select Game Type", game_type_options)
 
-          ]
-          selected_team = st.selectbox("Select Opponent Team (optional)", team_options)
+        # Opponent Team Selection
+        opponent_teams = [team for team in mlb_teams if team != selected_team]
+        selected_opponent = st.selectbox("Select Opponent Team (optional)", ["Any"] + opponent_teams)
 
-          #Language selection
-          language_options = ["English", "Spanish", "Japanese"]
-          selected_language = st.selectbox("Select preferred language", language_options)
+        # Language selection
+        language_options = ["English", "Spanish", "Japanese"]
+        selected_language = st.selectbox("Select preferred language", language_options)
 
-    # --- Generate Podcast Button ---
-    if st.button("Generate Podcast Script"):
+    # Generate Podcast Button
+    if not selected_team:
+        st.warning("Please select a team to generate a podcast.")
+    elif st.button("Generate Podcast Script"):
         with st.spinner("Generating podcast script..."):
             contents = construct_prompt(
+                selected_team,
                 selected_players,
                 selected_timeframe,
                 timeframe_value,
                 selected_game_type,
-                selected_team,
+                selected_opponent,
                 selected_language
             )
             try:
-                result = generate_mlb_analysis(contents)
+                result = generate_mlb_podcasts(contents)
                 if isinstance(result, dict) and "error" in result:
-                  st.error(f"Error: {result['error']}")
+                    st.error(f"Error: {result['error']}")
                 else:
-                   st.success("Podcast script generated successfully!")
-                   st.json(result)
-
+                    st.success("Podcast script generated successfully!")
+                    st.json(result)
             except Exception as e:
-                 st.error(f"An error occurred: {e}")
+                st.error(f"An error occurred: {str(e)}")
 
-def construct_prompt(selected_players, selected_timeframe, timeframe_value, selected_game_type, selected_team,selected_language):
+def construct_prompt(selected_team, selected_players, selected_timeframe, 
+                    timeframe_value, selected_game_type, selected_opponent, 
+                    selected_language):
     """Constructs the prompt for the podcast agent based on user inputs."""
-    prompt_parts = []
+    prompt_parts = [f"Generate a podcast about the {selected_team}."]
 
-    # Team and Player
+    # Players
     if selected_players:
         prompt_parts.append(f"Include highlights for players: {', '.join(selected_players)}.")
 
     # Timeframe
     if selected_timeframe == "Last game":
-        prompt_parts.append("Generate a podcast for the last game played by the Dodgers.")
+        prompt_parts.append(f"Cover the last game played by the {selected_team}.")
     elif selected_timeframe == "Last X games":
-         prompt_parts.append(f"Generate a podcast for the last {timeframe_value} games played by the Dodgers.")
+        prompt_parts.append(f"Cover the last {timeframe_value} games played by the {selected_team}.")
     elif selected_timeframe == "Specific date":
-         prompt_parts.append(f"Generate a podcast for the Dodgers game on {timeframe_value}.")
+        prompt_parts.append(f"Cover the {selected_team} game on {timeframe_value}.")
     elif selected_timeframe == "Date Range":
-         prompt_parts.append(f"Generate a podcast for the Dodgers games between {timeframe_value[0]} and {timeframe_value[1]}.")
-
+        prompt_parts.append(
+            f"Cover the {selected_team} games between {timeframe_value[0]} and {timeframe_value[1]}."
+        )
 
     # Game Type
     if selected_game_type != "Any":
         prompt_parts.append(f"Focus on {selected_game_type.lower()} games.")
 
     # Opponent Team
-    if selected_team != "Any":
-        prompt_parts.append(f"Specifically include games against {selected_team}.")
+    if selected_opponent != "Any":
+        prompt_parts.append(f"Specifically include games against {selected_opponent}.")
 
-    #Language support
-    prompt_parts.append(f"Translate the podcast script to {selected_language}.")
+    # Language
+    prompt_parts.append(f"Generate the podcast script in {selected_language}.")
 
-    full_prompt = " ".join(prompt_parts)
-    return full_prompt
+    return " ".join(prompt_parts)
 
 if __name__ == "__main__":
     main()
