@@ -113,11 +113,13 @@ class MLBPodcastSynthesizer:
         
         return output_filename
 
-def generate_mlb_podcast_with_audio(contents: str, language: str = "English", output_filename: str = "mlb_podcast.mp3") -> str:
+def generate_mlb_podcast_with_audio(contents: str, language: str, output_filename: str = "mlb_podcast.mp3") -> str:
     """
     Main function to generate and synthesize MLB podcast with language support
     """
     try:
+        # Ensure output filename is absolute and has no empty directory components
+        output_filename = os.path.abspath(output_filename)
         # Generate the podcast script
         script_json = generate_mlb_podcasts(contents)
         print(script_json)
@@ -125,6 +127,11 @@ def generate_mlb_podcast_with_audio(contents: str, language: str = "English", ou
         # Check for errors in script generation
         if isinstance(script_json, dict) and "error" in script_json:
             raise Exception(f"Script generation error: {script_json['error']}")
+        
+        # Handle Spanish podcasts differently
+        if language == "Spanish":
+            from spanish_handler import create_spanish_podcast
+            return create_spanish_podcast(script_json, output_filename)
         
         # Initialize the synthesizer with the selected language
         synthesizer = MLBPodcastSynthesizer()

@@ -11,7 +11,7 @@ def create_audio_for_speaker(text, speaker_config):
     input_text = texttospeech.SynthesisInput(text=text)
     
     voice = texttospeech.VoiceSelectionParams(
-        language_code="es-ES",  # Spanish
+        language_code="ja-JP",  # Spanish
         name=speaker_config["voice"],
         ssml_gender=texttospeech.SsmlVoiceGender[speaker_config["gender"]]
     )
@@ -32,21 +32,21 @@ def create_podcast(script_data, output_filename):
     
     # Speaker configurations
     speaker_configs = {
-        "Narrador de jugada por jugada": {
-            "voice": "es-ES-Neural2-B",  # Male voice for play-by-play
-            "gender": "MALE",
-            "speed": 1.1  # Slightly faster for exciting moments
+       "実況アナウンサー": {
+           "voice": "ja-JP-Neural2-B",  # Male voice for play-by-play
+           "gender": "FEMALE",
+           "speed": 1.1  # Slightly faster for exciting moments
         },
-        "Comentarista de color": {
-            "voice": "es-ES-Neural2-C",  
-            "gender": "FEMALE",
-            "speed": 1.0
+       "解説者": {
+           "voice": "ja-JP-Neural2-C",  
+           "gender": "MALE",
+           "speed": 1.0  # Normal speed for analysis
         },
-        "Citas de Jugadores": {
-            "voice": "es-ES-Neural2-D",  # Different voice for player quotes
-            "gender": "FEMALE",
-            "speed": 0.95  # Slightly slower for quotes
-        }
+       "選手の声": {
+           "voice": "ja-JP-Neural2-D",  # Different voice for player quotes
+           "gender": "MALE",
+           "speed": 0.95  # Slightly slower for quotes
+       }
     }
     
     combined_audio = b""
@@ -78,13 +78,13 @@ def create_podcast(script_data, output_filename):
 
 def list_available_voices():
     client = texttospeech.TextToSpeechClient()
-    voices = client.list_voices(language_code="es-ES")
+    voices = client.list_voices(language_code="ja-JP")
     for voice in voices.voices:
         print(f"Name: {voice.name}")
         print(f"Gender: {voice.ssml_gender}")
         print(f"Language codes: {voice.language_codes}\n")
 
-def generate_spanish_audio(contents: str, language: str, output_filename: str = "mlb_podcast.mp3") -> str:
+def generate_japanese_audio(contents: str, language: str, output_filename: str = "mlb_podcast.mp3") -> str:
     """
     Main function to generate and synthesize MLB podcast with language support
     """
@@ -109,4 +109,5 @@ def generate_spanish_audio(contents: str, language: str, output_filename: str = 
         
     except Exception as e:
         raise Exception(f"Failed to generate script: {str(e)}")
+
 

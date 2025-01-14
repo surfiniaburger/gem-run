@@ -1,7 +1,8 @@
 import streamlit as st
 from surfire2 import generate_mlb_analysis
 from pod import generate_mlb_podcast_with_audio
-
+from pall import generate_spanish_audio
+from jap import generate_japanese_audio
 @st.cache_data(ttl=3600)  # Cache for 1 hour
 def get_mlb_teams():
     """Fetch all current MLB teams using the analysis engine."""
@@ -104,15 +105,34 @@ def main():
                 selected_opponent,
                 selected_language
             )
+            
             try:
-                audio_file = generate_mlb_podcast_with_audio(
-                contents,
-                language=selected_language,  # Pass the selected language
-                output_filename="mlb_podcast.mp3"
-            )
+
+                # Select the appropriate audio generation function based on language
+                if selected_language.lower() == "english":
+                    audio_file = generate_mlb_podcast_with_audio(
+                        contents,
+                        output_filename="mlb_podcast.mp3"
+                    )
+                elif selected_language.lower() == "japanese":
+                    audio_file = generate_japanese_audio(
+                        contents,
+                        language=selected_language,
+                        output_filename="mlb_podcast.mp3"
+                    )
+                elif selected_language.lower() == "spanish":
+                    audio_file = generate_spanish_audio(
+                        contents,
+                        language=selected_language,
+                        output_filename="mlb_podcast.mp3"
+                    )
+                else:
+                  raise ValueError(f"Unsupported language: {selected_language}")
+                
                 st.audio(audio_file)
+            
             except Exception as e:
-                st.error(f"An error occurred: {str(e)}")
+                st.error(f"An error occurred while generating {selected_language} audio: {str(e)}")
 
 def construct_prompt(selected_team, selected_players, selected_timeframe, 
                     timeframe_value, selected_game_type, selected_opponent, 
