@@ -1,6 +1,7 @@
 import streamlit as st
 from surfire2 import generate_mlb_analysis
-from surfire import generate_mlb_podcasts
+from pod import generate_mlb_podcast_with_audio
+
 @st.cache_data(ttl=3600)  # Cache for 1 hour
 def get_mlb_teams():
     """Fetch all current MLB teams using the analysis engine."""
@@ -92,8 +93,8 @@ def main():
     # Generate Podcast Button
     if not selected_team:
         st.warning("Please select a team to generate a podcast.")
-    elif st.button("Generate Podcast Script"):
-        with st.spinner("Generating podcast script..."):
+    elif st.button("Generate Podcast"):
+        with st.spinner("Generating podcast..."):
             contents = construct_prompt(
                 selected_team,
                 selected_players,
@@ -104,12 +105,12 @@ def main():
                 selected_language
             )
             try:
-                result = generate_mlb_podcasts(contents)
-                if isinstance(result, dict) and "error" in result:
-                    st.error(f"Error: {result['error']}")
-                else:
-                    st.success("Podcast script generated successfully!")
-                    st.json(result)
+                audio_file = generate_mlb_podcast_with_audio(
+                contents,
+                language=selected_language,  # Pass the selected language
+                output_filename="mlb_podcast.mp3"
+            )
+                st.audio(audio_file)
             except Exception as e:
                 st.error(f"An error occurred: {str(e)}")
 
