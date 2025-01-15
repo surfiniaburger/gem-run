@@ -3,6 +3,7 @@ from google.cloud import texttospeech_v1beta1 as texttospeech
 import json
 import os
 from surfire import generate_mlb_podcasts
+from spanish_audio_mixer import SpanishMLBAudioMixer
 
 def create_audio_for_speaker(text, speaker_config):
     """Creates audio for a single piece of dialogue."""
@@ -84,29 +85,95 @@ def list_available_voices():
         print(f"Gender: {voice.ssml_gender}")
         print(f"Language codes: {voice.language_codes}\n")
 
-def generate_spanish_audio(contents: str, language: str, output_filename: str = "mlb_podcast.mp3") -> str:
+def generate_spanish_audio(contents: str, language: str, output_filename: str = "spanish_mlb_podcast.mp3") -> str:
     """
-    Main function to generate and synthesize MLB podcast with language support
+    Generates a Spanish MLB podcast with sound effects and music mixing.
+    
+    Args:
+        contents: Input text/data for generating the podcast script
+        output_filename: Desired name for the output audio file
+        
+    Returns:
+        str: Path to the generated podcast file
     """
     try:
-        # Ensure output filename is absolute and has no empty directory components
-        output_filename = os.path.abspath(output_filename)
-        # Generate the podcast script
-        script_json = generate_mlb_podcasts(contents)
-        print(script_json)
+        # Speaker configurations for Spanish voices
+        speaker_configs = {
+            "Narrador de jugada por jugada": {
+                "voice": "es-ES-Neural2-B",
+                "gender": "MALE",
+                "speed": 1.1
+            },
+            "Comentarista de color": {
+                "voice": "es-ES-Neural2-C",
+                "gender": "FEMALE",
+                "speed": 1.0
+            },
+            "Citas de Jugadores": {
+                "voice": "es-ES-Neural2-D",
+                "gender": "FEMALE",
+                "speed": 0.95
+            }
+        }
+
+        # Initialize TTS client
+        client = texttospeech.TextToSpeechClient()
         
-        # Check for errors in script generation
+        # Generate podcast script
+        script_json = generate_mlb_podcasts(contents)
+        
         if isinstance(script_json, dict) and "error" in script_json:
             raise Exception(f"Script generation error: {script_json['error']}")
         
-        output_filename = "podcast_output/full_podcast.mp3"
-        podcast_file = create_podcast(script_json, output_filename)
-        print(f"Created podcast: {podcast_file}")
- 
+        # Generate voice segments
+        voice_segments = []
+        for segment in script_json:
+            speaker = segment['speaker']
+            text = segment['text'].strip()
+            
+            if speaker in speaker_configs and text:
+                print(f"Processing segment: {speaker}")
+                
+                # Create input for text-to-speech
+                input_text = texttospeech.SynthesisInput(text=text)
+                
+                voice = texttospeech.VoiceSelectionParams(
+                    language_code="es-ES",
+                    name=speaker_configs[speaker]["voice"],
+                    ssml_gender=texttospeech.SsmlVoiceGender[speaker_configs[speaker]["gender"]]
+                )
+                
+                audio_config = texttospeech.AudioConfig(
+                    audio_encoding=texttospeech.AudioEncoding.MP3,
+                    speaking_rate=speaker_configs[speaker]["speed"]
+                )
+                
+                # Generate audio for segment
+                response = client.synthesize_speech(
+                    request={"input": input_text, "voice": voice, "audio_config": audio_config}
+                )
+                
+                voice_segments.append({
+                    "audio": response.audio_content,
+                    "text": text,
+                    "speaker": speaker
+                })
         
+        # Initialize the audio mixer
+        mixer = SpanishMLBAudioMixer()
         
-        return podcast_file
+        # Mix the audio with effects and background
+        mixed_audio = mixer.mix_podcast_audio(voice_segments)
+        
+        # Ensure output directory exists
+        os.makedirs("podcast_output", exist_ok=True)
+        output_path = os.path.join("podcast_output", output_filename)
+        
+        # Save the final mixed audio
+        final_path = mixer.save_mixed_audio(mixed_audio, output_path)
+        
+        print(f"Successfully created Spanish MLB podcast: {final_path}")
+        return final_path
         
     except Exception as e:
-        raise Exception(f"Failed to generate script: {str(e)}")
-
+        raise Exception(f"Failed to generate Spanish MLB podcast: {str(e)}")
