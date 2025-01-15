@@ -5,7 +5,7 @@ import json
 from typing import List, Dict
 from surfire import generate_mlb_podcasts
 import logging
-
+from audio_mixer import MLBAudioMixer
 logging.basicConfig(level=logging.DEBUG)
 
 class MLBPodcastSynthesizer:
@@ -91,29 +91,32 @@ class MLBPodcastSynthesizer:
              return b''
 
     def create_podcast(self, script: List[Dict[str, str]], output_filename: str) -> str:
-        """Creates a multi-speaker podcast from the generated script."""
-        combined_audio = b""
+       """Creates a multi-speaker podcast from the generated script with enhanced audio."""
+       voice_segments = []
+    
+       for segment in script:
+           speaker = segment["speaker"]
+           text = segment["text"]
         
-        for segment in script:
-            speaker = segment["speaker"]
-            text = segment["text"]
+           if speaker in self.voices:
+               voice_name = self.voices[speaker]
+               audio_content = self.synthesize_speech(text, voice_name)
             
-            if speaker in self.voices:
-                voice_name = self.voices[speaker]
-                audio_content = self.synthesize_speech(text, voice_name)
-                combined_audio += audio_content
-                
-                # Add a short pause between segments
-                pause = self.synthesize_speech(" ", voice_name)
-                combined_audio += pause
-        
-        # Write the final audio file
-        with open(output_filename, "wb") as out:
-            out.write(combined_audio)
-        
-        return output_filename
+               voice_segments.append({
+                "speaker": speaker,
+                "text": text,
+                "audio": audio_content
+                })
+        # Initialize audio mixer
+       mixer = MLBAudioMixer()
+    
+       # Mix all audio elements
+       mixed_audio = mixer.mix_podcast_audio(voice_segments)
+    
+       # Save final podcast
+       return mixer.save_mixed_audio(mixed_audio, output_filename)
 
-def generate_mlb_podcast_with_audio(contents: str, language: str, output_filename: str = "mlb_podcast.mp3") -> str:
+def generate_mlb_podcast_with_audio(contents: str, language: str = "English", output_filename: str = "mlb_podcast.mp3") -> str:
     """
     Main function to generate and synthesize MLB podcast with language support
     """
