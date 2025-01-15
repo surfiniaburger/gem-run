@@ -3,6 +3,7 @@ from google.cloud import texttospeech_v1beta1 as texttospeech
 import json
 import os
 from surfire import generate_mlb_podcasts
+from japanese_audio_mixer import JapaneseMLBAudioMixer
 
 def create_audio_for_speaker(text, speaker_config):
     """Creates audio for a single piece of dialogue."""
@@ -11,7 +12,7 @@ def create_audio_for_speaker(text, speaker_config):
     input_text = texttospeech.SynthesisInput(text=text)
     
     voice = texttospeech.VoiceSelectionParams(
-        language_code="ja-JP",  # Spanish
+        language_code="ja-JP",  # Japanese
         name=speaker_config["voice"],
         ssml_gender=texttospeech.SsmlVoiceGender[speaker_config["gender"]]
     )
@@ -84,28 +85,67 @@ def list_available_voices():
         print(f"Gender: {voice.ssml_gender}")
         print(f"Language codes: {voice.language_codes}\n")
 
+
 def generate_japanese_audio(contents: str, language: str, output_filename: str = "mlb_podcast.mp3") -> str:
     """
     Main function to generate and synthesize MLB podcast with language support
     """
     try:
-        # Ensure output filename is absolute and has no empty directory components
         output_filename = os.path.abspath(output_filename)
-        # Generate the podcast script
         script_json = generate_mlb_podcasts(contents)
         print(script_json)
         
-        # Check for errors in script generation
         if isinstance(script_json, dict) and "error" in script_json:
             raise Exception(f"Script generation error: {script_json['error']}")
+        # Speaker configurations
+        speaker_configs = {
+            "実況アナウンサー": {
+              "voice": "ja-JP-Neural2-B",  # Male voice for play-by-play
+              "gender": "FEMALE",
+              "speed": 1.1  # Slightly faster for exciting moments
+            },
+           "解説者": {
+              "voice": "ja-JP-Neural2-C",  
+              "gender": "MALE",
+              "speed": 1.0  # Normal speed for analysis
+            },
+           "選手の声": {
+              "voice": "ja-JP-Neural2-D",  # Different voice for player quotes
+              "gender": "MALE",
+              "speed": 0.95  # Slightly slower for quotes
+            }
+        }
+            
+        # First create the individual voice segments
+        voice_segments = []
+        for segment in script_json:
+            speaker = segment['speaker']
+            text = segment['text'].strip()
+
+            
+            
+            if speaker in speaker_configs and text:
+                print(f"Processing segment: {speaker}")
+                audio_content = create_audio_for_speaker(text, speaker_configs[speaker])
+                voice_segments.append({
+                    "audio": audio_content,
+                    "text": text,
+                    "speaker": speaker
+                })
         
-        output_filename = "podcast_output/full_podcast.mp3"
-        podcast_file = create_podcast(script_json, output_filename)
-        print(f"Created podcast: {podcast_file}")
- 
+        # Initialize the audio mixer
+        mixer = JapaneseMLBAudioMixer()
         
+        # Mix the audio with effects
+        mixed_audio = mixer.mix_podcast_audio(voice_segments)
         
-        return podcast_file
+        # Save the final output
+        output_path = "podcast_output/full_podcast.mp3"
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        final_path = mixer.save_mixed_audio(mixed_audio, output_path)
+        
+        print(f"Created podcast: {final_path}")
+        return final_path
         
     except Exception as e:
         raise Exception(f"Failed to generate script: {str(e)}")

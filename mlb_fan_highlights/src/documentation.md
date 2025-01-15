@@ -154,7 +154,7 @@ Functions:
 firestore
 firebase
 BigQuery
-Vertex AI
+Gemini 2.0
 Text to Speech
 Looker Studio
 
