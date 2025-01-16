@@ -112,7 +112,7 @@ class JapaneseMLBAudioMixer:
         final_mix = final_mix.append(outro, crossfade=self.INTRO_FADE)
         final_mix = self._compress_audio(final_mix)
         
-        return final_mix
+        return self.to_bytes(final_mix)
 
     def _add_pause(self, audio: AudioSegment, duration: int) -> AudioSegment:
         return audio + AudioSegment.silent(duration=duration)
@@ -134,8 +134,17 @@ class JapaneseMLBAudioMixer:
     def _normalize_audio(self, audio: AudioSegment) -> AudioSegment:
         return normalize(audio)
 
-    def save_mixed_audio(self, mixed_audio: AudioSegment, 
-                        output_path: str, 
-                        format: str = "mp3") -> str:
-        mixed_audio.export(output_path, format=format)
-        return output_path
+
+    def to_bytes(self, mixed_audio: AudioSegment) -> bytes:
+        """Converts the mixed AudioSegment to bytes."""
+        
+        # Export the AudioSegment to a byte array in mp3 format
+        buffer = io.BytesIO()
+        mixed_audio.export(buffer, format="mp3")
+         # Get the bytes from the buffer
+        audio_bytes = buffer.getvalue()
+        
+        # Close the buffer
+        buffer.close()
+        
+        return audio_bytes

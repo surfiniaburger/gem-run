@@ -4,6 +4,10 @@ import json
 import os
 from surfire import generate_mlb_podcasts
 from spanish_audio_mixer import SpanishMLBAudioMixer
+import uuid
+from storage_utils import upload_audio_to_gcs
+from gcs_handler import GCSHandler
+
 
 def create_audio_for_speaker(text, speaker_config):
     """Creates audio for a single piece of dialogue."""
@@ -163,17 +167,15 @@ def generate_spanish_audio(contents: str, language: str, output_filename: str = 
         mixer = SpanishMLBAudioMixer()
         
         # Mix the audio with effects and background
-        mixed_audio = mixer.mix_podcast_audio(voice_segments)
+        audio_bytes = mixer.mix_podcast_audio(voice_segments)
         
-        # Ensure output directory exists
-        os.makedirs("podcast_output", exist_ok=True)
-        output_path = os.path.join("podcast_output", output_filename)
+        # Upload using the new GCS handler
         
-        # Save the final mixed audio
-        final_path = mixer.save_mixed_audio(mixed_audio, output_path)
+        key_file_path = "./gem-rush-007-a9765f2ada0e.json"  # Same path as your working command line example
+        gcs_handler = GCSHandler(key_file_path=key_file_path)
         
-        print(f"Successfully created Spanish MLB podcast: {final_path}")
-        return final_path
+        url = gcs_handler.upload_audio(audio_bytes, f"podcast-{uuid.uuid4()}.mp3")
+        return url        
         
     except Exception as e:
         raise Exception(f"Failed to generate Spanish MLB podcast: {str(e)}")

@@ -7,6 +7,8 @@ from surfire import generate_mlb_podcasts
 import logging
 from audio_mixer import MLBAudioMixer
 logging.basicConfig(level=logging.DEBUG)
+from gcs_handler import GCSHandler
+import uuid
 
 class MLBPodcastSynthesizer:
     def __init__(self, tts_location: str = "us"):
@@ -109,12 +111,16 @@ class MLBPodcastSynthesizer:
                 })
         # Initialize audio mixer
        mixer = MLBAudioMixer()
-    
-       # Mix all audio elements
-       mixed_audio = mixer.mix_podcast_audio(voice_segments)
-    
-       # Save final podcast
-       return mixer.save_mixed_audio(mixed_audio, output_filename)
+    # Mix the audio with effects and background
+       audio_bytes = mixer.mix_podcast_audio(voice_segments)
+        
+        # Upload using the new GCS handler
+        
+       key_file_path = "./gem-rush-007-a9765f2ada0e.json"  # Same path as your working command line example
+       gcs_handler = GCSHandler(key_file_path=key_file_path)
+        
+       url = gcs_handler.upload_audio(audio_bytes, f"podcast-{uuid.uuid4()}.mp3")
+       return url    
 
 def generate_mlb_podcast_with_audio(contents: str, language: str = "English", output_filename: str = "mlb_podcast.mp3") -> str:
     """
