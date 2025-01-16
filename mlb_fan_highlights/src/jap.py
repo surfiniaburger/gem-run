@@ -4,6 +4,8 @@ import json
 import os
 from surfire import generate_mlb_podcasts
 from japanese_audio_mixer import JapaneseMLBAudioMixer
+from gcs_handler import GCSHandler
+import uuid
 
 def create_audio_for_speaker(text, speaker_config):
     """Creates audio for a single piece of dialogue."""
@@ -136,16 +138,17 @@ def generate_japanese_audio(contents: str, language: str, output_filename: str =
         # Initialize the audio mixer
         mixer = JapaneseMLBAudioMixer()
         
-        # Mix the audio with effects
-        mixed_audio = mixer.mix_podcast_audio(voice_segments)
         
-        # Save the final output
-        output_path = "podcast_output/full_podcast.mp3"
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        final_path = mixer.save_mixed_audio(mixed_audio, output_path)
+        # Mix the audio with effects and background
+        audio_bytes = mixer.mix_podcast_audio(voice_segments)
         
-        print(f"Created podcast: {final_path}")
-        return final_path
+        # Upload using the new GCS handler
+        
+        key_file_path = "./gem-rush-007-a9765f2ada0e.json"  # Same path as your working command line example
+        gcs_handler = GCSHandler(key_file_path=key_file_path)
+        
+        url = gcs_handler.upload_audio(audio_bytes, f"podcast-{uuid.uuid4()}.mp3")
+        return url       
         
     except Exception as e:
         raise Exception(f"Failed to generate script: {str(e)}")

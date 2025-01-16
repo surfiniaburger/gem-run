@@ -3214,12 +3214,13 @@ def fetch_roster_players(limit: int = 1000) -> list:
 
 
 
-def fetch_player_by_name(player_name: str | list) -> list:
+
+def fetch_players_by_names(player_names: list) -> list:
     """
-    Fetches player image based on provided name(s).
+    Fetches player images based on provided list of names.
     
     Args:
-        player_name: Either a single player name (str) or list of names
+        player_names: List of player names
         
     Returns:
         list: List of dictionaries containing player info and image URLs
@@ -3233,36 +3234,18 @@ def fetch_player_by_name(player_name: str | list) -> list:
         FROM 
             `gem-rush-007.mlb_data.player_names`
         WHERE 
-            LOWER(player_name) = LOWER(@player_name)
+            LOWER(player_name) IN UNNEST(@player_names)
         """
         
-        # Handle both single name and list of names
-        if isinstance(player_name, list):
-            query = """
-            SELECT 
-                player_name,
-                team,
-                signed_url
-            FROM 
-                `gem-rush-007.mlb_data.player_names`
-            WHERE 
-                LOWER(player_name) IN UNNEST(@player_names)
-            """
-            job_config = bigquery.QueryJobConfig(
-                query_parameters=[
-                    bigquery.ArrayQueryParameter(
-                        "player_names", 
-                        "STRING", 
-                        [name.lower() for name in player_name]
-                    ),
-                ]
-            )
-        else:
-            job_config = bigquery.QueryJobConfig(
-                query_parameters=[
-                    bigquery.ScalarQueryParameter("player_name", "STRING", player_name.lower()),
-                ]
-            )
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ArrayQueryParameter(
+                    "player_names", 
+                    "STRING", 
+                    [name.lower() for name in player_names]
+                ),
+            ]
+        )
         
         bq_client = bigquery.Client()
         query_job = bq_client.query(query, job_config=job_config)
@@ -3276,11 +3259,10 @@ def fetch_player_by_name(player_name: str | list) -> list:
             })
             
         if not results:
-            logging.warning(f"No player found with name: {player_name}")
+            logging.warning(f"No players found with names: {player_names}")
             return []
             
         return results
-        
     
     except exceptions.NotFound as e:
         logging.error(f"Table or dataset not found: {e}")
@@ -3301,6 +3283,7 @@ def fetch_player_by_name(player_name: str | list) -> list:
     except Exception as e:
         logging.error(f"Error fetching player images: {e}")
         raise
+
 
 def fetch_dodgers_games() -> list:
     """
@@ -4648,7 +4631,6 @@ def generate_mlb_analysis(contents: str) -> dict:
                     fetch_dodgers_player_stats_by_opponent,
                     fetch_player_plays_by_game_type,
                     fetch_player_plays_by_opponent,
-                    fetch_player_by_name,
                     fetch_all_mlb_teams,
                 ],
                 temperature=0,
