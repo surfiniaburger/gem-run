@@ -15,9 +15,9 @@ class MLBAudioMixer:
         }
         
         self.background_music = {
-            "intro": AudioSegment.from_mp3("assets/music/intro.mp3"),
+            "intro": AudioSegment.from_mp3("assets/music/opener.mp3"),
             "highlight": AudioSegment.from_mp3("assets/music/highlight.mp3"),
-            "outro": AudioSegment.from_mp3("assets/music/outro.mp3")
+            "outro": AudioSegment.from_mp3("assets/music/opener.mp3")
         }
         
         # Refined volume levels
