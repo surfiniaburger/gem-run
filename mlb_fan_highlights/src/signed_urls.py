@@ -77,7 +77,8 @@ if __name__ == "__main__":
     expiration_days = 7
     
     # Verify credentials are set
-    credentials_path = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')
+    key_file_path = "./gem-rush-007-a9765f2ada0e.json" 
+    credentials_path = key_file_path
     if not credentials_path:
         print("GOOGLE_APPLICATION_CREDENTIALS environment variable not set")
         exit(1)
