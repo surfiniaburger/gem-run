@@ -287,7 +287,7 @@ async def main():
     try:
         # Set these environment variables before running
         os.environ['ALLOYDB_USER'] = 'postgres'  # Replace with actual user
-        os.environ['ALLOYDB_PASSWORD'] = 'A<1s8Eh,Kv3:000h'  # Replace with actual password
+        os.environ['ALLOYDB_PASSWORD'] = '<password>'  
         workflow = await create_player_embeddings_workflow(
             project_id="gem-rush-007",
             bucket_name="mlb-headshot",
@@ -297,7 +297,7 @@ async def main():
             database="player_headshots",
             log_level="INFO",  # Can be set to "DEBUG" for more detailed logs,
             db_user='postgres',
-            db_password='A<1s8Eh,Kv3:000hs'
+            db_password='<password>'
         )
         
         # Example: Find similar players for a specific headshot
