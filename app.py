@@ -121,7 +121,7 @@ class UserProfile:
      except Exception as e:
          st.error(f"Error while updating podcast url in user profile: {e}")
          return False
-
+     
 def handle_authentication(email, password, auth_type):
  """Enhanced authentication handler with detailed error handling"""
  try:
