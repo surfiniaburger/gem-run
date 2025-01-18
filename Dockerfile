@@ -28,4 +28,4 @@ WORKDIR /app/mlb_fan_highlights/src
 
 
 # Command to run the app
-CMD ["streamlit", "run", "gem.py", "--server.port=8080", "--server.address=0.0.0.0"]
+CMD ["streamlit", "run", "mlb_fan_highlights/src/gem.py", "--server.port=8080", "--server.address=0.0.0.0"]
