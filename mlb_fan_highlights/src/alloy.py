@@ -297,7 +297,7 @@ async def main():
             database="postgres",
             log_level="INFO",  # Can be set to "DEBUG" for more detailed logs,
             db_user='postgres',
-            db_password='<>'
+            db_password='<password>'
         )
         
         # Example: Find similar players for a specific headshot
