@@ -293,6 +293,14 @@ def main():
  st.title("MLB Podcast Generator")
  st.write("Customize your MLB podcast by selecting your preferences below.")
 
+
+ # If a user does not exist in the session, create authentication
+ if 'user' not in st.session_state:
+   sign_in_or_sign_up()
+   return
+ else:
+   st.write(f"Logged in as: {st.session_state['user'].email}")
+
  # Show logout button in sidebar if user is logged in
  if 'user' in st.session_state:
      handle_logout()
@@ -320,12 +328,6 @@ def main():
                      st.write(f"Account Created: {usage_stats['account_created'].strftime('%Y-%m-%d')}")
  
 
- # If a user does not exist in the session, create authentication
- if 'user' not in st.session_state:
-   sign_in_or_sign_up()
-   return
- else:
-   st.write(f"Logged in as: {st.session_state['user'].email}")
  
  # Fetch MLB teams
  mlb_teams = get_mlb_teams()
