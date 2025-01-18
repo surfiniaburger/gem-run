@@ -25,7 +25,7 @@ pymongo = {extras = ["srv"], version = "^4.10.1"}
 langchain-google-alloydb-pg = "^0.9.0"
 langchain-google-vertexai = "^2.0.11"
 
-[tool.poetry.dev-dependencies]
+[tool.poetry.group.dev.dependencies]
 pytest = "^7.3.1" 
 
 [build-system]

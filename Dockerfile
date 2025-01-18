@@ -1,5 +1,8 @@
 # Use the official Python image from the Docker Hub
-FROM python:3.10-slim
+FROM python:3.12
+
+# Expose the port Streamlit app runs on
+EXPOSE 8080
 
 # Set the working directory in the container to '/app'
 WORKDIR /app
@@ -14,17 +17,15 @@ RUN pip install poetry
 RUN poetry config virtualenvs.create false \
   && poetry config installer.parallel false
 
-# Install dependencies using Poetry
-RUN poetry install --no-dev
-
 # Copy the rest of your app's source code from your host to your image filesystem.
 COPY . /app
+
+# Install dependencies using Poetry
+RUN poetry install --no-interaction
 
 # Adjust WORKDIR to the directory containing 'gem.py'
 WORKDIR /app/mlb_fan_highlights/src
 
-# Expose the port Streamlit app runs on
-EXPOSE 8501
 
 # Command to run the app
-CMD ["streamlit", "run", "gem.py"]
+CMD ["streamlit", "run", "mlb_fan_highlights/src/gem.py", "--server.port=8080", "--server.address=0.0.0.0"]
