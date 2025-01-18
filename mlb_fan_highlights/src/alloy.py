@@ -141,7 +141,7 @@ async def create_player_embeddings_workflow(
 
         # Initialize Vertex AI
         logger.info(f"Initializing Vertex AI for project: {project_id}, region: {region}")
-        vertexai.init(project=project_id, location=region)
+        vertexai.init(project=project_id, location="us-central1")
         model = MultiModalEmbeddingModel.from_pretrained("multimodalembedding@001")
         logger.debug("Vertex AI initialized successfully")
 
@@ -291,13 +291,13 @@ async def main():
         workflow = await create_player_embeddings_workflow(
             project_id="gem-rush-007",
             bucket_name="mlb-headshot",
-            region="us-central1",
+            region="us-east4",
             cluster="my-cluster",
-            instance="primary-instance",
-            database="player_headshots",
+            instance="my-cluster-primary",
+            database="postgres",
             log_level="INFO",  # Can be set to "DEBUG" for more detailed logs,
             db_user='postgres',
-            db_password='<password>'
+            db_password='Vh/Uxsaz$O[>u3aP'
         )
         
         # Example: Find similar players for a specific headshot
