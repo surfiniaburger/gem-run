@@ -12,6 +12,8 @@ from google.api_core.exceptions import NotFound
 import uuid
 from datetime import timedelta
 
+
+
 # Get Firebase services
 auth = get_auth()
 db = get_firestore()
@@ -172,7 +174,10 @@ def handle_authentication(email, password, auth_type):
 
 def sign_in_or_sign_up():
  """Enhanced sign in/sign up form with validation"""
+
  auth_type = st.radio("Sign In or Sign Up", ["Sign In", "Sign Up"])
+
+
  
  with st.form(key='auth_form'):
      email = st.text_input("Email")
