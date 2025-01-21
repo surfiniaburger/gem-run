@@ -325,7 +325,7 @@ def main():
 
 
     # Get token from URL parameters
- token = st.experimental_get_query_params().get("token", [""])[0]
+ token = st.query_params.get("token", "")
     
  if not token:
         st.error("No authentication token found.")
