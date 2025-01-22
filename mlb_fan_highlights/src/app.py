@@ -17,7 +17,8 @@ from starlette.middleware.cors import CORSMiddleware
 origins = [
 "https://mlb.gem-rush.xyz", # This must be updated to the domain where your firebase app will be hosted from.
 "https://server.gem-rush.xyz",
-"https://app.gem-rush.xyz"  
+"https://app.gem-rush.xyz",
+"https://mlb-p7gnm34yja-uc.a.run.app",
 ]
 middleware = [
 Middleware(
