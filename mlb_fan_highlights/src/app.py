@@ -12,6 +12,8 @@ from google.api_core.exceptions import NotFound
 import uuid
 from datetime import timedelta
 
+
+
 # Get Firebase services
 auth = get_auth()
 db = get_firestore()
@@ -28,29 +30,28 @@ class UserProfile:
      self.db = firestore.client()
  
  def create_or_update(self, additional_data=None):
-     """Creates or updates a user profile in Firestore"""
-     try:
-         user_ref = self.db.collection('users').document(self.uid)
-         base_data = {
-             'email': self.email,
-             'last_login': datetime.now(),
-         }
-         
-         # Check if this is a new user by attempting to get their profile
-         existing_profile = user_ref.get()
-         if not existing_profile.exists:
-             base_data['account_created'] = datetime.now()
-         
-         # Merge additional data if provided
-         if additional_data:
-             base_data.update(additional_data)
-         
-         # Set with merge=True to update existing or create new
-         user_ref.set(base_data, merge=True)
-         return True
-     except Exception as e:
-         st.error(f"Error updating user profile: {str(e)}")
-         return False
+        """Creates or updates user profile in Firestore"""
+        try:
+            user_ref = self.db.collection('users').document(self.uid)
+            base_data = {
+                'email': self.email,
+                'last_login': datetime.now(),
+            }
+            
+            existing_profile = user_ref.get()
+            if not existing_profile.exists:
+                base_data['account_created'] = datetime.now()
+                base_data['account_type'] = 'free'
+                base_data['podcasts_generated'] = 0
+            
+            if additional_data:
+                base_data.update(additional_data)
+            
+            user_ref.set(base_data, merge=True)
+            return True
+        except Exception as e:
+            st.error(f"Error updating profile: {str(e)}")
+            return False
 
  def get_profile(self):
      """Retrieves user profile from Firestore"""
@@ -121,7 +122,7 @@ class UserProfile:
      except Exception as e:
          st.error(f"Error while updating podcast url in user profile: {e}")
          return False
-
+     
 def handle_authentication(email, password, auth_type):
  """Enhanced authentication handler with detailed error handling"""
  try:
@@ -172,7 +173,10 @@ def handle_authentication(email, password, auth_type):
 
 def sign_in_or_sign_up():
  """Enhanced sign in/sign up form with validation"""
+
  auth_type = st.radio("Sign In or Sign Up", ["Sign In", "Sign Up"])
+
+
  
  with st.form(key='auth_form'):
      email = st.text_input("Email")
@@ -288,44 +292,66 @@ def upload_audio_to_gcs(audio_content: bytes, file_name: str) -> str:
  except Exception as e:
      raise Exception(f"An error occurred while uploading audio to GCS: {e}")
 
+def display_user_info(user_profile):
+    """Displays user information and preferences in sidebar"""
+    st.sidebar.write(f"Welcome, {user_profile.get('email')}")
+    
+    if 'preferences' in user_profile:
+        st.sidebar.write("Your Preferences:")
+        prefs = user_profile['preferences']
+        if 'favorite_team' in prefs:
+            st.sidebar.write(f"Favorite Team: {prefs['favorite_team']}")
+        if 'preferred_language' in prefs:
+            st.sidebar.write(f"Preferred Language: {prefs['preferred_language']}")
+    
+    # Display usage stats
+    st.write("Usage Statistics:")
+    st.write(f"Podcasts Generated: {user_profile.get('podcasts_generated', 0)}")
+    if user_profile.get('account_created'):
+        st.write(f"Account Created: {user_profile['account_created'].strftime('%Y-%m-%d')}")
+
+def verify_token(token):
+    """Verifies Firebase ID token"""
+    try:
+        decoded_token = auth.verify_id_token(token)
+        return decoded_token
+    except Exception as e:
+        st.error(f"Authentication error: {str(e)}")
+        return None
 
 def main():
  st.title("MLB Podcast Generator")
  st.write("Customize your MLB podcast by selecting your preferences below.")
 
- # Show logout button in sidebar if user is logged in
- if 'user' in st.session_state:
-     handle_logout()
-     
-     # Get user profile
-     profile = UserProfile(st.session_state['user'].uid, st.session_state['user'].email)
-     user_data = profile.get_profile()
-     
-     if user_data:
-         st.sidebar.write(f"Welcome, {user_data.get('email')}")
-         if 'preferences' in user_data:
-             st.sidebar.write("Your Preferences:")
-             prefs = user_data['preferences']
-             if 'favorite_team' in prefs:
-                 st.sidebar.write(f"Favorite Team: {prefs['favorite_team']}")
-             if 'preferred_language' in prefs:
-                 st.sidebar.write(f"Preferred Language: {prefs['preferred_language']}")
-            
-             # Display usage statistics
-             usage_stats = profile.get_usage_stats()
-             if usage_stats:
-                 st.write("Usage Statistics:")
-                 st.write(f"Podcasts Generated: {usage_stats['podcasts_generated']}")
-                 if usage_stats['account_created']:
-                     st.write(f"Account Created: {usage_stats['account_created'].strftime('%Y-%m-%d')}")
- 
 
- # If a user does not exist in the session, create authentication
- if 'user' not in st.session_state:
-   sign_in_or_sign_up()
-   return
- else:
-   st.write(f"Logged in as: {st.session_state['user'].email}")
+    # Get token from URL parameters
+ token = st.query_params.get("token", "")
+    
+ if not token:
+        st.error("No authentication token found.")
+        return
+        
+ user_data = verify_token(token)
+ if not user_data:
+        st.error("Invalid authentication token")
+        return
+        
+    # Store user info in session
+ st.session_state['user'] = user_data
+ st.write(f"Logged in as: {user_data.get('email')}")
+    
+    # Initialize user profile
+ profile = UserProfile(user_data['uid'], user_data.get('email'))
+ profile.create_or_update()
+    
+    # Rest of your existing main() code here...
+ handle_logout()
+    
+    # Get user profile and show preferences
+ user_profile = profile.get_profile()
+ if user_profile:
+        display_user_info(user_profile)
+
  
  # Fetch MLB teams
  mlb_teams = get_mlb_teams()
