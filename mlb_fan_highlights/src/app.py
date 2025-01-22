@@ -11,6 +11,29 @@ import os
 from google.api_core.exceptions import NotFound
 import uuid
 from datetime import timedelta
+from starlette.middleware import Middleware
+from starlette.middleware.cors import CORSMiddleware
+
+origins = [
+"https://mlb.gem-rush.xyz", # This must be updated to the domain where your firebase app will be hosted from.
+]
+middleware = [
+Middleware(
+CORSMiddleware,
+allow_origins=origins,
+allow_credentials=True,
+allow_methods=[""],
+allow_headers=[""],
+)
+]
+
+st.set_page_config(
+page_title="MLB Podcast Generator",
+page_icon="⚾",
+layout="wide",
+initial_sidebar_state="expanded",
+middleware=middleware # added middleware
+)
 
 
 
