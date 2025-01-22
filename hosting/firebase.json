@@ -1,0 +1,11 @@
+{
+    "hosting": {
+      "rewrites": [{
+        "source": "**",
+        "run": {
+          "serviceId": "mlb",
+          "region": "us-central1"
+        }
+      }]
+    }
+  }
