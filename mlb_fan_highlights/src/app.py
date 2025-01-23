@@ -18,8 +18,11 @@ from starlette.requests import Request
 from starlette.responses import Response, RedirectResponse
 from firebase_admin import auth
 import uuid
-import hmac
-import hashlib
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.backends import default_backend
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import hashes, hmac
 
 # Configure CORS
 origins = [
@@ -31,7 +34,15 @@ origins = [
 class SessionMiddleware(BaseHTTPMiddleware):
     def __init__(self, app, secret_key: str):
         super().__init__(app)
-        self.secret_key = secret_key.encode()
+        self.backend = default_backend()
+        self.kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA512(),
+            length=64,
+            salt=os.urandom(32),
+            iterations=600000,
+            backend=self.backend
+        )
+        self.secret_key = self.kdf.derive(secret_key.encode())
         
     async def dispatch(self, request: Request, call_next):
         # Generate or validate session ID
@@ -69,15 +80,33 @@ class SessionMiddleware(BaseHTTPMiddleware):
         return response
         
     def _generate_session(self):
-        session_id = str(uuid.uuid4())
-        signature = hmac.new(self.secret_key, session_id.encode(), hashlib.sha256)
-        return session_id, signature.hexdigest()
-        
+        try:
+            session_id = str(uuid.uuid4())
+            h = hmac.HMAC(self.secret_key, hashes.SHA512(), backend=self.backend)
+            h.update(session_id.encode())
+            signature = h.finalize()
+            return session_id, signature.hex()
+        except Exception as e:
+            raise RuntimeError("Session generation failed") from e
+
     def _validate_session(self, session_id, session_token):
         if not session_id or not session_token:
             return False
-        expected = hmac.new(self.secret_key, session_id.encode(), hashlib.sha256)
-        return hmac.compare_digest(expected.hexdigest(), session_token)
+
+        try:
+            received_signature = bytes.fromhex(session_token)
+        except ValueError:
+            return False
+
+        try:
+            h = hmac.HMAC(self.secret_key, hashes.SHA512(), backend=self.backend)
+            h.update(session_id.encode())
+            h.verify(received_signature)
+            return True
+        except InvalidSignature:
+            return False
+        except Exception as e:
+            raise RuntimeError("Session validation error") from e
 
 class FirebaseAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
@@ -125,8 +154,27 @@ class FirebaseAuthMiddleware(BaseHTTPMiddleware):
         
         return Response("Authorization required", status_code=401)
 
-# Configure middleware stack
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers.update({
+            "Content-Security-Policy": "default-src 'self'",
+            "Cross-Origin-Embedder-Policy": "require-corp",
+            "Cross-Origin-Opener-Policy": "same-origin",
+            "Cross-Origin-Resource-Policy": "same-origin",
+            "Cache-Control": "no-store, max-age=0",
+            "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+            "X-Content-Type-Options": "nosniff",
+            "X-Frame-Options": "DENY",
+            "X-XSS-Protection": "1; mode=block",
+            "Referrer-Policy": "strict-origin-when-cross-origin",
+            "Permissions-Policy": "geolocation=(), microphone=()"
+        })
+        return response
+
+# Configure middleware stack (UPDATED ORDER)
 middleware = [
+    Middleware(SecurityHeadersMiddleware),
     Middleware(
         CORSMiddleware,
         allow_origins=origins,
