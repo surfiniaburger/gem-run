@@ -11,190 +11,6 @@ import os
 from google.api_core.exceptions import NotFound
 import uuid
 from datetime import timedelta
-from starlette.middleware import Middleware
-from starlette.middleware.cors import CORSMiddleware
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
-from starlette.responses import Response, RedirectResponse
-from firebase_admin import auth
-import uuid
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from cryptography.hazmat.backends import default_backend
-from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives import hashes, hmac
-
-# Configure CORS
-origins = [
-    "https://mlb.gem-rush.xyz",
-    "https://app.gem-rush.xyz",
-    "https://mlb-p7gnm34yja-uc.a.run.app",
-]
-
-class SessionMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app, secret_key: str):
-        super().__init__(app)
-        self.backend = default_backend()
-        self.kdf = PBKDF2HMAC(
-            algorithm=hashes.SHA512(),
-            length=64,
-            salt=os.urandom(32),
-            iterations=600000,
-            backend=self.backend
-        )
-        self.secret_key = self.kdf.derive(secret_key.encode())
-        
-    async def dispatch(self, request: Request, call_next):
-        # Generate or validate session ID
-        session_id = request.cookies.get('session_id')
-        session_token = request.cookies.get('session_token')
-        
-        if not self._validate_session(session_id, session_token):
-            session_id, session_token = self._generate_session()
-            request.state.session_new = True
-            request.state.session_id = session_id
-        else:
-            request.state.session_new = False
-            request.state.session_id = session_id
-            
-        response = await call_next(request)
-        
-        if request.state.session_new:
-            response.set_cookie(
-                'session_id', 
-                session_id,
-                max_age=3600,
-                secure=True,
-                httponly=True,
-                samesite='Lax'
-            )
-            response.set_cookie(
-                'session_token', 
-                session_token,
-                max_age=3600,
-                secure=True,
-                httponly=True,
-                samesite='Lax'
-            )
-            
-        return response
-        
-    def _generate_session(self):
-        try:
-            session_id = str(uuid.uuid4())
-            h = hmac.HMAC(self.secret_key, hashes.SHA512(), backend=self.backend)
-            h.update(session_id.encode())
-            signature = h.finalize()
-            return session_id, signature.hex()
-        except Exception as e:
-            raise RuntimeError("Session generation failed") from e
-
-    def _validate_session(self, session_id, session_token):
-        if not session_id or not session_token:
-            return False
-
-        try:
-            received_signature = bytes.fromhex(session_token)
-        except ValueError:
-            return False
-
-        try:
-            h = hmac.HMAC(self.secret_key, hashes.SHA512(), backend=self.backend)
-            h.update(session_id.encode())
-            h.verify(received_signature)
-            return True
-        except InvalidSignature:
-            return False
-        except Exception as e:
-            raise RuntimeError("Session validation error") from e
-
-class FirebaseAuthMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        # Handle login requests directly in middleware
-        if request.url.path == '/auth/login' and request.method == 'POST':
-            try:
-                form_data = await request.form()
-                token = form_data.get('id_token')
-                decoded_token = auth.verify_id_token(token)
-                
-                response = RedirectResponse(url='/')
-                response.set_cookie(
-                    'firebase_token', 
-                    token,
-                    max_age=3600,
-                    secure=True,
-                    httponly=True,
-                    samesite='Strict'
-                )
-                return response
-            except Exception as e:
-                return Response(f"Login failed: {str(e)}", status_code=403)
-            
-        # Skip authentication for login route and OPTIONS
-        elif request.url.path == '/auth/login' or request.method == 'OPTIONS':
-            return await call_next(request)
-            
-        # Check session first
-        user_data = request.session.get('firebase_user')
-        if user_data:
-            request.state.user = user_data
-            return await call_next(request)
-            
-        # Fallback to token authentication
-        auth_header = request.headers.get('Authorization')
-        if auth_header and auth_header.startswith('Bearer '):
-            try:
-                token = auth_header.split(' ')[1]
-                decoded_token = auth.verify_id_token(token)
-                request.session['firebase_user'] = decoded_token
-                request.state.user = decoded_token
-                return await call_next(request)
-            except Exception as e:
-                return Response(f"Invalid token: {str(e)}", status_code=403)
-        
-        return Response("Authorization required", status_code=401)
-
-class SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        response = await call_next(request)
-        response.headers.update({
-            "Content-Security-Policy": "default-src 'self'",
-            "Cross-Origin-Embedder-Policy": "require-corp",
-            "Cross-Origin-Opener-Policy": "same-origin",
-            "Cross-Origin-Resource-Policy": "same-origin",
-            "Cache-Control": "no-store, max-age=0",
-            "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
-            "X-Content-Type-Options": "nosniff",
-            "X-Frame-Options": "DENY",
-            "X-XSS-Protection": "1; mode=block",
-            "Referrer-Policy": "strict-origin-when-cross-origin",
-            "Permissions-Policy": "geolocation=(), microphone=()"
-        })
-        return response
-
-# Configure middleware stack (UPDATED ORDER)
-middleware = [
-    Middleware(SecurityHeadersMiddleware),
-    Middleware(
-        CORSMiddleware,
-        allow_origins=origins,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-        expose_headers=["*"]
-    ),
-    Middleware(SessionMiddleware, secret_key=os.getenv('SESSION_SECRET')),
-    Middleware(FirebaseAuthMiddleware)
-]
-
-# Add login endpoint
-st.set_page_config(
-page_title="MLB Podcast Generator",
-page_icon="⚾",
-layout="wide",
-initial_sidebar_state="expanded",
-middleware=middleware # added middleware
-)
 
 # Get Firebase services
 auth = get_auth()
@@ -212,28 +28,29 @@ class UserProfile:
      self.db = firestore.client()
  
  def create_or_update(self, additional_data=None):
-        """Creates or updates user profile in Firestore"""
-        try:
-            user_ref = self.db.collection('users').document(self.uid)
-            base_data = {
-                'email': self.email,
-                'last_login': datetime.now(),
-            }
-            
-            existing_profile = user_ref.get()
-            if not existing_profile.exists:
-                base_data['account_created'] = datetime.now()
-                base_data['account_type'] = 'free'
-                base_data['podcasts_generated'] = 0
-            
-            if additional_data:
-                base_data.update(additional_data)
-            
-            user_ref.set(base_data, merge=True)
-            return True
-        except Exception as e:
-            st.error(f"Error updating profile: {str(e)}")
-            return False
+     """Creates or updates a user profile in Firestore"""
+     try:
+         user_ref = self.db.collection('users').document(self.uid)
+         base_data = {
+             'email': self.email,
+             'last_login': datetime.now(),
+         }
+         
+         # Check if this is a new user by attempting to get their profile
+         existing_profile = user_ref.get()
+         if not existing_profile.exists:
+             base_data['account_created'] = datetime.now()
+         
+         # Merge additional data if provided
+         if additional_data:
+             base_data.update(additional_data)
+         
+         # Set with merge=True to update existing or create new
+         user_ref.set(base_data, merge=True)
+         return True
+     except Exception as e:
+         st.error(f"Error updating user profile: {str(e)}")
+         return False
 
  def get_profile(self):
      """Retrieves user profile from Firestore"""
@@ -304,7 +121,7 @@ class UserProfile:
      except Exception as e:
          st.error(f"Error while updating podcast url in user profile: {e}")
          return False
-     
+
 def handle_authentication(email, password, auth_type):
  """Enhanced authentication handler with detailed error handling"""
  try:
@@ -355,10 +172,7 @@ def handle_authentication(email, password, auth_type):
 
 def sign_in_or_sign_up():
  """Enhanced sign in/sign up form with validation"""
-
  auth_type = st.radio("Sign In or Sign Up", ["Sign In", "Sign Up"])
-
-
  
  with st.form(key='auth_form'):
      email = st.text_input("Email")
@@ -474,69 +288,44 @@ def upload_audio_to_gcs(audio_content: bytes, file_name: str) -> str:
  except Exception as e:
      raise Exception(f"An error occurred while uploading audio to GCS: {e}")
 
-def display_user_info(user_profile):
-    """Displays user information and preferences in sidebar"""
-    st.sidebar.write(f"Welcome, {user_profile.get('email')}")
-    
-    if 'preferences' in user_profile:
-        st.sidebar.write("Your Preferences:")
-        prefs = user_profile['preferences']
-        if 'favorite_team' in prefs:
-            st.sidebar.write(f"Favorite Team: {prefs['favorite_team']}")
-        if 'preferred_language' in prefs:
-            st.sidebar.write(f"Preferred Language: {prefs['preferred_language']}")
-    
-    # Display usage stats
-    st.write("Usage Statistics:")
-    st.write(f"Podcasts Generated: {user_profile.get('podcasts_generated', 0)}")
-    if user_profile.get('account_created'):
-        st.write(f"Account Created: {user_profile['account_created'].strftime('%Y-%m-%d')}")
-
-def verify_token(token):
-    """Verifies Firebase ID token"""
-    try:
-        decoded_token = auth.verify_id_token(token)
-        return decoded_token
-    except Exception as e:
-        st.error(f"Authentication error: {str(e)}")
-        return None
-
-@st.cache_resource
-def add_header():
-    st.header("Cache control header has been set.")
-    st.markdown(f"""<meta http-equiv="Cache-control" content="no-cache">""", unsafe_allow_html=True)
-
-add_header()
 
 def main():
  st.title("MLB Podcast Generator")
  st.write("Customize your MLB podcast by selecting your preferences below.")
 
-    # Get authenticated user from middleware
- request = st.server.server_util.get_request_ctx().request
- user = getattr(request.state, 'user', None)
-    
- if not user:
-    st.error("Not authenticated")
-    st.stop()
-        
-    # Store in Streamlit session state
- st.session_state.user = user
- st.write(f"Welcome {user['email']}")
+ # Show logout button in sidebar if user is logged in
+ if 'user' in st.session_state:
+     handle_logout()
+     
+     # Get user profile
+     profile = UserProfile(st.session_state['user'].uid, st.session_state['user'].email)
+     user_data = profile.get_profile()
+     
+     if user_data:
+         st.sidebar.write(f"Welcome, {user_data.get('email')}")
+         if 'preferences' in user_data:
+             st.sidebar.write("Your Preferences:")
+             prefs = user_data['preferences']
+             if 'favorite_team' in prefs:
+                 st.sidebar.write(f"Favorite Team: {prefs['favorite_team']}")
+             if 'preferred_language' in prefs:
+                 st.sidebar.write(f"Preferred Language: {prefs['preferred_language']}")
+            
+             # Display usage statistics
+             usage_stats = profile.get_usage_stats()
+             if usage_stats:
+                 st.write("Usage Statistics:")
+                 st.write(f"Podcasts Generated: {usage_stats['podcasts_generated']}")
+                 if usage_stats['account_created']:
+                     st.write(f"Account Created: {usage_stats['account_created'].strftime('%Y-%m-%d')}")
+ 
 
-        
-    # Initialize user profile
- profile = UserProfile(user['uid'], user['email'])
- profile.create_or_update()
-    
-    # Rest of your existing main() code here...
- handle_logout()
-    
-    # Get user profile and show preferences
- user_profile = profile.get_profile()
- if user_profile:
-        display_user_info(user_profile)
-
+ # If a user does not exist in the session, create authentication
+ if 'user' not in st.session_state:
+   sign_in_or_sign_up()
+   return
+ else:
+   st.write(f"Logged in as: {st.session_state['user'].email}")
  
  # Fetch MLB teams
  mlb_teams = get_mlb_teams()
