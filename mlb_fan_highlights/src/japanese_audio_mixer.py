@@ -7,17 +7,17 @@ import logging
 class JapaneseMLBAudioMixer:
     def __init__(self):
         self.sound_effects = {
-            "crowd_cheer": AudioSegment.from_mp3("https://github.com/surfiniaburger/gem-run/raw/refs/heads/main/mlb_fan_highlights/src/assets/sounds/applause.mp3"),
-            "bat_hit": AudioSegment.from_mp3("https://github.com/surfiniaburger/gem-run/raw/refs/heads/main/mlb_fan_highlights/src/assets/sounds/bat_hit.mp3"),
-            "crowd_tension": AudioSegment.from_mp3("https://github.com/surfiniaburger/gem-run/raw/refs/heads/main/mlb_fan_highlights/src/assets/sounds/crowd_tension.mp3"),
-            "walkup_music": AudioSegment.from_mp3("https://github.com/surfiniaburger/gem-run/raw/refs/heads/main/mlb_fan_highlights/src/assets/sounds/walkup_music.mp3"),
-            "stadium_ambience": AudioSegment.from_mp3("https://github.com/surfiniaburger/gem-run/raw/refs/heads/main/mlb_fan_highlights/src/assets/sounds/stadium_ambience.mp3")
+            "crowd_cheer": AudioSegment.from_mp3("assets/sounds/crowd_cheer.mp3"),
+            "bat_hit": AudioSegment.from_mp3("assets/sounds/bat_hit.mp3"),
+            "crowd_tension": AudioSegment.from_mp3("assets/sounds/crowd_tension.mp3"),
+            "walkup_music": AudioSegment.from_mp3("assets/sounds/walkup_music.mp3"),
+            "stadium_ambience": AudioSegment.from_mp3("assets/sounds/stadium_ambience.mp3")
         }
         
         self.background_music = {
-            "intro": AudioSegment.from_mp3("https://github.com/surfiniaburger/gem-run/raw/refs/heads/main/mlb_fan_highlights/src/assets/music/sakura.mp3"),
-            "highlight": AudioSegment.from_mp3("https://github.com/surfiniaburger/gem-run/raw/refs/heads/main/mlb_fan_highlights/src/assets/music/highlight.mp3"),
-            "outro": AudioSegment.from_mp3("https://github.com/surfiniaburger/gem-run/raw/refs/heads/main/mlb_fan_highlights/src/assets/music/outro.mp3")
+            "intro": AudioSegment.from_mp3("assets/music/sakura.mp3"),
+            "highlight": AudioSegment.from_mp3("assets/music/highlight.mp3"),
+            "outro": AudioSegment.from_mp3("assets/music/sakura.mp3")
         }
         
         # Refined volume levels
