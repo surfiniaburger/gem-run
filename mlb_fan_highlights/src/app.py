@@ -1,4 +1,3 @@
-from httpcore import Response
 import streamlit as st
 from surfire2 import generate_mlb_analysis
 from pod import generate_mlb_podcast_with_audio
@@ -15,48 +14,132 @@ from datetime import timedelta
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response, RedirectResponse
+from firebase_admin import auth
+import uuid
+import hmac
+import hashlib
 
+# Configure CORS
 origins = [
-"https://mlb.gem-rush.xyz", # This must be updated to the domain where your firebase app will be hosted from.
-"https://server.gem-rush.xyz",
-"https://app.gem-rush.xyz",
-"https://mlb-p7gnm34yja-uc.a.run.app",
-"https://mlb-1011675918473.us-central1.run.app",
-]
-middleware = [
-Middleware(
-CORSMiddleware,
-allow_origins=origins,
-allow_credentials=True,
-allow_methods=["*"],
-allow_headers=["*"],
-expose_headers=["*"]
-)
+    "https://mlb.gem-rush.xyz",
+    "https://app.gem-rush.xyz",
+    "https://mlb-p7gnm34yja-uc.a.run.app",
 ]
 
-# Add token verification middleware
+class SessionMiddleware(BaseHTTPMiddleware):
+    def __init__(self, app, secret_key: str):
+        super().__init__(app)
+        self.secret_key = secret_key.encode()
+        
+    async def dispatch(self, request: Request, call_next):
+        # Generate or validate session ID
+        session_id = request.cookies.get('session_id')
+        session_token = request.cookies.get('session_token')
+        
+        if not self._validate_session(session_id, session_token):
+            session_id, session_token = self._generate_session()
+            request.state.session_new = True
+            request.state.session_id = session_id
+        else:
+            request.state.session_new = False
+            request.state.session_id = session_id
+            
+        response = await call_next(request)
+        
+        if request.state.session_new:
+            response.set_cookie(
+                'session_id', 
+                session_id,
+                max_age=3600,
+                secure=True,
+                httponly=True,
+                samesite='Lax'
+            )
+            response.set_cookie(
+                'session_token', 
+                session_token,
+                max_age=3600,
+                secure=True,
+                httponly=True,
+                samesite='Lax'
+            )
+            
+        return response
+        
+    def _generate_session(self):
+        session_id = str(uuid.uuid4())
+        signature = hmac.new(self.secret_key, session_id.encode(), hashlib.sha256)
+        return session_id, signature.hexdigest()
+        
+    def _validate_session(self, session_id, session_token):
+        if not session_id or not session_token:
+            return False
+        expected = hmac.new(self.secret_key, session_id.encode(), hashlib.sha256)
+        return hmac.compare_digest(expected.hexdigest(), session_token)
+
 class FirebaseAuthMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request, call_next):
-        if request.method == "OPTIONS":
+    async def dispatch(self, request: Request, call_next):
+        # Handle login requests directly in middleware
+        if request.url.path == '/auth/login' and request.method == 'POST':
+            try:
+                form_data = await request.form()
+                token = form_data.get('id_token')
+                decoded_token = auth.verify_id_token(token)
+                
+                response = RedirectResponse(url='/')
+                response.set_cookie(
+                    'firebase_token', 
+                    token,
+                    max_age=3600,
+                    secure=True,
+                    httponly=True,
+                    samesite='Strict'
+                )
+                return response
+            except Exception as e:
+                return Response(f"Login failed: {str(e)}", status_code=403)
+            
+        # Skip authentication for login route and OPTIONS
+        elif request.url.path == '/auth/login' or request.method == 'OPTIONS':
             return await call_next(request)
             
-        try:
-            token = request.query_params.get("token")
-            if not token:
-                return Response("Missing authorization token", status_code=401)
+        # Check session first
+        user_data = request.session.get('firebase_user')
+        if user_data:
+            request.state.user = user_data
+            return await call_next(request)
             
-            decoded_token = auth.verify_id_token(token)
-            request.state.user = decoded_token
-        except Exception as e:
-            return Response(f"Invalid token: {str(e)}", status_code=403)
+        # Fallback to token authentication
+        auth_header = request.headers.get('Authorization')
+        if auth_header and auth_header.startswith('Bearer '):
+            try:
+                token = auth_header.split(' ')[1]
+                decoded_token = auth.verify_id_token(token)
+                request.session['firebase_user'] = decoded_token
+                request.state.user = decoded_token
+                return await call_next(request)
+            except Exception as e:
+                return Response(f"Invalid token: {str(e)}", status_code=403)
         
-        response = await call_next(request)
-        return response
+        return Response("Authorization required", status_code=401)
 
-# Add to middleware list
-middleware.insert(0, Middleware(FirebaseAuthMiddleware))
+# Configure middleware stack
+middleware = [
+    Middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=["*"]
+    ),
+    Middleware(SessionMiddleware, secret_key=os.getenv('SESSION_SECRET')),
+    Middleware(FirebaseAuthMiddleware)
+]
 
-
+# Add login endpoint
 st.set_page_config(
 page_title="MLB Podcast Generator",
 page_icon="⚾",
@@ -64,8 +147,6 @@ layout="wide",
 initial_sidebar_state="expanded",
 middleware=middleware # added middleware
 )
-
-
 
 # Get Firebase services
 auth = get_auth()
@@ -383,25 +464,21 @@ def main():
  st.title("MLB Podcast Generator")
  st.write("Customize your MLB podcast by selecting your preferences below.")
 
+    # Get authenticated user from middleware
+ request = st.server.server_util.get_request_ctx().request
+ user = getattr(request.state, 'user', None)
+    
+ if not user:
+    st.error("Not authenticated")
+    st.stop()
+        
+    # Store in Streamlit session state
+ st.session_state.user = user
+ st.write(f"Welcome {user['email']}")
 
-    # Get token from URL parameters
- token = st.query_params.get("token", "")
-    
- if not token:
-        st.error("No authentication token found.")
-        return
         
- user_data = verify_token(token)
- if not user_data:
-        st.error("Invalid authentication token")
-        return
-        
-    # Store user info in session
- st.session_state['user'] = user_data
- st.write(f"Logged in as: {user_data.get('email')}")
-    
     # Initialize user profile
- profile = UserProfile(user_data['uid'], user_data.get('email'))
+ profile = UserProfile(user['uid'], user['email'])
  profile.create_or_update()
     
     # Rest of your existing main() code here...
