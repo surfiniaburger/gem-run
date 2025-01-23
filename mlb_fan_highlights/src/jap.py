@@ -1,5 +1,5 @@
 #from google.cloud import texttospeech
-from google.cloud import texttospeech_v1beta1 as texttospeech
+from google.cloud import  texttospeech
 import json
 import os
 from surfire import generate_mlb_podcasts
