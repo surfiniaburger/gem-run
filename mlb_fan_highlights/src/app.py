@@ -1,3 +1,4 @@
+from httpcore import Response
 import streamlit as st
 from surfire2 import generate_mlb_analysis
 from pod import generate_mlb_podcast_with_audio
@@ -13,22 +14,48 @@ import uuid
 from datetime import timedelta
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 
 origins = [
 "https://mlb.gem-rush.xyz", # This must be updated to the domain where your firebase app will be hosted from.
 "https://server.gem-rush.xyz",
 "https://app.gem-rush.xyz",
 "https://mlb-p7gnm34yja-uc.a.run.app",
+"https://mlb-1011675918473.us-central1.run.app",
 ]
 middleware = [
 Middleware(
 CORSMiddleware,
 allow_origins=origins,
 allow_credentials=True,
-allow_methods=["GET", "POST", "OPTIONS"],  # Add OPTIONS
-allow_headers=["Authorization", "Content-Type"],  # Allow all headers
+allow_methods=["*"],
+allow_headers=["*"],
+expose_headers=["*"]
 )
 ]
+
+# Add token verification middleware
+class FirebaseAuthMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        if request.method == "OPTIONS":
+            return await call_next(request)
+            
+        try:
+            token = request.query_params.get("token")
+            if not token:
+                return Response("Missing authorization token", status_code=401)
+            
+            decoded_token = auth.verify_id_token(token)
+            request.state.user = decoded_token
+        except Exception as e:
+            return Response(f"Invalid token: {str(e)}", status_code=403)
+        
+        response = await call_next(request)
+        return response
+
+# Add to middleware list
+middleware.insert(0, Middleware(FirebaseAuthMiddleware))
+
 
 st.set_page_config(
 page_title="MLB Podcast Generator",
@@ -344,6 +371,13 @@ def verify_token(token):
     except Exception as e:
         st.error(f"Authentication error: {str(e)}")
         return None
+
+@st.cache_resource
+def add_header():
+    st.header("Cache control header has been set.")
+    st.markdown(f"""<meta http-equiv="Cache-control" content="no-cache">""", unsafe_allow_html=True)
+
+add_header()
 
 def main():
  st.title("MLB Podcast Generator")
