@@ -64,13 +64,16 @@ class MediaProcessor:
               file_name = f"segment-{uuid.uuid4()}.mp3"
               gcs_uris.append(self._upload_audio_to_gcs(segment["audio"], file_name))
 
+
         # Create the audio stream using the api
-        input_uris = [{"uri": uri} for uri in gcs_uris]
-        inputs = [videointelligence.InputUri(uris=input_uris)]
+        input_configs = [
+            videointelligence.StreamInput(uri=uri) 
+            for uri in gcs_uris
+        ]
       
         # Define the mixing parameters for the job
         audio_stream = videointelligence.AudioStream(
-           streams=inputs,
+           inputs=input_configs,
         )
     
         #Define audio format
