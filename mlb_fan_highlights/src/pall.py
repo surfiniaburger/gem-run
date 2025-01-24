@@ -16,7 +16,7 @@ log_client = cloud_logging.Client()
 log_client.setup_logging()
 
 project_id = "gem-rush-007"
-secret_name = "google-client-secret"
+secret_name = "cloud-run-invoker"
 
 def create_audio_for_speaker(text, speaker_config):
     """Creates audio for a single piece of dialogue."""
