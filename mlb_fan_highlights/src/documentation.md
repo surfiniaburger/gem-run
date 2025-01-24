@@ -212,6 +212,9 @@ else:
 
 # ... Rest of your Streamlit app logic ...
 
+#powershell
+.\deploy.ps1
 
 
-
+Bash
+chmod +x deploy.sh
