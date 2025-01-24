@@ -40,9 +40,9 @@ def create_audio_for_speaker(text, speaker_config):
         )
     
         return response.audio_content
-    except: Exception as e:
-        logging.error(f"Error Generating audio: {str(e)}")
-        raise
+    except Exception as e:      
+     logging.error(f"Error Generating audio: {str(e)}")
+     raise
 
 
 def create_podcast(script_data, output_filename):
