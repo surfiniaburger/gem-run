@@ -16,7 +16,7 @@ log_client.setup_logging()
 
 class SpanishMLBAudioMixer:
     def __init__(self, project_id, secret_name):
-        service_account_json = self.get_secret(secret_name, project_id)
+        service_account_json = self._get_secret(secret_name, project_id)
         if service_account_json:
             credentials = service_account.Credentials.from_service_account_info(
                 json.loads(service_account_json),
