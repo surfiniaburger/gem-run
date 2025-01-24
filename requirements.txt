@@ -24,3 +24,4 @@ cryptography>=44.0.0
 google-genai>=0.6.0
 google-cloud-logging>=3.11.3
 requests>=2.32.3
+gunicorn>=23.0.0
