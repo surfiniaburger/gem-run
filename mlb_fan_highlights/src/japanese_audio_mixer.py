@@ -3,6 +3,13 @@ from pydub.effects import normalize, compress_dynamic_range
 from typing import List, Dict, Optional
 import io
 import logging
+from google.cloud import logging as cloud_logging
+
+# Configure cloud logging at the top of the script, before other imports
+logging.basicConfig(level=logging.INFO)
+log_client = cloud_logging.Client()
+log_client.setup_logging()
+
 
 class JapaneseMLBAudioMixer:
     def __init__(self):
@@ -33,12 +40,15 @@ class JapaneseMLBAudioMixer:
         self.EFFECT_FADE = 600
 
     def _compress_audio(self, audio: AudioSegment) -> AudioSegment:
+        logging.info("Compressing audio...")
         return compress_dynamic_range(audio, threshold=-20.0, ratio=4.0, attack=10, release=100)
 
     def _fade_effect(self, effect: AudioSegment) -> AudioSegment:
+        logging.info("fade effect")
         return effect.fade_in(200).fade_out(self.EFFECT_FADE)
 
     def _process_voice_segment(self, voice_audio: AudioSegment) -> AudioSegment:
+        logging.info("Processing voice segment")
         voice_audio = self._normalize_audio(voice_audio)
         voice_audio = self._compress_audio(voice_audio)
         return voice_audio - abs(self.VOICE_VOLUME)
@@ -115,9 +125,11 @@ class JapaneseMLBAudioMixer:
         return self.to_bytes(final_mix)
 
     def _add_pause(self, audio: AudioSegment, duration: int) -> AudioSegment:
+        logging.info("adding pause")
         return audio + AudioSegment.silent(duration=duration)
 
     def _detect_japanese_event_triggers(self, text: str) -> List[str]:
+        logging.info("detecting japanese event triggers")
         triggers = []
         events = {
             "crowd_cheer": ["ホームラン", "得点", "勝利", "サヨナラ", "逆転"],
@@ -132,10 +144,12 @@ class JapaneseMLBAudioMixer:
         return triggers
 
     def _normalize_audio(self, audio: AudioSegment) -> AudioSegment:
+        logging("normalizing audio")
         return normalize(audio)
 
 
     def to_bytes(self, mixed_audio: AudioSegment) -> bytes:
+        logging.info("Exporting AudioSegment to bytes")
         """Converts the mixed AudioSegment to bytes."""
         
         # Export the AudioSegment to a byte array in mp3 format

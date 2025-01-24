@@ -6,6 +6,13 @@ from surfire import generate_mlb_podcasts
 from japanese_audio_mixer import JapaneseMLBAudioMixer
 from gcs_handler import GCSHandler
 import uuid
+import logging
+from google.cloud import logging as cloud_logging
+
+# Configure cloud logging at the top of the script, before other imports
+logging.basicConfig(level=logging.INFO)
+log_client = cloud_logging.Client()
+log_client.setup_logging()
 
 def create_audio_for_speaker(text, speaker_config):
     """Creates audio for a single piece of dialogue."""
@@ -93,9 +100,10 @@ def generate_japanese_audio(contents: str, language: str, output_filename: str =
     Main function to generate and synthesize MLB podcast with language support
     """
     try:
+        logging.info("Generating Japanese audio for MLB podcast")  
         output_filename = os.path.abspath(output_filename)
         script_json = generate_mlb_podcasts(contents)
-        print(script_json)
+        logging.info(f"Generated script: {script_json} ")
         
         if isinstance(script_json, dict) and "error" in script_json:
             raise Exception(f"Script generation error: {script_json['error']}")
@@ -135,6 +143,7 @@ def generate_japanese_audio(contents: str, language: str, output_filename: str =
                     "speaker": speaker
                 })
         
+        logging.info("Voice segments created")
         # Initialize the audio mixer
         mixer = JapaneseMLBAudioMixer()
         
@@ -143,11 +152,12 @@ def generate_japanese_audio(contents: str, language: str, output_filename: str =
         audio_bytes = mixer.mix_podcast_audio(voice_segments)
         
         # Upload using the new GCS handler
-        
+        logging.info("Uploading audio to GCS")
         key_file_path = "./gem-rush-007-a9765f2ada0e.json"  # Same path as your working command line example
         gcs_handler = GCSHandler(key_file_path=key_file_path)
         
         url = gcs_handler.upload_audio(audio_bytes, f"podcast-{uuid.uuid4()}.mp3")
+        logging.info(f"Audio uploaded to GCS, URL: {url}")
         return url       
         
     except Exception as e:

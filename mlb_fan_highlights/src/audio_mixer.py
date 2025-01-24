@@ -3,6 +3,13 @@ from pydub.effects import normalize, compress_dynamic_range
 from typing import List, Dict, Optional
 import io
 import logging
+from google.cloud import logging as cloud_logging
+
+# Configure cloud logging at the top of the script, before other imports
+logging.basicConfig(level=logging.INFO)
+log_client = cloud_logging.Client()
+log_client.setup_logging()
+
 
 class MLBAudioMixer:
     def __init__(self):

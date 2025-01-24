@@ -3,6 +3,13 @@ from pydub.effects import normalize, compress_dynamic_range
 from typing import List, Dict, Optional
 import io
 import logging
+from google.cloud import logging as cloud_logging
+
+# Configure cloud logging at the top of the script, before other imports
+logging.basicConfig(level=logging.INFO)
+log_client = cloud_logging.Client()
+log_client.setup_logging()
+
 
 class SpanishMLBAudioMixer:
     def __init__(self):
@@ -33,6 +40,7 @@ class SpanishMLBAudioMixer:
         self.EFFECT_FADE = 600
 
     def _compress_audio(self, audio: AudioSegment) -> AudioSegment:
+        logging.info("compressing audio")
         return compress_dynamic_range(audio, threshold=-20.0, ratio=4.0, attack=10, release=100)
 
     def _fade_effect(self, effect: AudioSegment) -> AudioSegment:

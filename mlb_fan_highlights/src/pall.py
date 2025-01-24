@@ -7,30 +7,43 @@ from spanish_audio_mixer import SpanishMLBAudioMixer
 import uuid
 from storage_utils import upload_audio_to_gcs
 from gcs_handler import GCSHandler
+import logging
+from google.cloud import logging as cloud_logging
+
+# Configure cloud logging at the top of the script, before other imports
+logging.basicConfig(level=logging.INFO)
+log_client = cloud_logging.Client()
+log_client.setup_logging()
 
 
 def create_audio_for_speaker(text, speaker_config):
     """Creates audio for a single piece of dialogue."""
-    client = texttospeech.TextToSpeechClient()
+    try:
+        logging.info("Creating audio from a single piece of dialogue")
+        client = texttospeech.TextToSpeechClient()
     
-    input_text = texttospeech.SynthesisInput(text=text)
+        input_text = texttospeech.SynthesisInput(text=text)
     
-    voice = texttospeech.VoiceSelectionParams(
-        language_code="es-ES",  # Spanish
-        name=speaker_config["voice"],
-        ssml_gender=texttospeech.SsmlVoiceGender[speaker_config["gender"]]
-    )
+        voice = texttospeech.VoiceSelectionParams(
+            language_code="es-ES",  # Spanish
+            name=speaker_config["voice"],
+            ssml_gender=texttospeech.SsmlVoiceGender[speaker_config["gender"]]
+        )
     
-    audio_config = texttospeech.AudioConfig(
-        audio_encoding=texttospeech.AudioEncoding.MP3,
-        speaking_rate=speaker_config["speed"]
-    )
+        audio_config = texttospeech.AudioConfig(
+            audio_encoding=texttospeech.AudioEncoding.MP3,
+            speaking_rate=speaker_config["speed"]
+        )
     
-    response = client.synthesize_speech(
-        request={"input": input_text, "voice": voice, "audio_config": audio_config}
-    )
+        response = client.synthesize_speech(
+            request={"input": input_text, "voice": voice, "audio_config": audio_config}
+        )
     
-    return response.audio_content
+        return response.audio_content
+    except: Exception as e:
+        logging.error(f"Error Generating audio: {str(e)}")
+        raise
+
 
 def create_podcast(script_data, output_filename):
     """Process the entire podcast script with multiple speakers."""
@@ -101,6 +114,7 @@ def generate_spanish_audio(contents: str, language: str, output_filename: str = 
         str: Path to the generated podcast file
     """
     try:
+        logging.info("genearating spanish audio")
         # Speaker configurations for Spanish voices
         speaker_configs = {
             "Narrador de jugada por jugada": {
@@ -178,4 +192,5 @@ def generate_spanish_audio(contents: str, language: str, output_filename: str = 
         return url        
         
     except Exception as e:
+        logging.error(f"Failed to generate Spanish MLB podcast: {str(e)}")
         raise Exception(f"Failed to generate Spanish MLB podcast: {str(e)}")
