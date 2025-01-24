@@ -1,1 +1,1 @@
-web: gunicorn --bind :$PORT --workers 1 --threads 8 --timeout 0 main:app
+web: streamlit run mlb_fan_highlights/src/app.py --server.port=$PORT --server.address=0.0.0.0
