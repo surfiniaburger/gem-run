@@ -78,7 +78,16 @@ class SpanishMLBAudioMixer:
             client = secretmanager_v1.SecretManagerServiceClient()
             name = f"projects/{project_id}/secrets/{secret_name}/versions/latest"
             response = client.access_secret_version(request={"name": name})
-            return response.payload.data.decode("UTF-8")
+            service_account_json = response.payload.data.decode("UTF-8")
+            # Parse and validate JSON
+            credentials_dict = json.loads(service_account_json)
+            required_fields = ['token_uri', 'client_email', 'private_key']
+        
+            for field in required_fields:
+               if field not in credentials_dict:
+                   raise ValueError(f"Missing required service account field: {field}")
+        
+            return service_account_json            
         except Exception as e:
             logging.error(f"Error retrieving secret {secret_name}: {e}")
             raise
