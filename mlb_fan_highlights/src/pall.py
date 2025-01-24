@@ -5,7 +5,6 @@ import os
 from surfire import generate_mlb_podcasts
 from spanish_audio_mixer import SpanishMLBAudioMixer
 import uuid
-from storage_utils import upload_audio_to_gcs
 from gcs_handler import GCSHandler
 import logging
 from google.cloud import logging as cloud_logging
