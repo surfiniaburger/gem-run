@@ -11,7 +11,14 @@ import os
 from google.api_core.exceptions import NotFound
 import uuid
 from datetime import timedelta
+from google.cloud import logging as cloud_logging
+import logging
 
+
+# Configure cloud logging at the top of the script, before other imports
+logging.basicConfig(level=logging.INFO)
+log_client = cloud_logging.Client()
+log_client.setup_logging()
 # Get Firebase services
 auth = get_auth()
 db = get_firestore()
@@ -125,6 +132,7 @@ class UserProfile:
 def handle_authentication(email, password, auth_type):
  """Enhanced authentication handler with detailed error handling"""
  try:
+     logging.info(f"Authentication attempt for {email} with type: {auth_type}")
      if auth_type == "Sign In":
          user = auth.get_user_by_email(email)
          auth_user = auth.get_user(user.uid)
@@ -167,6 +175,7 @@ def handle_authentication(email, password, auth_type):
      st.error("Password is too weak. Please choose a stronger password.")
  except Exception as e:
      st.error(f"Authentication error: {str(e)}")
+     logging.error(f"Authentication error for {email}: {str(e)}")
  return False
 
 
@@ -292,6 +301,7 @@ def upload_audio_to_gcs(audio_content: bytes, file_name: str) -> str:
 def main():
  st.title("MLB Podcast Generator")
  st.write("Customize your MLB podcast by selecting your preferences below.")
+ logging.info("MLB Podcast Generator application started")
 
  # Show logout button in sidebar if user is logged in
  if 'user' in st.session_state:
