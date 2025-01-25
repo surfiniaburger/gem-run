@@ -116,9 +116,11 @@ class SpanishMLBAudioMixer:
         return compress_dynamic_range(audio, threshold=-20.0, ratio=4.0, attack=10, release=100)
 
     def _fade_effect(self, effect: AudioSegment) -> AudioSegment:
+        logging.info("fading effect")
         return effect.fade_in(200).fade_out(self.EFFECT_FADE)
 
     def _process_voice_segment(self, voice_audio: AudioSegment) -> AudioSegment:
+        logging.info("processing voice segments")
         voice_audio = self._normalize_audio(voice_audio)
         voice_audio = self._compress_audio(voice_audio)
         return voice_audio - abs(self.VOICE_VOLUME)
