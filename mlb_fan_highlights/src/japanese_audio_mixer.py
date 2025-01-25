@@ -4,6 +4,10 @@ from typing import List, Dict, Optional
 import io
 import logging
 from google.cloud import logging as cloud_logging
+from google.cloud import secretmanager_v1
+from google.cloud import storage
+from google.oauth2 import service_account
+import json
 
 # Configure cloud logging at the top of the script, before other imports
 logging.basicConfig(level=logging.INFO)
@@ -12,32 +16,99 @@ log_client.setup_logging()
 
 
 class JapaneseMLBAudioMixer:
-    def __init__(self):
+    def __init__(self, project_id, secret_name):
+        service_account_json = self._get_secret(secret_name, project_id)
+        if service_account_json:
+            credentials = service_account.Credentials.from_service_account_info(
+                json.loads(service_account_json),
+                scopes=['https://www.googleapis.com/auth/cloud-platform']
+                )
+        else:
+            # Fallback error handling
+            raise Exception("Could not retrieve service account credentials")
+
+        # Initialize storage client
+        self.storage_client = storage.Client(
+            project=project_id,
+            credentials=credentials
+        )
+        self.bucket_name = "mlb-audio-assets"
+
+        # Sound effects and music paths
+        sound_effect_paths = {
+            "crowd_cheer": "assets/sounds/crowd_cheer.mp3",
+            "bat_hit": "assets/sounds/bat_hit.mp3",
+            "crowd_tension": "assets/sounds/crowd_tension.mp3",
+            "walkup_music": "assets/sounds/walkup_music.mp3",
+            "stadium_ambience": "assets/sounds/stadium_ambience.mp3"
+        }
+        
+        music_paths = {
+            "intro": "assets/music/sakura.mp3",
+            "highlight": "assets/music/highlight.mp3",
+            "outro": "assets/music/sakura.mp3"
+        }
+
+        # Load sound effects and music
         self.sound_effects = {
-            "crowd_cheer": AudioSegment.from_mp3("assets/sounds/crowd_cheer.mp3"),
-            "bat_hit": AudioSegment.from_mp3("assets/sounds/bat_hit.mp3"),
-            "crowd_tension": AudioSegment.from_mp3("assets/sounds/crowd_tension.mp3"),
-            "walkup_music": AudioSegment.from_mp3("assets/sounds/walkup_music.mp3"),
-            "stadium_ambience": AudioSegment.from_mp3("assets/sounds/stadium_ambience.mp3")
+            name: self._load_audio_from_gcs(path) 
+            for name, path in sound_effect_paths.items()
         }
-        
+
         self.background_music = {
-            "intro": AudioSegment.from_mp3("assets/music/sakura.mp3"),
-            "highlight": AudioSegment.from_mp3("assets/music/highlight.mp3"),
-            "outro": AudioSegment.from_mp3("assets/music/sakura.mp3")
+            name: self._load_audio_from_gcs(path) 
+            for name, path in music_paths.items()
         }
+
         
-        # Refined volume levels
+        # Niveles de volumen refinados
         self.VOICE_VOLUME = 0
         self.MUSIC_VOLUME = -25
         self.SFX_VOLUME = -18
         self.AMBIENCE_VOLUME = -30
         
-        # Timing constants (in milliseconds)
+        # Constantes de tiempo (en milisegundos)
         self.SPEAKER_PAUSE = 850
         self.CROSSFADE_LENGTH = 400
         self.INTRO_FADE = 2000
         self.EFFECT_FADE = 600
+
+    def _get_secret(self, secret_name, project_id):
+        """Retrieve secret from Secret Manager"""
+        try:
+            client = secretmanager_v1.SecretManagerServiceClient()
+            name = f"projects/{project_id}/secrets/{secret_name}/versions/latest"
+            response = client.access_secret_version(request={"name": name})
+            service_account_json = response.payload.data.decode("UTF-8")
+            # Parse and validate JSON
+            credentials_dict = json.loads(service_account_json)
+            required_fields = ['token_uri', 'client_email', 'private_key']
+        
+            for field in required_fields:
+               if field not in credentials_dict:
+                   raise ValueError(f"Missing required service account field: {field}")
+        
+            return service_account_json            
+        except Exception as e:
+            logging.error(f"Error retrieving secret {secret_name}: {e}")
+            raise
+
+    def _load_audio_from_gcs(self, blob_path):
+        """Load audio file from GCS bucket"""
+        try:
+            bucket = self.storage_client.bucket(self.bucket_name)
+            blob = bucket.blob(blob_path)
+            
+            # Download audio content
+            audio_content = blob.download_as_bytes()
+            
+            # Convert to AudioSegment
+            audio_buffer = io.BytesIO(audio_content)
+            return AudioSegment.from_mp3(audio_buffer)
+        except Exception as e:
+            logging.error(f"Error loading audio from {blob_path}: {e}")
+            # Fallback to silent audio if loading fails
+            return AudioSegment.silent(duration=1000)
 
     def _compress_audio(self, audio: AudioSegment) -> AudioSegment:
         logging.info("Compressing audio...")

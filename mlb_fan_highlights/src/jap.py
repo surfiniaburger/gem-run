@@ -9,6 +9,9 @@ import uuid
 import logging
 from google.cloud import logging as cloud_logging
 
+project_id = "gem-rush-007"
+secret_name = "cloud-run-invoker"
+
 # Configure cloud logging at the top of the script, before other imports
 logging.basicConfig(level=logging.INFO)
 log_client = cloud_logging.Client()
@@ -145,16 +148,15 @@ def generate_japanese_audio(contents: str, language: str, output_filename: str =
         
         logging.info("Voice segments created")
         # Initialize the audio mixer
-        mixer = JapaneseMLBAudioMixer()
+        mixer = JapaneseMLBAudioMixer(project_id, secret_name)
         
         
         # Mix the audio with effects and background
         audio_bytes = mixer.mix_podcast_audio(voice_segments)
-        
+               
         # Upload using the new GCS handler
         logging.info("Uploading audio to GCS")
-        key_file_path = "./gem-rush-007-a9765f2ada0e.json"  # Same path as your working command line example
-        gcs_handler = GCSHandler(key_file_path=key_file_path)
+        gcs_handler = GCSHandler(secret_id=secret_name)
         
         url = gcs_handler.upload_audio(audio_bytes, f"podcast-{uuid.uuid4()}.mp3")
         logging.info(f"Audio uploaded to GCS, URL: {url}")
