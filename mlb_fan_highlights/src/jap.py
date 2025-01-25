@@ -98,19 +98,20 @@ def list_available_voices():
         print(f"Language codes: {voice.language_codes}\n")
 
 
-def generate_japanese_audio(contents: str, language: str, output_filename: str = "mlb_podcast.mp3") -> str:
+def generate_japanese_audio(contents: str, language: str, output_filename: str = "japanese_mlb_podcast.mp3") -> str:
     """
-    Main function to generate and synthesize MLB podcast with language support
+    Generates a Japanese MLB podcast with sound effects and music mixing.
+    
+    Args:
+        contents: Input text/data for generating the podcast script
+        output_filename: Desired name for the output audio file
+        
+    Returns:
+        str: Path to the generated podcast file
     """
     try:
-        logging.info("Generating Japanese audio for MLB podcast")  
-        output_filename = os.path.abspath(output_filename)
-        script_json = generate_mlb_podcasts(contents)
-        logging.info(f"Generated script: {script_json} ")
-        
-        if isinstance(script_json, dict) and "error" in script_json:
-            raise Exception(f"Script generation error: {script_json['error']}")
-        # Speaker configurations
+        logging.info("genearating spanish audio")
+
         speaker_configs = {
             "実況アナウンサー": {
               "voice": "ja-JP-Neural2-B",  # Male voice for play-by-play
@@ -128,41 +129,64 @@ def generate_japanese_audio(contents: str, language: str, output_filename: str =
               "speed": 0.95  # Slightly slower for quotes
             }
         }
-            
-        # First create the individual voice segments
+        
+        # Initialize TTS client
+        client = texttospeech.TextToSpeechClient()
+        
+        # Generate podcast script
+        script_json = generate_mlb_podcasts(contents)
+        
+        if isinstance(script_json, dict) and "error" in script_json:
+            raise Exception(f"Script generation error: {script_json['error']}")
+        
+        # Generate voice segments
         voice_segments = []
         for segment in script_json:
             speaker = segment['speaker']
             text = segment['text'].strip()
-
-            
             
             if speaker in speaker_configs and text:
                 print(f"Processing segment: {speaker}")
-                audio_content = create_audio_for_speaker(text, speaker_configs[speaker])
+                
+                # Create input for text-to-speech
+                input_text = texttospeech.SynthesisInput(text=text)
+                
+                voice = texttospeech.VoiceSelectionParams(
+                    language_code="ja-JP",
+                    name=speaker_configs[speaker]["voice"],
+                    ssml_gender=texttospeech.SsmlVoiceGender[speaker_configs[speaker]["gender"]]
+                )
+                
+                audio_config = texttospeech.AudioConfig(
+                    audio_encoding=texttospeech.AudioEncoding.MP3,
+                    speaking_rate=speaker_configs[speaker]["speed"]
+                )
+                
+                # Generate audio for segment
+                response = client.synthesize_speech(
+                    request={"input": input_text, "voice": voice, "audio_config": audio_config}
+                )
+                
                 voice_segments.append({
-                    "audio": audio_content,
+                    "audio": response.audio_content,
                     "text": text,
                     "speaker": speaker
                 })
         
-        logging.info("Voice segments created")
         # Initialize the audio mixer
         mixer = JapaneseMLBAudioMixer(project_id, secret_name)
         
-        
         # Mix the audio with effects and background
         audio_bytes = mixer.mix_podcast_audio(voice_segments)
-               
+        
         # Upload using the new GCS handler
         logging.info("Uploading audio to GCS")
         gcs_handler = GCSHandler(secret_id=secret_name)
         
         url = gcs_handler.upload_audio(audio_bytes, f"podcast-{uuid.uuid4()}.mp3")
-        logging.info(f"Audio uploaded to GCS, URL: {url}")
-        return url       
+        logging.info(f"Successfully generated spanish mlb podcast and saved to GCS: {url}")
+        return url        
         
     except Exception as e:
-        raise Exception(f"Failed to generate script: {str(e)}")
-
-
+        logging.error(f"Failed to generate Spanish MLB podcast: {str(e)}")
+        raise Exception(f"Failed to generate Spanish MLB podcast: {str(e)}")
