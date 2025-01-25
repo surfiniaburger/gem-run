@@ -11,6 +11,7 @@ import json
 
 # Configure cloud logging at the top of the script, before other imports
 logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 log_client = cloud_logging.Client()
 log_client.setup_logging()
 
@@ -197,6 +198,7 @@ class SpanishMLBAudioMixer:
         return self.to_bytes(final_mix)
 
     def _add_pause(self, audio: AudioSegment, duration: int) -> AudioSegment:
+        logging.info("adding pause")
         return audio + AudioSegment.silent(duration=duration)
 
     def _detect_spanish_event_triggers(self, text: str) -> List[str]:
@@ -224,9 +226,11 @@ class SpanishMLBAudioMixer:
         return triggers
 
     def _normalize_audio(self, audio: AudioSegment) -> AudioSegment:
+        logging.info("normalizing audio")
         return normalize(audio)
 
     def to_bytes(self, mixed_audio: AudioSegment) -> bytes:
+        logging.info("converting audio to bytes")
         """Converts the mixed AudioSegment to bytes."""
         
         # Export the AudioSegment to a byte array in mp3 format

@@ -9,6 +9,16 @@ from audio_mixer import MLBAudioMixer
 logging.basicConfig(level=logging.DEBUG)
 from gcs_handler import GCSHandler
 import uuid
+from google.cloud import logging as cloud_logging
+
+# Configure cloud logging at the top of the script, before other imports
+logging.basicConfig(level=logging.INFO)
+log_client = cloud_logging.Client()
+log_client.setup_logging()
+
+project_id = "gem-rush-007"
+secret_name = "cloud-run-invoker"
+
 
 class MLBPodcastSynthesizer:
     def __init__(self, tts_location: str = "us"):
@@ -110,15 +120,14 @@ class MLBPodcastSynthesizer:
                 "audio": audio_content
                 })
         # Initialize audio mixer
-       mixer = MLBAudioMixer()
+       mixer = MLBAudioMixer(project_id, secret_name)
     # Mix the audio with effects and background
        audio_bytes = mixer.mix_podcast_audio(voice_segments)
         
         # Upload using the new GCS handler
         
-       key_file_path = "./gem-rush-007-a9765f2ada0e.json"  # Same path as your working command line example
-       gcs_handler = GCSHandler(key_file_path=key_file_path)
-        
+       logging.info("Uploading audio to GCS")
+       gcs_handler = GCSHandler(secret_id=secret_name) 
        url = gcs_handler.upload_audio(audio_bytes, f"podcast-{uuid.uuid4()}.mp3")
        return url    
 
