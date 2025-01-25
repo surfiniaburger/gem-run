@@ -5,7 +5,7 @@ from surfire import generate_mlb_podcasts
 from typing import List, Dict
 import uuid
 from google.cloud import storage
-from google.cloud import videointelligence_v1 as videointelligence
+from google.cloud import videointelligence_v1p1beta1 as videointelligence
 import time
 import logging
 from google.cloud import logging as cloud_logging
