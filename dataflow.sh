@@ -15,7 +15,7 @@ gcloud dataflow jobs run $JOB_NAME_GAMES \
 
 
 gcloud dataflow jobs run $JOB_NAME_PLAYS \
-  --gcs-location=gs://dataflow-templates-<REGION>/latest/PubSub_Subscription_to_BigQuery \
+  --gcs-location=gs://dataflow-templates-$REGION/latest/PubSub_Subscription_to_BigQuery \
   --region=$REGION \
   --parameters=inputSubscription=projects/gem-rush-007/subscriptions/mlb-data-subscription,outputTableSpec=gem-rush-007:dodgers_mlb_data_2024.plays
 
