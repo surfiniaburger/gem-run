@@ -67,37 +67,31 @@ class MediaProcessor:
 
 
         # Create the audio stream using the api
-        inputs = [videointelligence.InputUri(uri=uri) for uri in gcs_uris]
-        audio_stream = videointelligence.AudioStream(
+        inputs = [videointelligence.types.InputUri(uri=uri) for uri in gcs_uris]
+        audio_stream = videointelligence.types.AudioStream(
            streams=inputs,
         )
     
         #Define audio format
-        audio_format = videointelligence.AudioFormat(
+        audio_format = videointelligence.types.AudioFormat(
                 encoding="mp3",
                 sample_rate_hertz=44100,
                 channel_count=2,
              )
-    
-        #Define audio format
-        audio_format = videointelligence.AudioFormat(
-                encoding="mp3",
-                sample_rate_hertz=44100,
-                channel_count=2,
-             )
+
 
         #Set an output
         output_uri =  self._upload_audio_to_gcs(b'', output_filename) #empty bytes since we are not uploading anything here, just creating a uri
-        output_config = videointelligence.OutputConfig(uri = output_uri, audio_format=audio_format)
+        output_config = videointelligence.types.OutputConfig(uri = output_uri, audio_format=audio_format)
 
         # Create processing config
-        processing_config = videointelligence.ProcessingConfig(
+        processing_config = videointelligence.types.ProcessingConfig(
            audio_stream=audio_stream,
            output_config=output_config
         )
         
         # Create request for media processing
-        request = videointelligence.ProcessRequest(
+        request = videointelligence.types.ProcessRequest(
                 project_id = self.project_id,
                  location_id="us-central1",
                 processing_config = processing_config
