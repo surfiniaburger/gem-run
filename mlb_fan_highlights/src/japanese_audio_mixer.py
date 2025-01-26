@@ -215,7 +215,7 @@ class JapaneseMLBAudioMixer:
         return triggers
 
     def _normalize_audio(self, audio: AudioSegment) -> AudioSegment:
-        logging("normalizing audio")
+        logging.info("normalizing audio")
         return normalize(audio)
 
 
