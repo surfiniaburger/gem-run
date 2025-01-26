@@ -1,4 +1,5 @@
 #from google.cloud import texttospeech
+import traceback
 from google.cloud import  texttospeech
 import json
 import os
@@ -137,6 +138,9 @@ def generate_japanese_audio(contents: str, language: str, output_filename: str =
         logging.info("TTS client initialized")
         # Generate podcast script
         script_json = generate_mlb_podcasts(contents)
+        print(script_json)
+        print(type(generate_mlb_podcasts))
+        print(generate_mlb_podcasts)
         
         if isinstance(script_json, dict) and "error" in script_json:
             raise Exception(f"Script generation error: {script_json['error']}")
@@ -144,10 +148,11 @@ def generate_japanese_audio(contents: str, language: str, output_filename: str =
         # Generate voice segments
         voice_segments = []
         for segment in script_json:
-            speaker = segment['speaker']
-            text = segment['text'].strip()
+            try:
+             speaker = segment['speaker']
+             text = segment['text'].strip()
             
-            if speaker in speaker_configs and text:
+             if speaker in speaker_configs and text:
                 print(f"Processing segment: {speaker}")
                 
                 # Create input for text-to-speech
@@ -174,7 +179,9 @@ def generate_japanese_audio(contents: str, language: str, output_filename: str =
                     "text": text,
                     "speaker": speaker
                 })
-        
+            except Exception as segment_error:
+                logging.error(f"Error processing segment: {segment_error}")
+                raise        
         # Initialize the audio mixer
         mixer = JapaneseMLBAudioMixer(project_id, secret_name)
         
@@ -191,4 +198,7 @@ def generate_japanese_audio(contents: str, language: str, output_filename: str =
         
     except Exception as e:
         logging.error(f"Failed to generate Japanese MLB podcast: {str(e)}")
-        raise Exception(f"Failed to generate Japanese MLB podcast: {str(e)}")
+        logging.error(f"Detailed error: {type(e)}")
+        logging.error(f"Error details: {str(e)}")
+        logging.error(f"Full traceback: {traceback.format_exc()}")
+        raise
