@@ -12,6 +12,34 @@ import os
 from google.auth import credentials
 from google.auth.credentials import Credentials
 from sqlalchemy import text
+from google.cloud import secretmanager_v1
+
+
+
+
+def get_secret(project_id: str, secret_id: str, version_id: str = 'latest'):
+    """
+    Retrieve a secret from Google Secret Manager.
+    
+    Args:
+        project_id: Google Cloud project ID
+        secret_id: ID of the secret in Secret Manager
+        version_id: Version of the secret (default is 'latest')
+    
+    Returns:
+        str: Decoded secret value
+    """
+    # Create the secret manager client
+    client = secretmanager_v1.SecretManagerServiceClient()
+    
+    # Construct the resource name of the secret version
+    name = f"projects/{project_id}/secrets/{secret_id}/versions/{version_id}"
+    
+    # Access the secret version
+    response = client.access_secret_version(request={"name": name})
+    
+    # Return the decoded secret
+    return response.payload.data.decode('UTF-8')
 
 
 def setup_logger(log_level: str = "INFO") -> logging.Logger:
@@ -285,19 +313,18 @@ async def create_player_embeddings_workflow(
 # Example usage:
 async def main():
     try:
-        # Set these environment variables before running
-        os.environ['ALLOYDB_USER'] = 'postgres'  # Replace with actual user
-        os.environ['ALLOYDB_PASSWORD'] = '<password>'  
+        project_id="gem-rush-007"
+        db_password = get_secret(project_id, "ALLOYDB_PASSWORD")  
         workflow = await create_player_embeddings_workflow(
-            project_id="gem-rush-007",
+            project_id=project_id,
             bucket_name="mlb-headshot",
-            region="us-central1",
+            region="us-east4",
             cluster="my-cluster",
-            instance="primary-instance",
+            instance="my-cluster-primary",
             database="player_headshots",
             log_level="INFO",  # Can be set to "DEBUG" for more detailed logs,
             db_user='postgres',
-            db_password='<password>'
+            db_password=db_password
         )
         
         # Example: Find similar players for a specific headshot
