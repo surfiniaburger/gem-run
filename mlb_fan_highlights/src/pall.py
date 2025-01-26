@@ -137,9 +137,11 @@ def generate_spanish_audio(contents: str, language: str, output_filename: str = 
 
         # Initialize TTS client
         client = texttospeech.TextToSpeechClient()
-        
+        # Ensure output filename is absolute and has no empty directory components
+        output_filename = os.path.abspath(output_filename)        
         # Generate podcast script
         script_json = generate_mlb_podcasts(contents)
+        print(script_json)
         
         if isinstance(script_json, dict) and "error" in script_json:
             raise Exception(f"Script generation error: {script_json['error']}")
