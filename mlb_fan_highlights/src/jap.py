@@ -112,7 +112,7 @@ def generate_japanese_audio(contents: str, language: str, output_filename: str =
     """
     try:
         logging.info("generating spanish audio")
-        logging.info(f"Content been seent to generate script: {content}")
+        logging.info(f"Content been seent to generate script: {contents}")
 
         speaker_configs = {
             "実況アナウンサー": {
