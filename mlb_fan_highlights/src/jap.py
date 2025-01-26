@@ -99,6 +99,7 @@ def list_available_voices():
 
 
 def generate_japanese_audio(contents: str, language: str, output_filename: str = "japanese_mlb_podcast.mp3") -> str:
+    logging.info("Generating Japanese audio")
     """
     Generates a Japanese MLB podcast with sound effects and music mixing.
     
@@ -110,7 +111,8 @@ def generate_japanese_audio(contents: str, language: str, output_filename: str =
         str: Path to the generated podcast file
     """
     try:
-        logging.info("genearating spanish audio")
+        logging.info("generating spanish audio")
+        logging.info(f"Content been seent to generate script: {content}")
 
         speaker_configs = {
             "実況アナウンサー": {
@@ -129,10 +131,10 @@ def generate_japanese_audio(contents: str, language: str, output_filename: str =
               "speed": 0.95  # Slightly slower for quotes
             }
         }
-        
+
         # Initialize TTS client
         client = texttospeech.TextToSpeechClient()
-        
+        logging.info("TTS client initialized")
         # Generate podcast script
         script_json = generate_mlb_podcasts(contents)
         
@@ -188,5 +190,5 @@ def generate_japanese_audio(contents: str, language: str, output_filename: str =
         return url        
         
     except Exception as e:
-        logging.error(f"Failed to generate Spanish MLB podcast: {str(e)}")
-        raise Exception(f"Failed to generate Spanish MLB podcast: {str(e)}")
+        logging.error(f"Failed to generate Japanese MLB podcast: {str(e)}")
+        raise Exception(f"Failed to generate Japanese MLB podcast: {str(e)}")
