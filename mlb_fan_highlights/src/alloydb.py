@@ -13,98 +13,60 @@ from google.auth import credentials
 from google.auth.credentials import Credentials
 from sqlalchemy import text
 from google.cloud import secretmanager_v1
-
-
+import yaml
 
 def get_secret(project_id: str, secret_id: str, version_id: str = 'latest'):
     """
     Retrieve a secret from Google Secret Manager.
-    
-    Args:
-        project_id: Google Cloud project ID
-        secret_id: ID of the secret in Secret Manager
-        version_id: Version of the secret (default is 'latest')
-    
-    Returns:
-        str: Decoded secret value
     """
-    # Create the secret manager client
     client = secretmanager_v1.SecretManagerServiceClient()
-    
-    # Construct the resource name of the secret version
     name = f"projects/{project_id}/secrets/{secret_id}/versions/{version_id}"
-    
-    # Access the secret version
     response = client.access_secret_version(request={"name": name})
-    
-    # Return the decoded secret
     return response.payload.data.decode('UTF-8')
-
 
 def setup_logger(log_level: str = "INFO") -> logging.Logger:
     """
     Set up a logger with the specified log level and formatting.
-    
-    Args:
-        log_level: Logging level (default: "INFO")
-        
-    Returns:
-        logging.Logger: Configured logger instance
     """
-    # Create logger
     logger = logging.getLogger("PlayerEmbeddings")
     logger.setLevel(getattr(logging, log_level))
-
-    # Create console handler with formatting
     console_handler = logging.StreamHandler(sys.stdout)
     formatter = logging.Formatter(
         '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
     console_handler.setFormatter(formatter)
-    
-    # Add handler to logger if it doesn't already have handlers
     if not logger.handlers:
         logger.addHandler(console_handler)
-    
     return logger
 
 def parse_player_info(file_name: str, logger: Optional[logging.Logger] = None) -> dict:
     """
     Parse player information from file name.
-    Format: PlayerName_Team_Year.jpg (e.g., A.J._Minter_ATL_2024.jpg)
     """
     if logger:
         logger.debug(f"Parsing player info from filename: {file_name}")
-    
     try:
-        # Remove .jpg extension and split
         parts = file_name.replace('.jpg', '').split('_')
-        
-        # Extract year and team from the end
         year = parts[-1]
         team = parts[-2]
-        
-        # Remaining parts make up the player name
         player_name = ' '.join(parts[:-2])
-        
         player_info = {
             "player_name": player_name,
             "team": team,
             "year": year
         }
-        
         if logger:
             logger.debug(f"Successfully parsed player info: {player_info}")
-        
         return player_info
     except Exception as e:
         if logger:
             logger.error(f"Error parsing filename {file_name}: {str(e)}")
         raise
 
+
 async def test_database_connection(engine: AlloyDBEngine, logger: logging.Logger) -> bool:
-    """Test database connection with proper SQLAlchemy syntax."""
+    """Test database connection."""
     try:
         async with engine._pool.connect() as conn:
             result = await conn.execute(text("SELECT 1"))
@@ -114,50 +76,39 @@ async def test_database_connection(engine: AlloyDBEngine, logger: logging.Logger
     except Exception as e:
         logger.error(f"Database connection test failed: {str(e)}")
         return False
-    
+
 
 async def create_player_embeddings_workflow(
-    project_id: str,
-    bucket_name: str,
-    region: str,
-    cluster: str,
-    instance: str,
-    database: str,
-    table_name: str = "player_embeddings",
-    log_level: str = "INFO",
-    db_user: Optional[str] = None,
-    db_password: Optional[str] = None
+    config_path: str = "config.yaml",
+    log_level: str = "INFO"
 ):
     """
     Workflow to generate and store multimodal embeddings for player headshots
     using signed URLs and AlloyDB vector storage.
-    Args:
-        project_id: GCP project ID
-        bucket_name: GCS bucket name
-        region: GCP region
-        cluster: AlloyDB cluster name
-        instance: AlloyDB instance name
-        database: Database name
-        table_name: Table name for vector store
-        log_level: Logging level
-        db_user: Database user (optional, defaults to env var ALLOYDB_USER)
-        db_password: Database password (optional, defaults to env var ALLOYDB_PASSWORD)    
     """
     # Set up logger
     logger = setup_logger(log_level)
     logger.info("Starting player embeddings workflow")
-    
+
     try:
-        # Get database credentials
-        db_user = db_user or os.getenv('ALLOYDB_USER')
-        db_password = db_password or os.getenv('ALLOYDB_PASSWORD')
-        
+        # Load configuration from YAML file
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+
+        project_id = config["project_id"]
+        bucket_name = config["bucket_name"]
+        region = config["region"]
+        cluster = config["alloydb"]["cluster"]
+        instance = config["alloydb"]["instance"]
+        database = config["alloydb"]["database"]
+        table_name = config["alloydb"].get("table_name", "player_embeddings")
+        db_user = config["alloydb"].get("user")
+        db_password = get_secret(project_id, "ALLOYDB_PASSWORD")
+
         if not db_user or not db_password:
-            raise ValueError(
-                "Database credentials not provided. Set ALLOYDB_USER and ALLOYDB_PASSWORD "
-                "environment variables or pass credentials as parameters."
+          raise ValueError(
+                "Database credentials not provided. Please check config.yaml"
             )
-        
         logger.info("Validating database credentials")
         logger.debug(f"Using database user: {db_user}")        
         # Initialize storage client
@@ -172,7 +123,7 @@ async def create_player_embeddings_workflow(
         model = MultiModalEmbeddingModel.from_pretrained("multimodalembedding@001")
         logger.debug("Vertex AI initialized successfully")
 
-        # Initialize AlloyDB
+       # Initialize AlloyDB
         logger.info(f"Connecting to AlloyDB instance: {instance}")
         engine = await AlloyDBEngine.afrom_instance(
             project_id=project_id,
@@ -312,18 +263,9 @@ async def create_player_embeddings_workflow(
 # Example usage:
 async def main():
     try:
-        project_id="gem-rush-007"
-        db_password = get_secret(project_id, "ALLOYDB_PASSWORD")  
         workflow = await create_player_embeddings_workflow(
-            project_id=project_id,
-            bucket_name="mlb-headshot",
-            region="us-east4",
-            cluster="my-cluster",
-            instance="my-cluster-primary",
-            database="player_headshots",
-            log_level="INFO",  # Can be set to "DEBUG" for more detailed logs,
-            db_user='postgres',
-            db_password=db_password
+            config_path="config.yaml",
+            log_level="INFO",
         )
         
         # Example: Find similar players for a specific headshot
@@ -337,6 +279,6 @@ async def main():
         logging.error(f"Error in main: {str(e)}")
         raise
 
+
 if __name__ == "__main__":
     asyncio.run(main())
-    
