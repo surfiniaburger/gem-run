@@ -15,6 +15,7 @@ from sqlalchemy import text
 from google.cloud import secretmanager_v1
 import yaml
 
+
 def get_secret(project_id: str, secret_id: str, version_id: str = 'latest'):
     """
     Retrieve a secret from Google Secret Manager.
@@ -89,6 +90,8 @@ async def create_player_embeddings_workflow(
     # Set up logger
     logger = setup_logger(log_level)
     logger.info("Starting player embeddings workflow")
+    # Inside create_player_embeddings_workflow before opening the file:
+    logger.debug(f"Attempting to open config file at: {config_path}")
 
     try:
         # Load configuration from YAML file
