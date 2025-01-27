@@ -1,0 +1,8 @@
+project_id: "gem-rush-007"
+bucket_name: "mlb-headshot"
+region: "us-east4"
+alloydb:
+  cluster: "my-cluster"
+  instance: "my-cluster-primary"
+  database: "player_headshots"
+  user: "postgres" # Remove password from file and use secret manager
