@@ -1,59 +1,48 @@
 import streamlit as st
 import asyncio
-from alloydb import create_player_embeddings_workflow
-import os
-import logging
+from embed import PlayerImageSimilarity, main
 
-def setup_logger(log_level: str = "INFO") -> logging.Logger:
-    """Set up a logger with the specified log level and formatting."""
-    # Create logger
-    logger = logging.getLogger("PlayerEmbeddings")
-    logger.setLevel(getattr(logging, log_level))
+# Set up the Streamlit app
+st.title("MLB Player Similarity Search")
+st.write("Enter an MLB player's name or click the button to find similar players.")
 
-    # Create console handler with formatting
-    console_handler = logging.StreamHandler()
-    formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
-    console_handler.setFormatter(formatter)
+# Input field for the player's name
+player_name = st.text_input("Enter MLB Player Name (e.g., A.J._Minter_ATL_2024.jpg):")
 
-    # Add handler to logger if it doesn't already have handlers
-    if not logger.handlers:
-        logger.addHandler(console_handler)
+# Button to trigger the similarity search
+if st.button("Find Similar Players"):
+    if player_name:
+        st.write(f"Searching for players similar to: {player_name}")
 
-    return logger
+        # Initialize the PlayerImageSimilarity class
+        similarity_search = PlayerImageSimilarity(
+            project_id="gem-rush-007",
+            bucket_name="mlb-headshots",
+            region="us-central1",
+            collection_name="player_embeddings",
+            secret_id="cloud-run-invoker"
+        )
 
-async def run_workflow():
-    workflow = await create_player_embeddings_workflow(config_path="/app/mlb_fan_highlights/src/config.yaml")
-    return workflow
+        # Verify bucket access
+        similarity_search.verify_bucket_access()
 
-def app():
-    st.title("Player Embeddings Generator")
-    
-    if st.button("Generate Embeddings"):
-        st.info("Processing... This may take a few minutes.")
-        logger = setup_logger()
-        logger.info("Starting the main app")
-        os.chdir("/app/mlb_fan_highlights/src") # added to change the directory to find config.yaml
-        
-        # Run async workflow
-        result = asyncio.run(run_workflow())
-        
-        if result:
-            st.success("Embeddings generated successfully!")
+        # Perform the similarity search
+        try:
+            similar_players = asyncio.run(similarity_search.find_similar_players(player_name))
             
-            # Search functionality
-            st.subheader("Search Similar Players")
-            player_file = st.text_input("Enter player filename (e.g., A.J._Minter_ATL_2024.jpg)")
-            k_similar = st.slider("Number of similar players", 1, 10, 5)
-            
-            if st.button("Search"):
-                similar_players = asyncio.run(result["find_similar"](player_file, k_similar))
-                
-                st.write("Similar Players:")
+            # Display the results
+            if similar_players:
+                st.write("### Similar Players Found:")
                 for player in similar_players:
-                    st.write(player)
-
-if __name__ == "__main__":
-    app()
+                    st.write(f"**Player Name:** {player['player_name']}")
+                    st.write(f"**Team:** {player['team']}")
+                    st.write(f"**Year:** {player['year']}")
+                    st.write(f"**File Name:** {player['file_name']}")
+                    st.write(f"**GCS URI:** {player['gcs_uri']}")
+                    st.write("---")
+            else:
+                st.write("No similar players found.")
+        except Exception as e:
+            st.error(f"An error occurred: {str(e)}")
+    else:
+        st.warning("Please enter a valid MLB player name.")
