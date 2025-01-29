@@ -189,9 +189,14 @@ def generate_spanish_audio(contents: str, language: str, output_filename: str = 
         # Upload using the new GCS handler
         logging.info("Uploading audio to GCS")
         gcs_handler = GCSHandler(secret_id=secret_name)
+
         
         url = gcs_handler.upload_audio(audio_bytes, f"podcast-{uuid.uuid4()}.mp3")
         logging.info(f"Successfully generated spanish mlb podcast and saved to GCS: {url}")
+
+        if gcs_handler.is_url_expired(url):
+            url = gcs_handler.refresh_signed_url(url)
+            
         return url        
         
     except Exception as e:

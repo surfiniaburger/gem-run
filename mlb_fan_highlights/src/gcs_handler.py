@@ -2,8 +2,10 @@ from google.cloud import logging as cloud_logging
 from google.cloud import secretmanager
 from google.cloud import storage
 from google.oauth2 import service_account
-from datetime import timedelta
+from datetime import timedelta, datetime, UTC
 import json
+import urllib.parse
+import base64
 
 class GCSHandler:
     def __init__(self, secret_id: str, secret_version: str = 'latest'):
@@ -82,7 +84,7 @@ class GCSHandler:
             # Generate signed URL
             url = blob.generate_signed_url(
                 version="v4",
-                expiration=timedelta(minutes=10),
+                expiration=timedelta(minutes=3600),
                 method="GET",
                 service_account_email=self.credentials.service_account_email,
                 access_token=None,
@@ -124,3 +126,93 @@ class GCSHandler:
             error_message = f"Bucket access error: {str(e)}"
             self.logger.log_text(error_message, severity='ERROR')
             raise
+
+
+
+    def refresh_signed_url(self, expired_url: str) -> str:
+        """
+        Refresh an expired signed URL for a GCS object.
+        
+        Args:
+            expired_url: The expired signed URL
+            
+        Returns:
+            str: A new signed URL for the same object
+            
+        Raises:
+            ValueError: If the URL is not a valid GCS signed URL
+        """
+        try:
+            # Parse the URL to extract the blob path
+            parsed_url = urllib.parse.urlparse(expired_url)
+            path_parts = parsed_url.path.split('/')
+            
+            # The blob name should be everything after the bucket name in the path
+            if self.bucket_name not in path_parts:
+                raise ValueError("Invalid GCS URL: bucket name not found")
+            
+            bucket_index = path_parts.index(self.bucket_name)
+            blob_name = '/'.join(path_parts[bucket_index + 1:])
+            
+            # Log refresh attempt
+            self.logger.log_text(f"Attempting to refresh signed URL for blob: {blob_name}")
+            
+            # Get the blob and generate a new signed URL
+            bucket = self.storage_client.bucket(self.bucket_name)
+            blob = bucket.blob(blob_name)
+            
+            new_url = blob.generate_signed_url(
+                version="v4",
+                expiration=timedelta(minutes=3600),
+                method="GET",
+                service_account_email=self.credentials.service_account_email,
+                access_token=None,
+                credentials=self.credentials
+            )
+            
+            # Log successful refresh
+            self.logger.log_text(f"Successfully refreshed signed URL for {blob_name}")
+            
+            return new_url
+            
+        except Exception as e:
+            # Log refresh error
+            error_message = f"URL refresh error: {str(e)}"
+            self.logger.log_text(error_message, severity='ERROR')
+            raise
+
+    def is_url_expired(self, signed_url: str) -> bool:
+        """
+        Check if a signed URL has expired.
+        
+        Args:
+            signed_url: The signed URL to check
+            
+        Returns:
+            bool: True if the URL has expired, False otherwise
+        """
+        try:
+            # Parse the URL to extract the expiration timestamp
+            parsed_url = urllib.parse.urlparse(signed_url)
+            query_params = urllib.parse.parse_qs(parsed_url.query)
+            
+            # Extract expiration from X-Goog-Expires parameter
+            if 'X-Goog-Expires' in query_params:
+                expires = int(query_params['X-Goog-Expires'][0])
+                # Extract timestamp from X-Goog-Date parameter
+                if 'X-Goog-Date' in query_params:
+                    date_str = query_params['X-Goog-Date'][0]
+                    start_time = datetime.strptime(date_str, '%Y%m%dT%H%M%SZ')
+                    expiration_time = start_time + timedelta(seconds=expires)
+                    
+                    # Compare with current time
+                    return datetime.now(UTC) > expiration_time
+            
+            # If we can't parse the expiration, assume it's expired to be safe
+            return True
+            
+        except Exception as e:
+            # Log error and assume expired to be safe
+            error_message = f"Error checking URL expiration: {str(e)}"
+            self.logger.log_text(error_message, severity='ERROR')
+            return True
