@@ -201,6 +201,7 @@ class PlayerImageSimilarity:
                         }],
                         ids=[blob.name]
                     )
+                   
                     
                     processed_count += 1
                     self.logger.info(f"Successfully processed {blob.name}")
@@ -236,16 +237,10 @@ class PlayerImageSimilarity:
                 blob.download_to_filename(temp_file.name)
                 temp_file_path = temp_file.name
             
-            # Generate embedding using the local file
-            query_image = Image.load_from_file(temp_file_path)
-            query_embeddings = self.model.get_embeddings(
-                image=query_image,
-                dimension=1408
-            )
-            
+
             # Perform similarity search
-            results = self.vector_store.similarity_search_by_vector(
-                query_embeddings.image_embedding,
+            results = self.vector_store.similarity_search(
+                query=temp_file_path,
                 k=k
             )
             
@@ -271,14 +266,14 @@ async def main():
             secret_id="cloud-run-invoker"
         )
         # Verify bucket access first
-        similarity_search.verify_bucket_access()
+       #similarity_search.verify_bucket_access()
 
         # Process all images and store embeddings
-        results = await similarity_search.process_player_images()
-        print(f"Processed {results['processed']} images with {results['errors']} errors")
+      # results = await similarity_search.process_player_images()
+      # print(f"Processed {results['processed']} images with {results['errors']} errors")
         
         # Find similar players
-        similar_players = await similarity_search.find_similar_players("A.J._Minter_ATL_2024.jpg")
+        similar_players = await similarity_search.find_similar_players("A.J._Puk_ARI_2024.jpg")
         print("Similar players found:", similar_players)
         
     except Exception as e:
