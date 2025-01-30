@@ -14,6 +14,7 @@ from datetime import timedelta
 from google.cloud import logging as cloud_logging
 import logging
 from user_profile import UserProfile
+import streamlit.components.v1 as components
 
 # Configure cloud logging at the top of the script, before other imports
 logging.basicConfig(level=logging.INFO)
@@ -25,17 +26,8 @@ auth = get_auth()
 db = get_firestore()
 
 
-# Add Google Analytics tracking code
-ga_script = """
-<!-- Google tag (gtag.js) -->
-<script async src="https://www.googletagmanager.com/gtag/js?id=G-98KGSC9LXG"></script>
-<script>
-    window.dataLayer = window.dataLayer || [];
-    function gtag(){dataLayer.push(arguments);}
-    gtag('js', new Date());
-    gtag('config', 'G-98KGSC9LXG');
-</script>
-"""
+
+
 
 # Inject GA script into Streamlit
 st.set_page_config(
@@ -44,8 +36,6 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Inject the GA script using markdown
-st.markdown(ga_script, unsafe_allow_html=True)
 
 
 # Constants for Google Cloud Storage
@@ -223,6 +213,22 @@ def upload_audio_to_gcs(audio_content: bytes, file_name: str) -> str:
 
 
 def main():
+ # Inject the Google Analytics code
+ components.html(
+    """
+    <!-- Google tag (gtag.js) -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-98KGSC9LXG"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+
+      gtag('config', 'G-98KGSC9LXG');
+    </script>
+    """,
+    height=0,
+ )
+
  st.title("MLB Podcast Generator")
  st.write("Customize your MLB podcast by selecting your preferences below.")
  logging.info("MLB Podcast Generator application started")

@@ -23,6 +23,10 @@ ga_script = """
     gtag('config', 'G-98KGSC9LXG');
 </script>
 """
+# Inject GA script using streamlit HTML function
+def inject_ga():
+    st.components.v1.html(ga_script, height=0)
+
 
 # Inject GA script into Streamlit
 st.set_page_config(
@@ -30,9 +34,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
-
-# Inject the GA script using markdown
-st.markdown(ga_script, unsafe_allow_html=True)
 
 
 def create_analytics_landing():
@@ -231,6 +232,9 @@ def sign_in_or_sign_up():
 
 
 def main():
+    # Inject the GA script
+    inject_ga()
+
     # Check if user is in session
     if 'user' not in st.session_state:
         st.warning("Please log in to access this page.")
