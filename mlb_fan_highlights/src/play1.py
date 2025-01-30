@@ -388,8 +388,8 @@ def main():
     logger.info("Starting Dodgers data processing...")
     
     try:
-        create_topic_if_not_exists(PROJECT_ID, TOPIC_ID)
-        process_recent_games(DATASET_ID, TOPIC_ID, PROJECT_ID, n_games=50)
+        #create_topic_if_not_exists(PROJECT_ID, TOPIC_ID)
+        process_recent_games(DATASET_ID, TOPIC_ID, PROJECT_ID, n_games=91)
         logger.info("Successfully completed data processing and upload")
         
     except Exception as e:
