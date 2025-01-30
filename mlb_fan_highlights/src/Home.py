@@ -11,6 +11,30 @@ from user_profile import UserProfile
 auth = get_auth()
 db = get_firestore()
 
+
+# Add Google Analytics tracking code
+ga_script = """
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-98KGSC9LXG"></script>
+<script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', 'G-98KGSC9LXG');
+</script>
+"""
+
+# Inject GA script into Streamlit
+st.set_page_config(
+    page_title="MLB Podcast Generator",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Inject the GA script using markdown
+st.markdown(ga_script, unsafe_allow_html=True)
+
+
 def create_analytics_landing():
     # Custom CSS for animations and styling
     st.markdown("""
