@@ -224,7 +224,7 @@ def get_team_roster(team_id: int, season: int = 2024) -> pd.DataFrame:
 
 def main():
     """Main execution function"""
-    DATASET_ID = "dodgers_mlb_data_2024"  # Replace with your desired dataset ID
+    DATASET_ID = "athletics_mlb_data_2024"  # Replace with your desired dataset ID
     
     logger.info("Starting Dodgers roster processing...")
     
@@ -233,7 +233,7 @@ def main():
         create_roster_table(DATASET_ID)
         
         # Get Dodgers roster
-        dodgers_roster = get_team_roster(119)  # 119 is Dodgers team ID
+        dodgers_roster = get_team_roster(133)  # 119 is Dodgers team ID
         
         if not dodgers_roster.empty:
             # Upload to BigQuery
