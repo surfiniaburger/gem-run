@@ -19,9 +19,34 @@ from user_profile import UserProfile
 logging.basicConfig(level=logging.INFO)
 log_client = cloud_logging.Client()
 log_client.setup_logging()
+
 # Get Firebase services
 auth = get_auth()
 db = get_firestore()
+
+
+# Add Google Analytics tracking code
+ga_script = """
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-98KGSC9LXG"></script>
+<script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', 'G-98KGSC9LXG');
+</script>
+"""
+
+# Inject GA script into Streamlit
+st.set_page_config(
+    page_title="MLB Podcast Generator",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Inject the GA script using markdown
+st.markdown(ga_script, unsafe_allow_html=True)
+
 
 # Constants for Google Cloud Storage
 GCS_BUCKET_NAME = "mlb-podcast-bucket" # Replace this with your desired bucket name, it should be unique
