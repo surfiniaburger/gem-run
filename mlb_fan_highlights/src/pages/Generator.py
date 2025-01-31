@@ -167,6 +167,9 @@ def get_players_for_team(team):
             text = analysis_result.split(':')[-1] if ':' in analysis_result else analysis_result
             text = text.replace(' and ', ', ')
             players = [player.strip() for player in text.split(',') if player.strip()]
+        # Clean up the last name by removing any trailing period
+        if players and players[-1].endswith('.'):
+            players[-1] = players[-1].rstrip('.')
         
         return players
     except Exception as e:
