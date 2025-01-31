@@ -249,3 +249,43 @@ class UserProfile:
                 'can_generate': False,
                 'error': str(e)
             }
+
+
+    def save_feedback(self, feedback_data: Dict[str, Any]) -> bool:
+        """
+        Saves user feedback to Firestore.
+        
+        Args:
+            feedback_data: Dictionary containing feedback data (e.g., rating, comments)
+            
+        Returns:
+            bool: True if feedback was saved successfully, False otherwise
+        """
+        try:
+            feedback_entry = {
+                **feedback_data,
+                'submitted_at': datetime.now()
+            }
+            
+            # Get current feedback history from document data
+            doc = self._user_ref.get()
+            if doc.exists:
+                data = doc.to_dict()
+                current_feedback = data.get('feedback_history', [])
+            else:
+                current_feedback = []
+
+            # Add new feedback entry
+            current_feedback.append(feedback_entry)
+            
+            # Update document
+            self._user_ref.update({
+                'feedback_history': current_feedback
+            })
+            
+            logging.info(f"Feedback saved for user {self.uid}")
+            return True
+            
+        except Exception as e:
+            logging.error(f"Error saving feedback for {self.uid}: {str(e)}")
+            return False

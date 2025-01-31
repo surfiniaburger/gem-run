@@ -32,6 +32,25 @@ bq_client = bigquery.Client(project=PROJECT_ID)
 client = genai.Client(vertexai=True, project="gem-rush-007", location="us-central1")
 MODEL_ID = "gemini-2.0-flash-exp"  # @param {type: "string"}
 
+safety_settings = [
+    SafetySetting(
+        category="HARM_CATEGORY_DANGEROUS_CONTENT",
+        threshold="BLOCK_LOW_AND_ABOVE",
+    ),
+    SafetySetting(
+        category="HARM_CATEGORY_HARASSMENT",
+        threshold="BLOCK_LOW_AND_ABOVE",
+    ),
+    SafetySetting(
+        category="HARM_CATEGORY_HATE_SPEECH",
+        threshold="BLOCK_LOW_AND_ABOVE",
+    ),
+    SafetySetting(
+        category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
+        threshold="BLOCK_LOW_AND_ABOVE",
+    ),
+]
+
 # Team configurations
 TEAMS = {
     'rangers': 140,
@@ -1122,11 +1141,14 @@ def evaluate_podcast_script(script: str, original_question: str) -> dict:
 
 
     try:
+        google_search_tool = Tool(google_search=GoogleSearch())
         response = client.models.generate_content(
             model=MODEL_ID,
             contents=evaluator_prompt,
             config=GenerateContentConfig(
                 temperature=0,
+                tools=[google_search_tool],
+                safety_settings=safety_settings,
             ),
         )
         try:
@@ -1285,6 +1307,7 @@ def generate_mlb_podcasts(contents: str) -> dict:
                     fetch_player_plays_by_opponent,
                 ],
                 temperature=0,
+                safety_settings=safety_settings,
             ),
         )
 

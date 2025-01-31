@@ -6,11 +6,11 @@ from firebase_admin import firestore
 import uuid
 import pytz
 from user_profile import UserProfile
+from auth import sign_in_or_sign_up  # Import the authentication functions
 
 # Get Firebase services
 auth = get_auth()
 db = get_firestore()
-
 
 # Add Google Analytics tracking code
 ga_script = """
@@ -27,14 +27,12 @@ ga_script = """
 def inject_ga():
     st.components.v1.html(ga_script, height=0)
 
-
 # Inject GA script into Streamlit
 st.set_page_config(
     page_title="MLB Podcast Generator",
     layout="wide",
     initial_sidebar_state="expanded"
 )
-
 
 def create_analytics_landing():
     # Custom CSS for animations and styling
@@ -162,75 +160,6 @@ def create_analytics_landing():
         </div>
     """, unsafe_allow_html=True)
 
-def handle_authentication(email, password, auth_type):
- """Enhanced authentication handler with detailed error handling"""
- try:
-     if auth_type == "Sign In":
-         user = auth.get_user_by_email(email)
-         auth_user = auth.get_user(user.uid)
-         st.session_state['user'] = auth_user
-         
-         # Create/update user profile
-         profile = UserProfile(user.uid, email)
-         profile.create_or_update()
-         
-         st.success(f"Welcome back, {email}!")
-         return True
-         
-     else:  # Sign Up
-         # Password validation
-         if len(password) < 6:
-             st.error("Password must be at least 6 characters long")
-             return False
-             
-         user = auth.create_user(email=email, password=password)
-         auth_user = auth.get_user(user.uid)
-         st.session_state['user'] = auth_user
-         
-         # Create new user profile
-         profile = UserProfile(user.uid, email)
-         profile.create_or_update({
-             'account_type': 'free',
-             'podcasts_generated': 0
-         })
-         
-         st.success(f"Welcome to MLB Podcast Generator, {email}!")
-         return True
-         
- except auth.EmailAlreadyExistsError:
-     st.error("This email is already registered. Please sign in instead.")
- except auth.UserNotFoundError:
-     st.error("No account found with this email. Please sign up.")
- except auth.InvalidEmailError:
-     st.error("Please enter a valid email address.")
- except auth.WeakPasswordError:
-     st.error("Password is too weak. Please choose a stronger password.")
- except Exception as e:
-     st.error(f"Authentication error: {str(e)}")
- return False
-
-
-
-def sign_in_or_sign_up():
- """Enhanced sign in/sign up form with validation"""
- auth_type = st.radio("Sign In or Sign Up", ["Sign In", "Sign Up"])
- 
- with st.form(key='auth_form'):
-     email = st.text_input("Email")
-     password = st.text_input("Password", type="password")
-     submit_button = st.form_submit_button(auth_type)
-     
-     if submit_button:
-         if not email or not password:
-             st.error("Please fill in all fields.")
-             return
-         
-         if handle_authentication(email, password, auth_type):
-             # Use rerun() to refresh the page after successful authentication
-             st.rerun()
-
-
-
 def main():
     # Inject the GA script
     inject_ga()
@@ -238,7 +167,7 @@ def main():
     # Check if user is in session
     if 'user' not in st.session_state:
         st.warning("Please log in to access this page.")
-        sign_in_or_sign_up()
+        sign_in_or_sign_up()  # Use the imported function
         return
     
     # If user is logged in, show the analytics landing page
@@ -280,6 +209,6 @@ def main():
          for podcast in history:
              st.audio(podcast['url'])
              st.caption(f"Generated: {podcast['generated_at']}")
-                        
+
 if __name__ == "__main__":
     main()
