@@ -9,9 +9,12 @@ st.write("Your generated MLB podcast content goes here...")
 st.subheader("We'd love to hear your feedback! 📝")
 
 # Overall rating
-rating = st.feedback(
-    "How would you rate this podcast?",
-    "stars"
+rating = st.slider(
+    "How would you rate this podcast? ⭐",
+    min_value=1,
+    max_value=5,
+    value=3,
+    step=1
 )
 
 # Detailed feedback
