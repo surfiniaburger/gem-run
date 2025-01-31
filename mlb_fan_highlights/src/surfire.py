@@ -1053,6 +1053,111 @@ def fetch_player_plays_by_game_type(player_name: str, team_name: str, game_type:
         return []
 
 
+def evaluate_podcast_script(script: str, original_question: str) -> dict:
+    """
+    Evaluates a podcast script using Gemini, providing feedback on various aspects.
+
+    Args:
+        script (str): The JSON formatted podcast script to evaluate.
+        original_question (str): The user's original prompt that was used to generate the script.
+
+    Returns:
+        dict: A dictionary containing the evaluation results.
+    """
+    client = genai.Client(vertexai=True, project="gem-rush-007", location="us-central1")
+    MODEL_ID = "gemini-2.0-flash-exp"
+
+    evaluator_prompt = f"""
+    You are a highly skilled podcast script evaluator. Your task is to critically assess a given sports podcast script and provide detailed feedback. Consider the following aspects:
+
+    **Evaluation Criteria:**
+
+    1.  **Relevance to the Original Question:**
+        *   How well does the script address the original user question?
+        *   Does it focus on the key aspects requested, including specific teams, players, and timeframes?
+        *   Does it effectively extract all relevant information from the user's question?
+        *   Does the script address the question in a comprehensive manner?
+        *   Is the scope of the script appropriate for the given user request?
+        *   Rate the relevance of the script to the user's question on a scale from 1 to 10, where 1 is not relevant at all and 10 is extremely relevant.
+
+    2.  **Data Accuracy and Completeness:**
+        *   Is the data presented in the script accurate and supported by the available data?
+        *   Are key game events, stats, and player information correctly presented?
+        *   Are there any factual errors or missing pieces of crucial information?
+        *  If some data was missing did the script appropriately call out that data was missing?
+        *   Does the script use data to effectively enhance the script?
+        * Rate the accuracy of the data on a scale of 1 to 10, where 1 indicates extremely inaccurate and 10 indicates perfectly accurate.
+
+    3.  **Multi-Speaker Script Quality:**
+        *   How effectively does the script utilize the three speaker roles (Play-by-play Announcer, Color Commentator, Simulated Player Quotes)?
+        *   Is each speaker role distinct, with clear variations in language and tone?
+        *   Does the script maintain a natural and engaging conversation flow between the speakers?
+         * Does the script seamlessly transition between different play segments?
+        *   Are simulated player quotes realistic and fitting for the context?
+        *   Rate the overall quality of the multi-speaker script on a scale of 1 to 10, where 1 indicates poor use of speakers and 10 indicates excellent use of speakers.
+
+    4.  **Script Flow and Coherence:**
+        *   Does the script have a logical flow and a clear narrative structure?
+        *   Are transitions between plays smooth and coherent?
+        *   Does the script provide a good listening experience?
+        *    Are the plays and events presented in a logical order?
+        *   Rate the script's flow and coherence on a scale of 1 to 10, where 1 indicates disjointed and 10 indicates a perfectly coherent flow.
+
+    5. **Use of Edge Case Logic:**
+        * Does the script appropriately handle edge cases such as data gaps or unexpected situations?
+        *   Does the script fail gracefully when faced with missing or incomplete data?
+        *    Does the script accurately report any error conditions?
+        *    Rate the edge case handling of the script on a scale of 1 to 10, where 1 indicates poor handling and 10 indicates excellent handling.
+
+    **Output:**
+    *   Provide a detailed evaluation report. For each criterion provide a score from 1-10, where 1 is the lowest score and 10 is the highest score. Provide a summary paragraph explaining the evaluation for each category and the rational for why you rated each category as you did.
+     * Format the output as a valid JSON object.
+
+    **Input:**
+        *   Original User Question: {original_question}
+        *   Podcast Script: {script}
+
+    Respond with a valid JSON object.
+    """
+
+
+    try:
+        response = client.models.generate_content(
+            model=MODEL_ID,
+            contents=evaluator_prompt,
+            config=GenerateContentConfig(
+                temperature=0,
+            ),
+        )
+        try:
+            text = response.text
+            if text.startswith("```"):
+                # Find the first newline after the opening ```
+                start_idx = text.find("\n") + 1
+                # Find the last ``` and exclude everything after it
+                end_idx = text.rfind("```")
+                if end_idx == -1:  # If no closing ```, just remove the opening
+                    text = text[start_idx:]
+                else:
+                    text = text[start_idx:end_idx].strip()
+            
+            # Remove any "json" or other language identifier that might appear
+            text = text.replace("json\n", "")
+            
+            # Parse the cleaned JSON
+            text_response = json.loads(text)
+            return text_response
+        except json.JSONDecodeError as e:
+             logging.error(f"JSON Decode Error in evaluate_podcast_script: {e}, response was {text}")
+             return {
+                "error": f"JSON Decode Error in evaluate_podcast_script: {e}, please check the logs"
+            }
+    except Exception as e:
+        logging.error(f"Error in evaluate_podcast_script: {e}")
+        return {
+            "error": f"An error occurred: {e}",
+        }
+
 def generate_mlb_podcasts(contents: str) -> dict:
    
     client = genai.Client(vertexai=True, project="gem-rush-007", location="us-central1")
@@ -1060,44 +1165,82 @@ def generate_mlb_podcasts(contents: str) -> dict:
 
     # Structure the prompt to explicitly request tool usage
     structured_prompt = f"""
-         You are a sophisticated sports podcast script generator. Your task is to create compelling scripts based on user preferences and data. Here is the breakdown of your responsibilities:
+    You are an expert sports podcast script generator, adept at creating engaging, informative, and dynamic scripts based on user requests and available data. Your task is multifaceted, requiring precise execution across several stages to ensure exceptional output.
 
-    **Step 1: Understand User Preferences**
-        *   Carefully analyze the user's request provided in the "Question" field. This will include information about the team, player, the time frame, type of game (if specified), and any specific aspects they want to be covered.
-        *   Identify what type of data is most important to the user (e.g. player highlights, team game summaries, game analysis).
-        * Determine which information to highlight based on the data provided and user preferences.
+    **Overall Goal:** To produce a compelling and meticulously crafted podcast script that accurately addresses user requests, leverages available data effectively, and provides a high-quality listening experience.
 
-    **Step 2: Data Fetching and Analysis**
-        *   Based on your understanding of the user preferences, select the most appropriate tools from the available list to fetch the necessary data. Use multiple tools if necessary to gather all the information.
-        *   Analyze the fetched data, focus on identifying key events, stats, and interesting information for the podcast script (e.g., home runs, close plays, wins, losses, player performance).
-        *   If user select games from the past, make sure to use this as the primary source of information.
-        *  If the user specifies a particular player, then prioritize their performance in the game.
+    **Step 1: Comprehensive User Request Analysis**
+        *   **In-Depth Scrutiny:**  Thoroughly examine the "Question" field, extracting all explicit and implicit requirements. This includes:
+            *   **Specificity:** Identify all mentioned teams, players, games (or specific time periods).
+            *   **Game Context:** Determine the game type (e.g., regular season, playoffs, exhibition), any specific game focus (key plays, player performance), and critical moments (turning points, upsets).
+            *   **Content Focus:** Pinpoint the desired podcast focus (e.g., game analysis, player highlights, team strategy, historical context, record-breaking events).
+            *   **Stylistic Preferences:** Understand the desired podcast tone and style (e.g., analytical, enthusiastic, humorous, serious, historical, dramatic).
+            *    **Statistical Emphasis:** Identify any specific stats, metrics, or data points the user wants to highlight, including, but not limited to, game dates, final scores, player specific metrics, and any other metrics that provide greater depth to the game.
+            *   **Implicit Needs:** Infer unspoken requirements based on the question's context (e.g., if a user asks about a close game, anticipate a focus on the final moments).
+        *   **Data Prioritization Logic:**  Establish a clear hierarchy for data based on user needs. For example:
+            *   Player-centric requests: Prioritize individual player stats, highlights, and pivotal moments.
+            *   Game-focused requests: Prioritize game summaries, key events, and strategic plays.
+            *   Historical requests: Focus on past game data, trends, records, and historical context.
+        *   **Edge Case Management:** Implement robust logic to manage varied user inputs. Specifically:
+            *   **Vague Queries:** Develop a fallback strategy for questions like "Tell me about the Lakers." Provide a balanced overview that includes recent games, important historical moments, and significant player performances.
+            *   **Conflicting Directives:**  Create a resolution strategy for contradictory requirements (e.g., focus on Player A and Team B). Balance the requests or prioritize based on a logical interpretation of the question. Highlight points where those focus areas intersect in an organic way.
+            *   **Data Gaps:** Manage requests for nonexistent data (future games, obscure information) gracefully. Provide a clear acknowledgement of limitations and suggest alternatives like previews or historical comparisons where appropriate.
+            *  **Off-Topic Inquiries:** If the request falls outside the tool's scope (e.g., "What does player X eat"), acknowledge the request is out of scope with a concise message.
+            *   **Multiple Entities:** If the user asks for information on multiple teams or players, without specifying a game, provide a summary of their recent performances.
+            *  **Aggregated Data:** If the user requests a summary or comparison of multiple players across multiple games, generate an aggregated summary for each player across those games.
+            *  **Canceled Events:** If the user requests a game that did not happen, then acknowledge the cancellation.
 
-    **Step 3: Multi-Speaker Script Generation**
-        *   Create a script with multiple speakers. At a minimum you must use the following three speakers.
-            *   **Play-by-play Announcer:** This speaker describes the events as they happen. Use a neutral and clear voice.
-            *   **Color Commentator:** This speaker provides analysis and insights. Use a voice that is more insightful and analytical.
-            *   **Player Quotes (Simulated):** This speaker uses simulated quotes from the players involved in a play. Use a more casual and personal tone for this speaker.
-        *  Structure the script so that for each key event you utilize all three speakers to convey the information.
-        *    Include the following information in your script for each play, if available.
-            *   Player names
-            *   Team names
-            *   Inning
-            *   Description of what happened
-            *    Other relevant stats if available
-        *   Use transitions between plays to make it sound like a coherent narrative.
-        *  Keep a neutral tone and try to avoid personal opinion unless specified by the user.
+    **Step 2: Strategic Data Acquisition and Intelligent Analysis**
+        *   **Dynamic Tool Selection:** Select the most suitable tool(s) from the available resources based on the refined needs identified in Step 1.  Tools can include statistical APIs, play-by-play logs, news feeds, and social media. Use multiple tools if necessary to gather all the necessary information.
+        *  **Prioritized Data Retrieval:** If past games are requested, treat these as primary sources of data and emphasize those data sets. If the user requests a future game or a game with no available data, then state that explicitly in the generated text and use available information like team projections, past performance or other pre game analysis information.
+        *   **Granular Data Extraction:** Extract relevant data points, focusing on:
+            *   **Critical Events:** Highlight game-changing plays (e.g., game-winning shots, home runs, interceptions).
+            *   **Performance Extremes:** Note exceptional performances, unusual dips in performance, or record-breaking accomplishments.
+            *   **Pivotal Moments:**  Identify turning points that altered the course of the game.
+            *   **Player Insight:** Analyze and report on detailed player actions, individual statistics, and contributions to the game.
+           *   **Game Details:** Extract and include game dates, final scores, and any other relevant game details that add depth and context to the discussion.
+        *  **Contextual Layering:** Augment raw data with contextual information to enrich the analysis.
+            *    **Historical Data:** Use past data, historical performance, and historical records, team or player-specific trends to provide the analysis greater depth.
+            *    **Team Specific Data:** Use team specific data to better inform the analysis (e.g. if a team is known for strong defense, then analyze this and provide commentary on it).
+        *  **Data Integrity Checks:** Sanitize the data to ensure only relevant information is extracted from all sources. Clean and remove any unwanted data.
+        * **Edge Case Resolution:** Implement rules for specific edge cases:
+            *   **Incomplete Data:** If data is missing or incomplete, explicitly mention this within the generated text using phrases like "data was not available for this event."
+            *   **Data Conflicts:** Prioritize reliable sources. If discrepancies persist, note these in the generated text. Explain differences, and any issues that may exist in the data.
+            *  **Data Format Issues:**  If the data cannot be parsed or used, then log a detailed error and provide the user with an error in the generated text that explains why data was not used. If possible perform data transformations.
 
-    **Step 4: Language Support**
-        *  Translate the final script and any associated text using the provided translation tools to support the users preferred language.
-        *   The language may or may not be specified by the user. If the language is not specified assume the user speaks English.
-        *   All components of the script should be translated including any text based data you will use to generate the podcast.
+    **Step 3: Advanced Multi-Speaker Script Composition**
+        *   **Speaker Profiles:** Develop unique personality profiles for each speaker role to ensure variations in voice and perspective:
+             *   **Play-by-play Announcer:** Neutral, factual, and descriptive, providing real-time action updates using clear language.
+            *   **Color Commentator:** Analytical, insightful, and contextual, breaking down game elements, offering explanations, and using phrases like "what's interesting here is," "the reason why," and "a key moment in the game".
+            *   **Simulated Player Quotes:** Casual, personal, and engaging, re-creating player reactions with plausible, authentic-sounding phrases. **Ensure that for each key play, a simulated player quote is present, that is relevant to the play and provides a unique perspective on the action.**
+        *   **Event-Driven Structure:** Structure the script around the key events identified in Step 2. For each event:
+             *   Involve all three speaker roles in the conversation to provide multiple perspectives.
+            *   Maintain a natural conversation flow, resembling a genuine podcast format.
+            *   Incorporate all available relevant information, including player names, team names, inning details, and applicable statistics, **game dates and final scores**.
+        *   **Seamless Transitions:** Use transitional phrases (e.g., "shifting to the next play," "now let's look at the defense") to ensure continuity.
+        *   **Unbiased Tone:** Maintain a neutral and factual tone, avoiding any personal opinions, unless specifically instructed by the user.
+        *   **Edge Case Handling:**
+            *   **Tone Alignment:** Ensure that the speaker's tone reflects the events described (e.g., use a negative tone for the color commentator if describing a poorly executed play).
+            *   **Quote Realism:** Ensure simulated quotes are believable and sound authentic.
+            *   **Data Gaps:** If there's missing data or an unexpected scenario, use filler phrases (e.g., "We don't have the audio for that play," "Unfortunately, the camera wasn't on the ball").
 
-    
-    **Step 5: Audio Generation Output**
-        *   Format the final output so that it contains the speaker, and the content.
-        *   Your response must be a valid JSON array without any markdown formatting or code blocks.
-        *   For example:
+    **Step 4: Globally Accessible Language Support**
+        *   **Translation Integration:** Use translation tools to translate the full output, including all generated text, data-driven content, and speaker roles.
+        *  **Default Language Protocol:** If the user does not specify a language, English will be used as the default language.
+        *   **Translation Quality Assurance:** Verify that the translation is accurate and reflects the intended meaning. Ensure that the context of the original text is not lost in translation.
+        *   **Edge Case Adaptations:**
+            *   **Incomplete Translations:** If the translation is incomplete, use an error code for that section (e.g., `[translation error]`).
+            *   **Bidirectional Languages:** Handle languages that read right-to-left to ensure proper text rendering.
+           *  **Contextual Accuracy:** Ensure the translation maintains the appropriate tone for the speakers.
+
+    **Step 5: Structured JSON Output Protocol**
+        *   **JSON Formatting:** Create the output as a valid JSON array without any additional formatting.
+        *   **Speaker and Text Fields:** Each JSON object must include two fields: `"speaker"` and `"text"`.
+        *   **Single Array Format:** The output must be a single JSON array containing the entire script.
+        *   **No Markdown or Code Blocks:** Do not include any markdown or other formatting elements.
+        *   **JSON Validation:** Validate that the output is proper JSON format prior to output.
+         *  **Example JSON:**
+            ```json
             [
                 {{
                     "speaker": "Play-by-play Announcer",
@@ -1112,15 +1255,15 @@ def generate_mlb_podcasts(contents: str) -> dict:
                     "text": "I knew I was gonna hit that out of the park!"
                 }}
             ]
-        *    Provide all the output in a single json array without any markdown formatting.
-        
+            ```
+        *   **Edge Case Management:**
+            *   **JSON Errors:** If there is a problem creating the json object, then return a json object with an error message.
     **Your Output must be a pure JSON array without any markdown code blocks or formatting. Just the raw JSON.**
 
     Question: {contents}
 
-    Remember to prioritize all the steps, and ensure you generate a compelling and informative podcast script.
+    Prioritize the correct execution of each step to ensure the creation of a high-quality, informative, and engaging podcast script, fully tailored to the user's request. Be sure to consider any edge cases in the process.
     """
-
     try:
         response = client.models.generate_content(
             model=MODEL_ID,
@@ -1164,6 +1307,8 @@ def generate_mlb_podcasts(contents: str) -> dict:
             
             # Parse the cleaned JSON
             text_response = json.loads(text)
+            evaluation = evaluate_podcast_script(text, contents)
+            print(evaluation)
             return text_response
         except json.JSONDecodeError as e:
             logging.error(f"JSON Decode Error in generate_mlb_analysis: {e}, response was {text}")
@@ -1175,3 +1320,5 @@ def generate_mlb_podcasts(contents: str) -> dict:
         return {
             "error": f"An error occurred: {e}",
         }
+
+
