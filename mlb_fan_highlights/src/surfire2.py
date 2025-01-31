@@ -31,11 +31,99 @@ bq_client = bigquery.Client(project=PROJECT_ID)
 client = genai.Client(vertexai=True, project="gem-rush-007", location="us-central1")
 MODEL_ID = "gemini-2.0-flash-exp"  # @param {type: "string"}
 
-from google.cloud import bigquery
-from google.api_core import exceptions
-import logging
-from typing import Dict, Union
-from datetime import datetime
+# Team configurations
+TEAMS = {
+    'rangers': 140,
+    'angels': 108,
+    'astros': 117,
+    'rays': 139,
+    'blue_jays': 141,
+    'yankees': 147,
+    'orioles': 110,
+    'red_sox': 111,
+    'twins': 142,
+    'white_sox': 145,
+    'guardians': 114,
+    'tigers': 116,
+    'royals': 118,
+    'padres': 135,
+    'giants': 137,
+    'diamondbacks': 109,
+    'rockies': 115,
+    'phillies': 143,
+    'braves': 144,
+    'marlins': 146,
+    'nationals': 120,
+    'mets': 121,
+    'pirates': 134,
+    'cardinals': 138,
+    'brewers': 158,
+    'cubs': 112,
+    'reds': 113,
+    'athletics': 133,
+    'mariners': 136,
+    'dodgers': 119,
+}
+
+# Dictionary to map full team names to their corresponding keys in TEAMS
+FULL_TEAM_NAMES = {
+    'texas rangers': 'rangers',
+    'los angeles angels': 'angels',
+    'houston astros': 'astros',
+    'tampa bay rays': 'rays',
+    'toronto blue jays': 'blue_jays',
+    'new york yankees': 'yankees',
+    'baltimore orioles': 'orioles',
+    'boston red sox': 'red_sox',
+    'minnesota twins': 'twins',
+    'chicago white sox': 'white_sox',
+    'cleveland guardians': 'guardians',
+    'detroit tigers': 'tigers',
+    'kansas city royals': 'royals',
+    'san diego padres': 'padres',
+    'san francisco giants': 'giants',
+    'arizona diamondbacks': 'diamondbacks',
+    'colorado rockies': 'rockies',
+    'philadelphia phillies': 'phillies',
+    'atlanta braves': 'braves',
+    'miami marlins': 'marlins',
+    'washington nationals': 'nationals',
+    'new york mets': 'mets',
+    'pittsburgh pirates': 'pirates',
+    'st louis cardinals': 'cardinals',
+    'milwaukee brewers': 'brewers',
+    'chicago cubs': 'cubs',
+    'cincinnati reds': 'reds',
+    'oakland athletics': 'athletics',
+    'seattle mariners': 'mariners',
+    'los angeles dodgers': 'dodgers',
+}
+
+def _get_table_name(team_name: str) -> str:
+    """
+    Helper function to construct the table name from a team's full name.
+    
+    Args:
+        team_name (str): The full team name (e.g., "Minnesota Twins", "Arizona Diamondbacks")
+    
+    Returns:
+        str: The formatted table name (e.g., "`gem-rush-007.twins_mlb_data_2024`")
+    """
+    # Convert to lowercase for consistent matching
+    cleaned_name = team_name.lower().strip()
+    
+    # Try to find the team in the full names mapping
+    if cleaned_name in FULL_TEAM_NAMES:
+        team_key = FULL_TEAM_NAMES[cleaned_name]
+        return f"`gem-rush-007.{team_key}_mlb_data_2024`"
+    
+    # If the exact full name isn't found, try to match with the team key directly
+    for team_key in TEAMS:
+        if team_key in cleaned_name:
+            return f"`gem-rush-007.{team_key}_mlb_data_2024`"
+    
+    # If no match is found, return unknown table name
+    return f"`gem-rush-007.unknown_team_mlb_data_2024`"
 
 def get_player_highest_ops(year: int) -> Dict[str, Union[str, float]]:
     """Returns the player with the highest OPS (On-base Plus Slugging) for a given season.
@@ -3127,19 +3215,19 @@ def fetch_top_players_by_launch_angle(limit: int = 10) -> list:
         logging.error(f"Unexpected error in fetch_top_players_by_launch_angle: {e}")
         raise
 
-
-def fetch_roster_players(limit: int = 1000) -> list:
+def fetch_roster_players(team_name: str, limit: int = 1000) -> list:
     """
-    Fetches players from the Dodgers MLB roster.
+    Fetches active players from any MLB team's roster.
 
     Args:
+        team_name (str): Team name from TEAMS dictionary
         limit (int): Maximum number of results to return. Must be between 1 and 1000.
 
     Returns:
         list: A list of dictionaries containing player names.
 
     Raises:
-        ValueError: If the limit parameter is invalid.
+        ValueError: If the limit parameter is invalid or team_name not found.
         BigQueryError: If there's an issue with the BigQuery execution.
         Exception: For other unexpected errors.
     """
@@ -3149,15 +3237,25 @@ def fetch_roster_players(limit: int = 1000) -> list:
     if limit < 1 or limit > 1000:
         raise ValueError("Limit must be between 1 and 1000")
 
+    # Get team-specific table name
+    table_name = _get_table_name(team_name)
+    
     try:
+        print(table_name)
         # Define the query with parameterized limit
-        query = """
+        query = f"""
         SELECT 
-            full_name
+            player_id,
+            full_name,
+            status,
+            position,
+            jersey_number
         FROM 
-            `gem-rush-007.dodgers_mlb_data_2024.roster`
+            {table_name}.roster
         WHERE
             status = "Active"
+        ORDER BY
+            full_name ASC
         LIMIT @limit
         """
         
@@ -3184,16 +3282,24 @@ def fetch_roster_players(limit: int = 1000) -> list:
                 logging.warning("Skipping record with missing name information")
                 continue
             
+            # Clean and validate additional fields
+            if row_dict.get('jersey_number'):
+                try:
+                    row_dict['jersey_number'] = int(row_dict['jersey_number'])
+                except (TypeError, ValueError):
+                    row_dict['jersey_number'] = None
+                    logging.warning(f"Invalid jersey number for player {row_dict['full_name']}")
+            
             results.append(row_dict)
         
         if not results:
-            logging.warning("Query returned no results")
+            logging.warning(f"Query returned no active roster players for {team_name}")
             return []
         
         return results
     
     except exceptions.NotFound as e:
-        logging.error(f"Table or dataset not found: {e}")
+        logging.error(f"Table or dataset not found for {team_name}: {e}")
         raise
     
     except exceptions.BadRequest as e:
@@ -3209,10 +3315,8 @@ def fetch_roster_players(limit: int = 1000) -> list:
         raise
     
     except Exception as e:
-        logging.error(f"Unexpected error in fetch_roster_players: {e}")
+        logging.error(f"Unexpected error in fetch_roster_players_generic for {team_name}: {e}")
         raise
-
-
 
 
 def fetch_players_by_names(player_names: list) -> list:
@@ -4632,6 +4736,7 @@ def generate_mlb_analysis(contents: str) -> dict:
                     fetch_player_plays_by_game_type,
                     fetch_player_plays_by_opponent,
                     fetch_all_mlb_teams,
+                    _get_table_name,
                 ],
                 temperature=0,
             ),

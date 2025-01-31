@@ -37,6 +37,42 @@ ROSTER_SCHEMA = [
     bigquery.SchemaField("last_updated", "TIMESTAMP")
 ]
 
+
+# Team configurations
+TEAMS = {
+    'rangers': 140,
+    'angels': 108,
+    'astros': 117,
+    'rays': 139,
+    'blue_jays': 141,
+    'yankees': 147,
+    'orioles': 110,
+    'red_sox': 111,
+    'twins': 142,
+    'white_sox': 145,
+    'guardians': 114,
+    'tigers': 116,
+    'royals': 118,
+    'padres': 135,
+    'giants': 137,
+    'diamondbacks': 109,
+    'rockies': 115,
+    'phillies': 143,
+    'braves': 144,
+    'marlins': 146,
+    'nationals': 120,
+    'mets': 121,
+    'pirates': 134,
+    'cardinals': 138,
+    'brewers': 158,
+    'cubs': 112,
+    'reds': 113,
+    'athletics': 133,
+    'mariners': 136,
+    'dodgers': 119,   
+}
+
+
 @sleep_and_retry
 @limits(calls=CALLS, period=RATE_LIMIT)
 def call_mlb_api(url: str) -> Dict:
@@ -222,34 +258,37 @@ def get_team_roster(team_id: int, season: int = 2024) -> pd.DataFrame:
     
     return final_df
 
+
+
 def main():
     """Main execution function"""
-    DATASET_ID = "athletics_mlb_data_2024"  # Replace with your desired dataset ID
     
-    logger.info("Starting Dodgers roster processing...")
+    logger.info("Starting MLB roster processing for all teams...")
     
-    try:
-        # Create table if it doesn't exist
-        create_roster_table(DATASET_ID)
+    for team_name, team_id in TEAMS.items():
+        DATASET_ID = f"{team_name.lower().replace(' ', '_')}_mlb_data_2024"
+        logger.info(f"Processing roster for {team_name}...")
         
-        # Get Dodgers roster
-        dodgers_roster = get_team_roster(133)  # 119 is Dodgers team ID
-        
-        if not dodgers_roster.empty:
-            # Upload to BigQuery
-            table_id = f"{DATASET_ID}.roster"
-            upload_to_bigquery(dodgers_roster, table_id)
+        try:
+            # Create table if it doesn't exist
+            create_roster_table(DATASET_ID)
             
-            # Display preview of the data
-            print("\nDodgers Roster Preview (first 5 rows):")
-            print(dodgers_roster.head())
-            print(f"\nRoster data uploaded to BigQuery table: {table_id}")
-        else:
-            logger.error("Failed to retrieve Dodgers roster data")
+            # Get team roster
+            team_roster = get_team_roster(team_id)  
             
-    except Exception as e:
-        logger.error(f"Error in main execution: {str(e)}")
-        raise
+            if not team_roster.empty:
+                # Upload to BigQuery
+                table_id = f"{DATASET_ID}.roster"
+                upload_to_bigquery(team_roster, table_id)
+                
+                # Display preview of the data
+                print(f"\n{team_name} Roster Preview (first 5 rows):")
+                print(team_roster.head())
+                print(f"Roster data uploaded to BigQuery table: {table_id}")
+            else:
+                logger.error(f"Failed to retrieve roster data for {team_name}")
+        except Exception as e:
+            logger.error(f"Error processing roster for {team_name}: {str(e)}")
 
 if __name__ == "__main__":
     main()
