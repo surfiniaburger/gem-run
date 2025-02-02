@@ -25,18 +25,12 @@ log_client.setup_logging()
 auth = get_auth()
 db = get_firestore()
 
-
-
-
-
 # Inject GA script into Streamlit
 st.set_page_config(
     page_title="MLB Podcast Generator",
     layout="wide",
     initial_sidebar_state="expanded"
 )
-
-
 
 # Constants for Google Cloud Storage
 GCS_BUCKET_NAME = "mlb-podcast-bucket" # Replace this with your desired bucket name, it should be unique

@@ -9,6 +9,8 @@ from gcs_handler import GCSHandler
 import uuid
 import logging
 from google.cloud import logging as cloud_logging
+from vid import CloudVideoGenerator
+
 
 project_id = "gem-rush-007"
 secret_name = "cloud-run-invoker"
@@ -194,6 +196,10 @@ def generate_japanese_audio(contents: str, language: str, output_filename: str =
         
         url = gcs_handler.upload_audio(audio_bytes, f"podcast-{uuid.uuid4()}.mp3")
         logging.info(f"Successfully generated spanish mlb podcast and saved to GCS: {url}")
+        video_gen = CloudVideoGenerator(gcs_handler)
+        gcs_uri = gcs_handler.signed_url_to_gcs_uri(url)
+        video_url = video_gen.create_video(gcs_uri, script_json)
+        print(video_url)
         return url        
         
     except Exception as e:
