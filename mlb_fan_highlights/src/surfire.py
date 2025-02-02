@@ -1146,7 +1146,10 @@ def evaluate_podcast_script(script: str, original_question: str) -> dict:
             model=MODEL_ID,
             contents=evaluator_prompt,
             config=GenerateContentConfig(
-                temperature=0,
+                temperature=0.2,
+                top_p=0.95,
+                top_k=40,
+                max_output_tokens=2048,
                 tools=[google_search_tool],
                 safety_settings=safety_settings,
             ),
@@ -1307,6 +1310,9 @@ def generate_mlb_podcasts(contents: str) -> dict:
                     fetch_player_plays_by_opponent,
                 ],
                 temperature=0,
+                top_p=0.95,
+                top_k=40,
+                max_output_tokens=2048,
                 safety_settings=safety_settings,
             ),
         )

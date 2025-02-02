@@ -1,200 +1,294 @@
-from google.cloud import videointelligence_v1 as videointelligence
-from google.cloud import storage
-import tempfile
-import os
-import json
-from datetime import timedelta
-import vertexai
+# vid.py - Complete Video Generation Module
+from google.cloud.video import transcoder_v1
+from google.cloud.video.transcoder_v1.services.transcoder_service import TranscoderServiceClient
 from vertexai.preview.vision_models import ImageGenerationModel
-import time
+from google.genai.types import Tool, GoogleSearch, SafetySetting, GenerateContentConfig
+import json
 import uuid
+import time
+import logging
+from typing import List, Dict, Any
+from google import genai
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
 class CloudVideoGenerator:
-    def __init__(self, gcs_handler, location="us-central1"):
-        """
-        Initialize Video Generator with Google Cloud services.
-        
-        Args:
-            gcs_handler: Instance of GCSHandler for secure storage operations
-            location: Location for Vertex AI services
-        """
+    def __init__(self, gcs_handler):
         self.gcs_handler = gcs_handler
-        self.project_id = "gem-rush-007"
-        self.location = location
+        self.client = TranscoderServiceClient()
+        self.parent = f"projects/{gcs_handler.project_id}/locations/us-central1"
         
-        # Initialize Video Intelligence client
-        self.video_client = videointelligence.VideoIntelligenceServiceClient()
-        
-        # Initialize Vertex AI
-        vertexai.init(project=self.project_id, location=self.location)
+        # Initialize AI models with latest configurations
+        self.genai_client = genai.Client(vertexai=True, project="gem-rush-007", location="us-central1")
         self.imagen_model = ImageGenerationModel.from_pretrained("imagen-3.0-fast-generate-001")
         
-    def create_video_composition(self, images, audio_path, output_filename):
-        """
-        Create a video composition using Google Cloud services.
+        # Configure safety settings
+        self.safety_config = [
+        SafetySetting(
+           category="HARM_CATEGORY_DANGEROUS_CONTENT",
+           threshold="BLOCK_LOW_AND_ABOVE",
+        ),
+        SafetySetting(
+           category="HARM_CATEGORY_HARASSMENT",
+           threshold="BLOCK_LOW_AND_ABOVE",
+        ),
+        SafetySetting(
+           category="HARM_CATEGORY_HATE_SPEECH",
+           threshold="BLOCK_LOW_AND_ABOVE",
+        ),
+        SafetySetting(
+           category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
+           threshold="BLOCK_LOW_AND_ABOVE",
+        ),
+        ]
+
+    def _analyze_script(self, script_data: list) -> Dict[str, Any]:
+        """Analyze podcast script using Gemini 2.0 with enhanced configurations."""
+        full_text = " ".join([segment['text'] for segment in script_data])
         
-        Args:
-            images: List of image paths
-            audio_path: Path to audio file
-            output_filename: Desired output filename
-        """
+        analysis_prompt = """Analyze this baseball podcast script and generate:
+        {
+            "key_moments": [{
+                "timestamp": "HH:MM:SS",
+                "description": "text",
+                "visual_prompt": "Imagen prompt",
+                "duration": 5,
+                "transition": "fade/cut/zoom"
+            }],
+            "theme": "modern/retro/dramatic",
+            "color_palette": {
+                "primary": "#hex",
+                "secondary": "#hex",
+                "accent": "#hex"
+            },
+            "graphics_style": "dynamic/animated/static",
+            "audio_intensity": 0-100
+        }"""
+
         try:
-            # Create a temporary manifest file for video composition
-            manifest = {
-                "compositions": [{
-                    "id": "mlb_podcast",
-                    "video": {
-                        "tracks": [{
-                            "clips": self._create_image_clips(images)
-                        }],
-                        "format": "mp4"
-                    },
-                    "audio": {
-                        "tracks": [{
-                            "clips": [{
-                                "asset_id": "audio_track",
-                                "start_time": "0s",
-                                "end_time": "auto"
-                            }]
-                        }]
-                    }
-                }],
-                "assets": self._prepare_assets(images, audio_path)
-            }
-            
-            # Save manifest to temporary file
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as temp_manifest:
-                json.dump(manifest, temp_manifest)
-                manifest_path = temp_manifest.name
-            
-            # Upload manifest to GCS
-            manifest_gcs_path = f"manifests/{uuid.uuid4()}.json"
-            with open(manifest_path, 'rb') as f:
-                self.gcs_handler.upload_audio(f.read(), manifest_gcs_path)
-            
-            # Create video composition request
-            request = videointelligence.CreateVideoCompositionRequest(
-                parent=f"projects/{self.project_id}/locations/{self.location}",
-                video_composition={
-                    "manifest_path": f"gs://{self.gcs_handler.bucket_name}/{manifest_gcs_path}",
-                    "output_path": f"gs://{self.gcs_handler.bucket_name}/videos/{output_filename}"
-                }
+            response = self.genai_client.models.generate_content(
+                model="gemini-2.0-flash-exp",
+                contents=[{"role": "user", "parts": [{"text": analysis_prompt + full_text}]}],
+                config=GenerateContentConfig(
+                    temperature=0.3,
+                    top_p=0.95,
+                    top_k=40,
+                    max_output_tokens=2048,
+                    tools=[Tool(google_search=GoogleSearch())],
+                    safety_settings=self.safety_config
+                ),
+                
             )
             
-            # Start composition operation
-            operation = self.video_client.create_video_composition(request)
-            result = operation.result(timeout=300)  # Wait up to 5 minutes
+            return self._parse_gemini_response(response.text)
+        
+        except Exception as e:
+            logging.error(f"Script analysis failed: {str(e)}")
+            raise
+
+    def _parse_gemini_response(self, raw_response: str) -> Dict[str, Any]:
+        """Parse and validate Gemini response with error handling."""
+        try:
+            clean_text = raw_response.strip().replace("```json", "").replace("```", "")
+            return json.loads(clean_text)
+        except json.JSONDecodeError as e:
+            logging.error(f"JSON parsing error: {str(e)}")
+            raise ValueError("Failed to parse AI response")
+        except Exception as e:
+            logging.error(f"Unexpected parsing error: {str(e)}")
+            raise
+
+    def _generate_images(self, analysis: Dict[str, Any]) -> List[bytes]:
+       images = []
+       for moment in analysis['key_moments']:
+        try:
+            # Add prompt engineering/enhancement
+            enhanced_prompt = self._enhance_prompt(moment['visual_prompt'])
             
-            # Generate signed URL for the output video
-            video_url = self.gcs_handler.refresh_signed_url(
-                f"gs://{self.gcs_handler.bucket_name}/videos/{output_filename}"
+            # Add better retry strategy
+            response = self._retry_with_backoff(
+                lambda: self.imagen_model.generate_images(
+                    prompt=enhanced_prompt,
+                    aspect_ratio="16:9",
+                )
             )
             
-            return video_url
+            if not response.images:
+                raise ValueError("Empty image response")
+                
+            images.append(response.images[0]._image_bytes)
             
         except Exception as e:
-            raise Exception(f"Error creating video composition: {str(e)}")
-        finally:
-            # Cleanup temporary files
-            if 'manifest_path' in locals():
-                os.remove(manifest_path)
+            # Use a proper fallback image based on theme
+            default_image = self._create_default_image()
+            images.append(default_image)
+            
+       return images
+
+    def _retry_with_backoff(self, operation, max_retries=3, initial_delay=1):
+      """Execute operation with exponential backoff retry logic.
     
-    def _create_image_clips(self, images):
-        """Create clip configurations for images."""
-        clips = []
-        duration = 5  # 5 seconds per image
-        
-        for i, image_path in enumerate(images):
-            clips.append({
-                "asset_id": f"image_{i}",
-                "start_time": f"{i * duration}s",
-                "end_time": f"{(i + 1) * duration}s",
-                "transition": {
-                    "type": "FADE",
-                    "duration": "1s"
-                }
-            })
-        
-        return clips
-    
-    def _prepare_assets(self, images, audio_path):
-        """Prepare asset configurations for manifest."""
-        assets = {}
-        
-        # Add image assets
-        for i, image_path in enumerate(images):
-            assets[f"image_{i}"] = {
-                "sources": [{
-                    "uri": image_path,
-                    "type": "IMAGE"
-                }]
-            }
-        
-        # Add audio asset
-        assets["audio_track"] = {
-            "sources": [{
-                "uri": audio_path,
-                "type": "AUDIO"
-            }]
-        }
-        
-        return assets
-    
-    def generate_video(self, audio_path, script):
-        """
-        Generate a complete video from audio and script.
-        
-        Args:
-            audio_path: Path to the audio file
-            script: Script content for generating images
-        """
+    Args:
+        operation: Callable to execute
+        max_retries: Maximum number of retry attempts
+        initial_delay: Initial delay in seconds
+    """
+      last_exception = None
+      delay = initial_delay
+
+      for attempt in range(max_retries):
         try:
-            # Generate images from script
-            image_prompts = self.generate_images_from_script(script)
-            image_paths = []
-            
-            # Generate and upload images
-            for prompt in image_prompts:
-                image_path = self._generate_and_upload_image(prompt)
-                image_paths.append(image_path)
-            
-            # Create unique output filename
-            output_filename = f"highlight-{uuid.uuid4()}.mp4"
-            
-            # Create video composition
-            video_url = self.create_video_composition(
-                image_paths,
-                audio_path,
-                output_filename
-            )
-            
-            return video_url
-            
+            return operation()
         except Exception as e:
-            raise Exception(f"Error generating video: {str(e)}")
-    
-    def _generate_and_upload_image(self, prompt):
-        """Generate image using Vertex AI and upload to GCS."""
+            last_exception = e
+            logging.warning(f"Attempt {attempt + 1}/{max_retries} failed: {str(e)}")
+            
+            if attempt < max_retries - 1:
+                time.sleep(delay)
+                delay *= 2  # Exponential backoff
+            
+      raise last_exception
+
+    def _create_default_image(self) -> bytes:
+      """Creates a white default image with proper RGB format"""
+      from PIL import Image
+      from io import BytesIO
+
+    # Create RGB image instead of RGBA to avoid alpha channel issues
+      image = Image.new('RGB', (1920, 1080), (255, 255, 255))
+      img_byte_arr = BytesIO()
+      image.save(img_byte_arr, format='JPEG', quality=85)
+      return img_byte_arr.getvalue()
+
+    def _create_job_config(self, image_uris: List[str], audio_uri: str) -> transcoder_v1.types.JobConfig:
+       """Create a proper job configuration following API specs"""
+       from google.protobuf.duration_pb2 import Duration
+       if not audio_uri.startswith("gs://"):
+        raise ValueError(f"Invalid audio URI format: {audio_uri}")
+       
+       overlays = []
+       for idx, uri in enumerate(image_uris):
+       # Create Duration objects for timing
+           start_time = Duration()
+           start_time.seconds = 5 * idx
+        
+           end_time = Duration()
+           end_time.seconds = 5 * (idx + 1)        
+           overlays.append(
+               transcoder_v1.types.Overlay(
+                   image=transcoder_v1.types.Overlay.Image(
+                       uri=uri,
+                       alpha=1,
+                       resolution=transcoder_v1.types.Overlay.NormalizedCoordinate(x=0, y=0)
+                   ),
+                   animations=[
+                    transcoder_v1.types.Overlay.Animation(
+                        animation_fade=transcoder_v1.types.Overlay.AnimationFade(
+                            fade_type=transcoder_v1.types.Overlay.FadeType.FADE_IN,
+                            start_time_offset=start_time,
+                            end_time_offset=end_time,
+                            xy=transcoder_v1.types.Overlay.NormalizedCoordinate(x=0.5, y=0.5)
+                        )
+                    ),
+                    transcoder_v1.types.Overlay.Animation(
+                        animation_fade=transcoder_v1.types.Overlay.AnimationFade(
+                            fade_type=transcoder_v1.types.Overlay.FadeType.FADE_OUT,
+                            start_time_offset=end_time,
+                            end_time_offset=Duration(seconds=end_time.seconds + 1),
+                            xy=transcoder_v1.types.Overlay.NormalizedCoordinate(x=0.5, y=0.5)
+                        )
+                    )
+                   ]
+               )
+           )
+
+       return transcoder_v1.types.JobConfig(
+        elementary_streams=[
+            transcoder_v1.types.ElementaryStream(
+                key="video-stream0",
+                video_stream=transcoder_v1.types.VideoStream(
+                    h264=transcoder_v1.types.VideoStream.H264CodecSettings(
+                        height_pixels=1080,
+                        width_pixels=1920,
+                        bitrate_bps=8000000,
+                        frame_rate=30,
+                        pixel_format="yuv420p"
+                    )
+                )
+            ),
+            transcoder_v1.types.ElementaryStream(
+                key="audio-stream0",
+                audio_stream=transcoder_v1.types.AudioStream(
+                    codec="aac",
+                    bitrate_bps=256000,
+                    channel_count=2,
+                    sample_rate_hertz=48000
+                )
+            )
+        ],
+        mux_streams=[
+            transcoder_v1.types.MuxStream(
+                key="hd-mp4",
+                container="mp4",
+                elementary_streams=["video-stream0", "audio-stream0"]
+            )
+        ],
+        inputs=[
+            transcoder_v1.types.Input(
+                key="audio0",
+                uri=audio_uri
+            )
+        ],
+        overlays=overlays
+    )
+
+    def _create_transcoder_job(self, image_uris: List[str], audio_uri: str) -> str:
+        """Create and execute a transcoder job with proper API usage"""
+        job_id = f"job-{uuid.uuid4()}"
+        job_name = f"{self.parent}/jobs/{job_id}"
+        
+        job_config = self._create_job_config(image_uris, audio_uri)
+        
+        job = transcoder_v1.types.Job(
+            config=job_config,
+            output_uri=f"gs://{self.gcs_handler.bucket_name}/videos/"
+        )
+        
+        response = self.client.create_job(
+            parent=self.parent,
+            job=job
+        )
+        
+        # Wait for job completion
+        while response.state == transcoder_v1.types.Job.ProcessingState.PROCESSING:
+            time.sleep(10)
+            response = self.client.get_job(name=job_name)
+        
+        if response.state != transcoder_v1.types.Job.ProcessingState.SUCCEEDED:
+            raise RuntimeError(f"Transcoding failed: {response.state}")
+        
+        return f"gs://{self.gcs_handler.bucket_name}/videos/{job_id}.mp4"
+
+    def create_video(self, audio_uri: str, script_data: list) -> str:
+        """End-to-end video generation pipeline."""
         try:
-            # Generate image
-            response = self.imagen_model.generate_images(
-                prompt=prompt,
-                number_of_images=1
-            )
+            # 1. AI-powered script analysis
+            analysis = self._analyze_script(script_data)
             
-            # Save to temporary file
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as temp_file:
-                image = response.images[0]
-                image_path = temp_file.name
-                image.save(image_path)
-                
-                # Upload to GCS
-                filename = f"images/image_{uuid.uuid4()}.jpg"
-                with open(image_path, 'rb') as f:
-                    gcs_path = self.gcs_handler.upload_audio(f.read(), filename)
-                
-                os.remove(image_path)
-                return gcs_path
-                
+            # 2. Generate visual assets
+            images = self._generate_images(analysis)
+            image_uris = [self.gcs_handler.signed_url_to_gcs_uri(
+                self.gcs_handler.upload_image(img, f"images/{uuid.uuid4()}.png")
+            ) for img in images]
+            
+            # 3. Create transcoder job
+            video_uri = self._create_transcoder_job(image_uris, audio_uri)
+            
+            return self.gcs_handler.get_signed_url(video_uri.replace("gs://", ""))
+
         except Exception as e:
-            raise Exception(f"Error generating and uploading image: {str(e)}")
+            logging.error(f"Video generation pipeline failed: {str(e)}")
+            raise RuntimeError(f"Video creation error: {str(e)}")

@@ -216,3 +216,68 @@ class GCSHandler:
             error_message = f"Error checking URL expiration: {str(e)}"
             self.logger.log_text(error_message, severity='ERROR')
             return True
+
+    def upload_image(self, image_content: bytes, file_name: str) -> str:
+      """Upload image to GCS and return signed URL.
+    
+    Args:
+        image_content: Image bytes
+        file_name: Name for the uploaded file
+    
+    Returns:
+        str: Signed URL for accessing the uploaded image
+    """
+      try:
+        self.logger.log_text(f"Uploading image: {file_name}")
+        bucket = self.storage_client.bucket(self.bucket_name)
+        blob = bucket.blob(file_name)
+        blob.upload_from_string(image_content, content_type="image/png")
+        
+        url = blob.generate_signed_url(
+            version="v4",
+            expiration=timedelta(minutes=3600),
+            method="GET",
+            service_account_email=self.credentials.service_account_email,
+            access_token=None,
+            credentials=self.credentials
+        )
+        
+        return url
+        
+      except Exception as e:
+        self.logger.log_text(f"Image upload error for {file_name}: {str(e)}", severity='ERROR')
+        raise
+      
+
+    def signed_url_to_gcs_uri(self, signed_url: str) -> str:
+      """Convert a signed URL back to GCS URI format.
+    
+    Args:
+        signed_url: The signed URL to convert
+        
+    Returns:
+        str: GCS URI (gs://{bucket}/{blob})
+    """
+      try:
+        parsed_url = urllib.parse.urlparse(signed_url)
+        
+        # Handle direct GCS URIs
+        if parsed_url.scheme == "gs":
+            return signed_url
+            
+        # Validate URL structure
+        if not parsed_url.netloc.endswith("storage.googleapis.com"):
+            raise ValueError("Invalid GCS URL format")
+            
+        path_parts = parsed_url.path.lstrip('/').split('/')
+        
+        if len(path_parts) < 2:
+            raise ValueError("Invalid GCS URL path structure")
+            
+        # Handle URL-encoded paths
+        decoded_path = urllib.parse.unquote('/'.join(path_parts))
+        return f"gs://{decoded_path}"
+        
+      except Exception as e:
+        self.logger.log_text(f"GCS URI conversion failed: {str(e)}", severity='ERROR')
+        raise
