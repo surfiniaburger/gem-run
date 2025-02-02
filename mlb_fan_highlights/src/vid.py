@@ -9,13 +9,13 @@ import time
 import logging
 from typing import List, Dict, Any
 from google import genai
-
+from google.cloud import logging as cloud_logging
 import enum
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
+# Configure cloud logging at the top of the script, before other imports
+logging.basicConfig(level=logging.INFO)
+log_client = cloud_logging.Client()
+log_client.setup_logging()
 
 class CloudVideoGenerator:
     def __init__(self, gcs_handler):

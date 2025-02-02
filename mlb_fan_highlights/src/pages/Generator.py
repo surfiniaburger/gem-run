@@ -15,6 +15,8 @@ from google.cloud import logging as cloud_logging
 import logging
 from user_profile import UserProfile
 import streamlit.components.v1 as components
+import re
+
 
 # Configure cloud logging at the top of the script, before other imports
 logging.basicConfig(level=logging.INFO)
@@ -142,35 +144,120 @@ def get_mlb_teams():
         st.error(f"Error fetching teams: {str(e)}")
         return []
 
+
 @st.cache_data(ttl=3600)  # Cache for 1 hour
 def get_players_for_team(team):
     """Fetch active players for a selected team using the analysis engine."""
     try:
+        # Get response from analysis engine
         analysis_result = generate_mlb_analysis(f"List all current players on the {team} roster.")
         
-        # Parse players from bullet-point format
+        def clean_player_name(name):
+            """Clean and standardize player names"""
+            name = name.strip()
+            name = re.sub(r'^[-*•⦁→▪️►]+\s*', '', name)  # Remove various bullet points
+            name = re.sub(r'^\d+\.\s*', '', name)  # Remove numbering
+            name = name.rstrip('.')  # Remove trailing periods
+            name = re.sub(r'\s+', ' ', name)  # Standardize spacing
+            name = re.sub(r'\([^)]*\)', '', name).strip()  # Remove parentheticals
+            return name
+
+        def split_player_names(text):
+            """Split a string of space-separated names into individual player names"""
+            # Split the text into potential name components
+            words = text.split()
+            players = []
+            current_name = []
+            
+            for word in words:
+                # Skip ellipsis and common separators
+                if word in ['...', '…', '-', '...']:
+                    if current_name:
+                        players.append(' '.join(current_name))
+                        current_name = []
+                    continue
+                
+                current_name.append(word)
+                
+                # If we have two or more words, check if it's a complete name
+                if len(current_name) >= 2:
+                    # Check if the next word starts with a capital letter (likely a new name)
+                    if (len(words) > len(players) + len(current_name) and 
+                        words[len(players) + len(current_name)][0].isupper()):
+                        players.append(' '.join(current_name))
+                        current_name = []
+            
+            # Add the last name if any remains
+            if current_name:
+                players.append(' '.join(current_name))
+            
+            return players
+
         players = []
+        
+        # Strategy 1: Original bullet point parsing
         for line in analysis_result.split('\n'):
-            if line.strip().startswith('-'):
-                player = line.replace('-', '').strip()
+            if any(line.strip().startswith(bullet) for bullet in ['-', '*', '•', '⦁', '→', '▪️', '►']):
+                player = clean_player_name(line)
                 if player:
                     players.append(player)
         
-        if not players:  # If no players found with bullet points, try alternate parsing
-            # Try splitting by commas if it's a comma-separated list
-            text = analysis_result.split(':')[-1] if ':' in analysis_result else analysis_result
-            text = text.replace(' and ', ', ')
-            players = [player.strip() for player in text.split(',') if player.strip()]
-        # Clean up the last name by removing any trailing period
-        if players and players[-1].endswith('.'):
-            players[-1] = players[-1].rstrip('.')
+        # Strategy 2: Try numbered list
+        if not players:
+            for line in analysis_result.split('\n'):
+                if re.match(r'^\d+\.\s', line):
+                    player = clean_player_name(line)
+                    if player:
+                        players.append(player)
         
-        return players
+        # Strategy 3: Comma separation
+        if not players:
+            text = analysis_result
+            if ':' in text:
+                text = text.split(':')[-1]
+            text = re.sub(r'^.*?(includes|are|roster:)', '', text, flags=re.IGNORECASE)
+            text = text.replace(' and ', ', ')
+            players = [clean_player_name(p) for p in text.split(',') if clean_player_name(p)]
+        
+        # Strategy 4: Handle space-separated names
+        if not players or len(players) == 1:
+            # If we only found one "player" that's very long, it might be space-separated names
+            text = players[0] if players else analysis_result
+            if len(text.split()) > 4:  # If there are more than 4 words, likely multiple names
+                players = split_player_names(text)
+        
+        # Validate and clean the final list
+        cleaned_players = []
+        seen_names = set()
+        
+        for player in players:
+            clean_name = clean_player_name(player)
+            # Validate name format
+            if (clean_name and 
+                len(clean_name.split()) >= 2 and  # Must be at least first and last name
+                clean_name not in seen_names and
+                len(clean_name) >= 4 and  # Arbitrary minimum length for valid name
+                all(word[0].isupper() for word in clean_name.split())):  # Names should be capitalized
+                
+                cleaned_players.append(clean_name)
+                seen_names.add(clean_name)
+        
+        if not cleaned_players:
+            logging.warning(f"No valid players extracted for team {team}")
+            return []
+        
+        # Sort alphabetically for consistent display
+        return sorted(cleaned_players)
+
     except Exception as e:
         st.error(f"Error fetching players: {str(e)}")
+        logging.error(f"Error in get_players_for_team for {team}: {str(e)}")
         return []
 
-
+    except Exception as e:
+        st.error(f"Error fetching players: {str(e)}")
+        logging.error(f"Error in get_players_for_team for {team}: {str(e)}")
+        return []
 
 def create_gcs_bucket(bucket_name, location):
  """Creates a Google Cloud Storage bucket if it doesn't exist."""
