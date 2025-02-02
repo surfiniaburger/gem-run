@@ -10,6 +10,8 @@ import logging
 from typing import List, Dict, Any
 from google import genai
 
+import enum
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
@@ -22,7 +24,7 @@ class CloudVideoGenerator:
         self.parent = f"projects/{gcs_handler.project_id}/locations/us-central1"
         
         # Initialize AI models with latest configurations
-        self.genai_client = genai.Client(vertexai=True, project="gem-rush-007", location="us-central1")
+        self.genai_client = genai.Client(vertexai=True, project="gem-rush-007", location="us-east4")
         self.imagen_model = ImageGenerationModel.from_pretrained("imagen-3.0-fast-generate-001")
         
         # Configure safety settings
@@ -248,7 +250,7 @@ class CloudVideoGenerator:
     def _create_transcoder_job(self, image_uris: List[str], audio_uri: str) -> str:
         """Create and execute a transcoder job with proper API usage"""
         job_id = f"job-{uuid.uuid4()}"
-        job_name = f"{self.parent}/jobs/{job_id}"
+        
         
         job_config = self._create_job_config(image_uris, audio_uri)
         
@@ -261,16 +263,33 @@ class CloudVideoGenerator:
             parent=self.parent,
             job=job
         )
+
+        # Use the returned job name for polling
+        job_name = response.name
+
+        # Poll while the job state is either PENDING or RUNNING.
+        pending_states = [
+             transcoder_v1.types.Job.ProcessingState.PENDING,
+             transcoder_v1.types.Job.ProcessingState.RUNNING,
+         ]
+
+       # Optionally add a maximum timeout to avoid infinite loops.
+        max_wait_seconds = 600  # e.g., 10 minutes
+        start_time = time.time()
         
         # Wait for job completion
-        while response.state == transcoder_v1.types.Job.ProcessingState.PROCESSING:
-            time.sleep(10)
-            response = self.client.get_job(name=job_name)
+        while response.state in pending_states:
+             if time.time() - start_time > max_wait_seconds:
+                raise RuntimeError("Transcoding timed out.")
+             logging.info(f"Job state is {response.state.name}; waiting...")
+             time.sleep(10)
+             response = self.client.get_job(name=job_name)
         
         if response.state != transcoder_v1.types.Job.ProcessingState.SUCCEEDED:
             raise RuntimeError(f"Transcoding failed: {response.state}")
         
-        return f"gs://{self.gcs_handler.bucket_name}/videos/{job_id}.mp4"
+        
+        return f"gs://{self.gcs_handler.bucket_name}/videos/{job_name.split('/')[-1]}.mp4"
 
     def create_video(self, audio_uri: str, script_data: list) -> str:
         """End-to-end video generation pipeline."""
