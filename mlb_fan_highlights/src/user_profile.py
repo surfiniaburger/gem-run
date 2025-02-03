@@ -215,8 +215,8 @@ class UserProfile:
             podcasts_generated = profile.get('podcasts_generated', 0)
             
             limits = {
-                'free': {'daily': 20, 'monthly': 300},
-                'premium': {'daily': 50, 'monthly': 900}
+                'free': {'daily': 50, 'monthly': 300},
+                'premium': {'daily': 100, 'monthly': 900}
             }
             
             current_limits = limits.get(account_type, limits['free'])
