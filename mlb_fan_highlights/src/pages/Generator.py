@@ -16,7 +16,7 @@ import logging
 from user_profile import UserProfile
 import streamlit.components.v1 as components
 import re
-
+from anchor import anchor
 
 # Configure cloud logging at the top of the script, before other imports
 logging.basicConfig(level=logging.INFO)
@@ -465,6 +465,14 @@ def main():
 def construct_prompt(selected_team, selected_players, selected_timeframe, 
                  timeframe_value, selected_game_type, selected_opponent, 
                  selected_language):
+
+    # If last game is selected, get the exact date
+ if selected_timeframe == "Last game":
+        last_game_info = anchor(selected_team)
+        if 'last_game_date' in last_game_info:
+            timeframe_value = last_game_info['last_game_date']
+    
+
  """Constructs the prompt for the podcast agent based on user inputs."""
  prompt_parts = [f"Generate a podcast about the {selected_team}."]
 
@@ -474,7 +482,7 @@ def construct_prompt(selected_team, selected_players, selected_timeframe,
 
  # Timeframe
  if selected_timeframe == "Last game":
-     prompt_parts.append(f"Cover the last game played by the {selected_team}.")
+        prompt_parts.append(f"Cover the last game played by the {selected_team} on {timeframe_value}.")
  elif selected_timeframe == "Last X games":
      prompt_parts.append(f"Cover the last {timeframe_value} games played by the {selected_team}.")
  elif selected_timeframe == "Specific date":

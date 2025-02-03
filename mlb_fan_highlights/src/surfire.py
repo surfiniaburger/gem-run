@@ -146,98 +146,65 @@ def _get_table_name(team_name: str) -> str:
     return f"`gem-rush-007.unknown_team_mlb_data_2024`"
 
 
-def fetch_team_games(team_name: str) -> list:
+def fetch_team_games(team_name: str, limit: int = 2) -> list:
     """
-    Fetches all games (both home and away) for a specified team with detailed game information.
+    Fetches the most recent games (limited by 'limit') for a specified team 
+    using plays data to determine game recency.
 
     Args:
         team_name (str): The team name as it appears in the TEAMS dictionary
+        limit (int, optional): The maximum number of games to return. Defaults to 2.
 
     Returns:
-        list: A list of dictionaries containing game details including:
-              - game_id
-              - official_date (in YYYY-MM-DD format)
-              - home/away team IDs and names
-              - game_type
-              - scores
-              - venue
-              - game status
-              - team win/loss and margin
-
-    Raises:
-        ValueError: If team_name is not found in TEAMS dictionary
-        BigQueryError: If there's an issue with the BigQuery execution
-        Exception: For other unexpected errors
+        list: A list of dictionaries containing game details
     """
     
     team_id = TEAMS[team_name]
     table_name = _get_table_name(team_name)
-    
+
     try:
-        query = f"""
-        SELECT
-            game_id,
-            official_date,
-            home_team_id,
-            game_type,
-            home_team_name,
-            away_team_id,
-            away_team_name,
-            home_score,
-            away_score,
-            venue_name,
-            status,
-            {team_name}_win as team_win,
-            {team_name}_margin as team_margin
-        FROM
-            {table_name}.games
-        WHERE
-            (home_team_id = {team_id} OR away_team_id = {team_id})
-        """
-        
-        bq_client = bigquery.Client()
-        query_job = bq_client.query(query)
-        
-        results = []
-        for row in query_job:
-            row_dict = dict(row)
-            
-            if row_dict.get('official_date'):
-                row_dict['official_date'] = row_dict['official_date'].strftime('%Y-%m-%d')
-            
-            required_fields = [
-                'game_id', 'official_date', 'home_team_id', 
-                'away_team_id', 'home_team_name', 'away_team_name'
-            ]
-            
-            if not all(row_dict.get(field) for field in required_fields):
-                logging.warning(f"Skipping record with missing required information: {row_dict.get('game_id', 'Unknown Game')}")
-                continue
-            
-            try:
-                if row_dict.get('home_score') is not None:
-                    row_dict['home_score'] = int(row_dict['home_score'])
-                if row_dict.get('away_score') is not None:
-                    row_dict['away_score'] = int(row_dict['away_score'])
-            except (TypeError, ValueError) as e:
-                logging.warning(f"Invalid score data for game {row_dict['game_id']}: {e}")
-                continue
-            
-            if row_dict.get('team_margin') is not None:
-                try:
-                    row_dict['team_margin'] = int(row_dict['team_margin'])
-                except (TypeError, ValueError) as e:
-                    logging.warning(f"Invalid margin data for game {row_dict['game_id']}: {e}")
-                    continue
-            
-            results.append(row_dict)
-        
-        if not results:
-            logging.warning(f"Query returned no results for team {team_name}")
-            return []
-        
-        return results
+      query = f"""
+          SELECT
+              g.game_id,
+              g.official_date,
+              g.home_team_id,
+              g.home_team_name,
+              g.away_team_id,
+              g.away_team_name,
+              g.home_score,
+              g.away_score,
+              g.venue_name,
+              g.status,
+              {team_name}_win as team_win,
+              {team_name}_margin as team_margin
+          FROM
+              {table_name}.games AS g
+          INNER JOIN
+              (SELECT
+                game_id,
+                MAX(end_time) AS max_end_time
+              FROM
+                  {table_name}.plays
+              GROUP BY game_id
+              ORDER BY max_end_time DESC
+              LIMIT @limit
+            ) AS subquery
+              ON g.game_id = subquery.game_id
+          WHERE
+            (g.home_team_id = {team_id} OR g.away_team_id = {team_id})
+          ORDER BY subquery.max_end_time DESC
+      """
     
+      job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("limit", "INT64", limit),
+            ]
+        )
+        
+      bq_client = bigquery.Client()
+      query_job = bq_client.query(query, job_config=job_config)
+      return process_game_results(query_job)
+  
     except exceptions.NotFound as e:
         logging.error(f"Table or dataset not found for {team_name}: {e}")
         raise
@@ -254,16 +221,100 @@ def fetch_team_games(team_name: str) -> list:
         logging.error(f"Unexpected error in fetch_team_games: {e}")
         raise
 
+
 def fetch_team_player_stats(team_name: str, limit: int = 100) -> list:
     """
-    Fetches player statistics for any team's games.
+    Fetches player statistics for the most recent games of a team, ordered by play end time.
 
     Args:
         team_name (str): Team name from TEAMS dictionary
         limit (int, optional): Maximum number of records to return. Defaults to 100.
 
     Returns:
-        list: Player statistics including standard batting metrics
+        list: A list of dictionaries containing player stats.
+    """
+    
+    team_id = TEAMS[team_name]
+    table_name = _get_table_name(team_name)
+    
+    try:
+        query = f"""
+           SELECT
+                ps.player_id,
+                r.full_name,
+                g.official_date as game_date,
+                ps.at_bats,
+                ps.hits,
+                ps.home_runs,
+                ps.rbi,
+                ps.walks,
+                ps.strikeouts,
+                ps.batting_average,
+                ps.on_base_percentage,
+                ps.slugging_percentage
+            FROM
+                {table_name}.player_stats AS ps
+            JOIN 
+                {table_name}.roster AS r
+                ON ps.player_id = r.player_id
+            INNER JOIN 
+                {table_name}.games AS g 
+                ON ps.game_id = g.game_id
+            INNER JOIN (
+              SELECT 
+                  game_id,
+                  MAX(end_time) as max_end_time
+              FROM
+                 {table_name}.plays
+              GROUP BY game_id
+              ORDER BY max_end_time DESC
+             ) AS subquery
+             ON g.game_id = subquery.game_id
+            WHERE
+                (g.home_team_id = {team_id} OR g.away_team_id = {team_id})
+           ORDER BY subquery.max_end_time DESC
+           LIMIT @limit
+        """
+
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("limit", "INT64", limit)
+            ]
+        )
+        
+        bq_client = bigquery.Client()
+        query_job = bq_client.query(query, job_config=job_config)
+        results = list(query_job.result())
+        return [dict(row) for row in results]
+
+    except Exception as e:
+        logging.error(f"Error in fetch_team_player_stats for {team_name}: {e}")
+        return []
+    
+
+def fetch_team_player_stats_by_opponent(team_name: str, opponent_team: str, limit: int = 100) -> list:
+    """
+    Fetches player statistics for any team's games against a specific opponent.
+
+    Args:
+        team_name (str): Team name from TEAMS dictionary
+        opponent_team (str): Opponent team name
+        limit (int, optional): Maximum records to return. Defaults to 100.
+
+    Returns:
+        list: A list of dictionaries, each containing the following keys:
+            - player_id: Unique identifier for the player.
+            - full_name: The player's full name.
+            - game_date: The official date of the game.
+            - at_bats: Number of at-bats.
+            - hits: Number of hits.
+            - home_runs: Number of home runs.
+            - rbi: Runs batted in.
+            - walks: Number of walks.
+            - strikeouts: Number of strikeouts.
+            - batting_average: Batting average.
+            - on_base_percentage: On-base percentage.
+            - slugging_percentage: Slugging percentage.
     """
     
     team_id = TEAMS[team_name]
@@ -289,75 +340,24 @@ def fetch_team_player_stats(team_name: str, limit: int = 100) -> list:
         JOIN 
             {table_name}.roster AS r
             ON ps.player_id = r.player_id
-        INNER JOIN 
-            {table_name}.games AS g 
-            ON ps.game_id = g.game_id
-        WHERE
-            (g.home_team_id = {team_id} OR g.away_team_id = {team_id})
-        ORDER BY 
-            g.official_date DESC
-        LIMIT @limit
-        """
-
-        job_config = bigquery.QueryJobConfig(
-            query_parameters=[
-                bigquery.ScalarQueryParameter("limit", "INT64", limit)
-            ]
-        )
-        
-        bq_client = bigquery.Client()
-        query_job = bq_client.query(query, job_config=job_config)
-        results = list(query_job.result())
-        return [dict(row) for row in results]
-
-    except Exception as e:
-        logging.error(f"Error in fetch_team_player_stats for {team_name}: {e}")
-        return []
-
-def fetch_team_player_stats_by_opponent(team_name: str, opponent_team: str, limit: int = 100) -> list:
-    """
-    Fetches player statistics for any team's games against a specific opponent.
-
-    Args:
-        team_name (str): Team name from TEAMS dictionary
-        opponent_team (str): Opponent team name
-        limit (int, optional): Maximum records to return. Defaults to 100.
-
-    Returns:
-        list: Player statistics against specified opponent
-    """
-    
-    team_id = TEAMS[team_name]
-    table_name = _get_table_name(team_name)
-    
-    try:
-        query = f"""
-        SELECT
-            ps.player_id,
-            r.full_name,
-            ps.at_bats,
-            ps.hits,
-            ps.home_runs,
-            ps.rbi,
-            ps.walks,
-            ps.strikeouts,
-            ps.batting_average,
-            ps.on_base_percentage,
-            ps.slugging_percentage
-        FROM
-            {table_name}.player_stats AS ps
-        JOIN 
-            {table_name}.roster AS r
-            ON ps.player_id = r.player_id
-        INNER JOIN 
-            {table_name}.games AS g 
-            ON ps.game_id = g.game_id
-        WHERE
-            (g.home_team_id = {team_id} OR g.away_team_id = {team_id})
-            AND ((g.home_team_name = @opponent_team) OR (g.away_team_name = @opponent_team))
-        ORDER BY 
-            g.official_date DESC
-        LIMIT @limit
+            INNER JOIN 
+                {table_name}.games AS g 
+                ON ps.game_id = g.game_id
+            INNER JOIN (
+              SELECT 
+                  game_id,
+                  MAX(end_time) as max_end_time
+              FROM
+                 {table_name}.plays
+              GROUP BY game_id
+              ORDER BY max_end_time DESC
+             ) AS subquery
+             ON g.game_id = subquery.game_id
+            WHERE
+                (g.home_team_id = {team_id} OR g.away_team_id = {team_id})
+                AND ((g.home_team_name = @opponent_team) OR (g.away_team_name = @opponent_team))
+           ORDER BY subquery.max_end_time DESC
+           LIMIT @limit
         """
 
         job_config = bigquery.QueryJobConfig(
@@ -386,6 +386,21 @@ def fetch_team_player_stats_by_game_type(team_name: str, game_type: str, limit: 
         team_name (str): Team name from TEAMS dictionary
         game_type (str): Game type (R, P, etc.)
         limit (int): Max records to return. Default 100.
+
+    Returns:
+        list: A list of dictionaries, each containing the following keys:
+            - player_id: Unique identifier for the player.
+            - full_name: The player's full name.
+            - game_date: The official date of the game.
+            - at_bats: Number of at-bats.
+            - hits: Number of hits.
+            - home_runs: Number of home runs.
+            - rbi: Runs batted in.
+            - walks: Number of walks.
+            - strikeouts: Number of strikeouts.
+            - batting_average: Batting average.
+            - on_base_percentage: On-base percentage.
+            - slugging_percentage: Slugging percentage.
     """
     team_id = TEAMS[team_name]
     table_name = _get_table_name(team_name)
@@ -394,6 +409,7 @@ def fetch_team_player_stats_by_game_type(team_name: str, game_type: str, limit: 
         query = f"""
         SELECT
             ps.player_id,
+            g.official_date as game_date,
             r.full_name,
             ps.at_bats,
             ps.hits,
@@ -409,15 +425,24 @@ def fetch_team_player_stats_by_game_type(team_name: str, game_type: str, limit: 
         JOIN 
             {table_name}.roster AS r
             ON ps.player_id = r.player_id
-        INNER JOIN 
-            {table_name}.games AS g 
-            ON ps.game_id = g.game_id
-        WHERE
-            (g.home_team_id = {team_id} OR g.away_team_id = {team_id})
-            AND g.game_type = @game_type
-        ORDER BY 
-            g.official_date DESC
-        LIMIT @limit
+            INNER JOIN 
+                {table_name}.games AS g 
+                ON ps.game_id = g.game_id
+            INNER JOIN (
+              SELECT 
+                  game_id,
+                  MAX(end_time) as max_end_time
+              FROM
+                 {table_name}.plays
+              GROUP BY game_id
+              ORDER BY max_end_time DESC
+             ) AS subquery
+             ON g.game_id = subquery.game_id
+            WHERE
+                (g.home_team_id = {team_id} OR g.away_team_id = {team_id})
+                AND g.game_type = @game_type
+           ORDER BY subquery.max_end_time DESC
+           LIMIT @limit
         """
 
         job_config = bigquery.QueryJobConfig(
@@ -444,7 +469,19 @@ def fetch_team_plays(team_name: str, limit: int = 100) -> list:
         limit (int): Max plays to return. Default 100.
 
     Returns:
-        list: Play details including events, players, and timing
+        list: A list of dictionaries, each containing the following keys:
+            - play_id: Unique identifier for the play.
+            - inning: The inning in which the play occurred.
+            - half_inning: Indicates whether the play occurred in the top or bottom of the inning.
+            - event: The event that occurred (e.g., a hit, a strikeout).
+            - event_type: The type or classification of the event.
+            - description: A textual description of the play.
+            - rbi: The number of runs batted in as a result of the play.
+            - is_scoring_play: Boolean indicating if the play resulted in a score.
+            - batter_name: Full name of the batter involved in the play.
+            - pitcher_name: Full name of the pitcher involved in the play.
+            - start_time: The start time of the play.
+            - end_time: The end time of the play.
     """
 
     
@@ -480,7 +517,7 @@ def fetch_team_plays(team_name: str, limit: int = 100) -> list:
         WHERE
             g.home_team_id = {team_id} OR g.away_team_id = {team_id}
         ORDER BY 
-            g.official_date DESC, p.start_time ASC
+            p.end_time DESC
         LIMIT @limit
         """
 
@@ -497,6 +534,9 @@ def fetch_team_plays(team_name: str, limit: int = 100) -> list:
     except Exception as e:
         logging.error(f"Error in fetch_team_plays for {team_name}: {e}")
         return []
+    
+
+
 def fetch_team_plays_by_opponent(team_name: str, opponent_team: str, limit: int = 100) -> list:
     """
     Fetches plays from any team's games against specific opponent.
@@ -505,6 +545,21 @@ def fetch_team_plays_by_opponent(team_name: str, opponent_team: str, limit: int 
         team_name (str): Team name from TEAMS dictionary
         opponent_team (str): Opponent team name
         limit (int): Max plays to return. Default 100.
+
+    Returns:
+        list: A list of dictionaries, each containing the following keys:
+            - play_id: Unique identifier for the play.
+            - inning: The inning in which the play occurred.
+            - half_inning: Indicates whether the play occurred in the top or bottom of the inning.
+            - event: The event that occurred (e.g., a hit, a strikeout).
+            - event_type: The type or classification of the event.
+            - description: A textual description of the play.
+            - rbi: The number of runs batted in as a result of the play.
+            - is_scoring_play: Boolean indicating if the play resulted in a score.
+            - batter_name: Full name of the batter involved in the play.
+            - pitcher_name: Full name of the pitcher involved in the play.
+            - start_time: The start time of the play.
+            - end_time: The end time of the play.
     """
     team_id = TEAMS[team_name]
     table_name = _get_table_name(team_name)
@@ -539,7 +594,7 @@ def fetch_team_plays_by_opponent(team_name: str, opponent_team: str, limit: int 
             (g.home_team_id = {team_id} OR g.away_team_id = {team_id})
             AND ((g.home_team_name = @opponent_team) OR (g.away_team_name = @opponent_team))
         ORDER BY 
-            g.official_date DESC, p.start_time ASC
+            p.end_time DESC, p.start_time ASC
         LIMIT @limit
         """
 
@@ -566,6 +621,21 @@ def fetch_team_plays_by_game_type(team_name: str, game_type: str, limit: int = 1
         team_name (str): Team name from TEAMS dictionary
         game_type (str): Game type (R, P, etc.)
         limit (int): Max plays to return. Default 100.
+
+    Returns:
+        list: A list of dictionaries, each containing the following keys:
+            - play_id: Unique identifier for the play.
+            - inning: The inning in which the play occurred.
+            - half_inning: Indicates whether the play occurred in the top or bottom of the inning.
+            - event: The event that occurred (e.g., a hit, a strikeout).
+            - event_type: The type or classification of the event.
+            - description: A textual description of the play.
+            - rbi: The number of runs batted in as a result of the play.
+            - is_scoring_play: Boolean indicating if the play resulted in a score.
+            - batter_name: Full name of the batter involved in the play.
+            - pitcher_name: Full name of the pitcher involved in the play.
+            - start_time: The start time of the play.
+            - end_time: The end time of the play.
     """
 
     team_id = TEAMS[team_name]
@@ -601,7 +671,7 @@ def fetch_team_plays_by_game_type(team_name: str, game_type: str, limit: int = 1
             (g.home_team_id = {team_id} OR g.away_team_id = {team_id})
             AND g.game_type = @game_type
         ORDER BY 
-            g.official_date DESC, p.start_time ASC
+             p.end_time DESC, p.start_time ASC
         LIMIT @limit
         """
 
@@ -628,6 +698,21 @@ def fetch_team_games_by_opponent(team_name: str, opponent_team: str = 'New York 
         team_name (str): Team name from TEAMS dictionary
         opponent_team (str): Opponent team name
         limit (int): Max games to return. Default 2
+
+    Returns:
+        list: A list of dictionaries, each containing the following keys:
+            - game_id: Unique identifier for the game.
+            - official_date: The official date of the game.
+            - home_team_id: The ID of the home team.
+            - home_team_name: The name of the home team.
+            - away_team_id: The ID of the away team.
+            - away_team_name: The name of the away team.
+            - home_score: The final score for the home team.
+            - away_score: The final score for the away team.
+            - venue_name: The name of the venue where the game was played.
+            - status: The status of the game (e.g., completed, postponed).
+            - team_win: Boolean or indicator whether the specified team won the game.
+            - team_margin: The score margin by which the specified team won or lost the game.
     """
 
     if not isinstance(limit, int) or limit <= 0:
@@ -654,12 +739,22 @@ def fetch_team_games_by_opponent(team_name: str, opponent_team: str = 'New York 
             {team_name}_win as team_win,
             {team_name}_margin as team_margin
         FROM
-            {table_name}.games
+              {table_name}.games AS g
+        INNER JOIN
+              (SELECT
+                game_id,
+                MAX(end_time) AS max_end_time
+              FROM
+                  {table_name}.plays
+              GROUP BY game_id
+              ORDER BY max_end_time DESC
+              LIMIT @limit
+            ) AS subquery
+              ON g.game_id = subquery.game_id
         WHERE
-            (home_team_id = {team_id} OR away_team_id = {team_id})
+            (g.home_team_id = {team_id} OR g.away_team_id = {team_id})
             AND ((home_team_name = @opponent_team) OR (away_team_name = @opponent_team))
-        ORDER BY official_date DESC
-        LIMIT @limit
+        ORDER BY subquery.max_end_time DESC
         """
 
         job_config = bigquery.QueryJobConfig(
@@ -688,6 +783,21 @@ def fetch_team_games_by_type(team_name: str, game_type: str = 'R', limit: int = 
         team_name (str): Team name from TEAMS dictionary
         game_type (str): Game type (R=Regular, L=League Championship, etc.)
         limit (int): Max games to return. Default 2
+
+    Returns:
+        list: A list of dictionaries, each containing the following keys:
+            - game_id: Unique identifier for the game.
+            - official_date: The official date of the game.
+            - home_team_id: The ID of the home team.
+            - home_team_name: The name of the home team.
+            - away_team_id: The ID of the away team.
+            - away_team_name: The name of the away team.
+            - home_score: The final score for the home team.
+            - away_score: The final score for the away team.
+            - venue_name: The name of the venue where the game was played.
+            - status: The status of the game (e.g., completed, postponed).
+            - team_win: Boolean or indicator whether the specified team won the game.
+            - team_margin: The score margin by which the specified team won or lost the game.
     """
     if not isinstance(limit, int) or limit <= 0:
         raise ValueError("limit must be a positive integer")
@@ -713,12 +823,22 @@ def fetch_team_games_by_type(team_name: str, game_type: str = 'R', limit: int = 
             {team_name}_win as team_win,
             {team_name}_margin as team_margin
         FROM
-            {table_name}.games
+              {table_name}.games AS g
+        INNER JOIN
+              (SELECT
+                game_id,
+                MAX(end_time) AS max_end_time
+              FROM
+                  {table_name}.plays
+              GROUP BY game_id
+              ORDER BY max_end_time DESC
+              LIMIT @limit
+            ) AS subquery
+              ON g.game_id = subquery.game_id
         WHERE
-            (home_team_id = {team_id} OR away_team_id = {team_id})
+            (g.home_team_id = {team_id} OR g.away_team_id = {team_id})
             AND game_type = @game_type
-        ORDER BY official_date DESC
-        LIMIT @limit
+        ORDER BY subquery.max_end_time DESC
         """
 
         job_config = bigquery.QueryJobConfig(
@@ -783,14 +903,30 @@ def process_game_results(query_job):
     
 
 
-def fetch_player_game_stats(team_name: str, game_ids: list = None, player_ids: list = None) -> list:
+def fetch_player_game_stats(team_name: str, game_ids: list = None,  limit: int = 100, player_ids: list = None) -> list:
     """
     Fetches player statistics for any team's games/players.
 
     Args:
         team_name (str): Team name from TEAMS dictionary
+        limit (int, optional): Maximum number of records to return.
         game_ids (list, optional): Game IDs to filter by
         player_ids (list, optional): Player IDs to filter by
+
+    Returns:
+        list: A list of dictionaries, each containing the following keys:
+            - player_id: Unique identifier for the player.
+            - full_name: The player's full name.
+            - game_date: The official date of the game.
+            - at_bats: Number of at-bats.
+            - hits: Number of hits.
+            - home_runs: Number of home runs.
+            - rbi: Runs batted in.
+            - walks: Number of walks.
+            - strikeouts: Number of strikeouts.
+            - batting_average: Batting average.
+            - on_base_percentage: On-base percentage.
+            - slugging_percentage: Slugging percentage.
     """
     if game_ids is not None and not isinstance(game_ids, list):
         raise ValueError("game_ids must be a list or None")
@@ -798,11 +934,13 @@ def fetch_player_game_stats(team_name: str, game_ids: list = None, player_ids: l
         raise ValueError("player_ids must be a list or None")
 
     table_name = _get_table_name(team_name)
+    team_id = TEAMS[team_name]
     
     try:
         query = f"""
         SELECT
             ps.player_id,
+            g.official_date as game_date,
             r.full_name,
             ps.at_bats,
             ps.hits,
@@ -819,9 +957,27 @@ def fetch_player_game_stats(team_name: str, game_ids: list = None, player_ids: l
             {table_name}.roster AS r
         ON 
             ps.player_id = r.player_id
+            INNER JOIN 
+                {table_name}.games AS g 
+                ON ps.game_id = g.game_id
+            INNER JOIN (
+              SELECT 
+                  game_id,
+                  MAX(end_time) as max_end_time
+              FROM
+                 {table_name}.plays
+              GROUP BY game_id
+              ORDER BY max_end_time DESC
+             ) AS subquery
+             ON g.game_id = subquery.game_id
+            WHERE
+                (g.home_team_id = {team_id} OR g.away_team_id = {team_id})
+                AND g.game_type = @game_type
+           ORDER BY subquery.max_end_time DESC
+           LIMIT @limit    
         """
 
-        query_params = []
+        query_params = [bigquery.ScalarQueryParameter("limit", "INT64", limit)]
         where_conditions = []
 
         if game_ids:
@@ -892,7 +1048,15 @@ def fetch_player_plays(player_name: str, team_name: str, limit: int = 100) -> li
         limit (int, optional): Maximum number of plays to return. Defaults to 100.
         
     Returns:
-        list: List of dictionaries containing play-by-play data
+        list: A list of dictionaries, each containing the following keys:
+            - play_id: Unique identifier for the play.
+            - inning: The inning in which the play occurred.
+            - half_inning: Indicates whether the play occurred in the top or bottom of the inning.
+            - event: The event that occurred (e.g., a hit, a strikeout).
+            - event_type: The type or classification of the event.
+            - description: A textual description of the play.
+            - start_time: The start time of the play.
+            - game_date: The official date of the game in which the play occurred.
     """
     
     team_id = TEAMS[team_name]
@@ -921,7 +1085,7 @@ def fetch_player_plays(player_name: str, team_name: str, limit: int = 100) -> li
             r.full_name = @player_name
             AND (g.home_team_id = {team_id} OR g.away_team_id = {team_id})
         ORDER BY 
-            g.official_date DESC,
+            p.end_time DESC,
             p.start_time ASC
         LIMIT @limit
         """
@@ -960,6 +1124,17 @@ def fetch_player_plays_by_opponent(player_name: str, team_name: str, opponent_te
         team_name (str): Team name from TEAMS dictionary
         opponent_team (str): Name of the opponent team
         limit (int, optional): Maximum number of plays to return. Defaults to 100.
+
+    Returns:
+        list: A list of dictionaries, each containing the following keys:
+            - play_id: Unique identifier for the play.
+            - inning: The inning in which the play occurred.
+            - half_inning: Indicates whether the play occurred in the top or bottom of the inning.
+            - event: The event that occurred (e.g., a hit, a strikeout).
+            - event_type: The type or classification of the event.
+            - description: A textual description of the play.
+            - start_time: The start time of the play.
+            - game_date: The official date of the game in which the play occurred.        
     """
 
     team_id = TEAMS[team_name]
@@ -989,7 +1164,7 @@ def fetch_player_plays_by_opponent(player_name: str, team_name: str, opponent_te
             AND (g.home_team_id = {team_id} OR g.away_team_id = {team_id})
             AND ((g.home_team_name = @opponent_team) OR (g.away_team_name = @opponent_team))
         ORDER BY 
-            g.official_date DESC,
+            p.end_time DESC,
             p.start_time ASC
         LIMIT @limit
         """
@@ -1020,6 +1195,17 @@ def fetch_player_plays_by_game_type(player_name: str, team_name: str, game_type:
         team_name (str): Team name from TEAMS dictionary
         game_type (str): Type of game (R for Regular Season, P for Postseason, etc.)
         limit (int, optional): Maximum number of plays to return. Defaults to 100.
+
+    Returns:
+        list: A list of dictionaries, each containing the following keys:
+            - play_id: Unique identifier for the play.
+            - inning: The inning in which the play occurred.
+            - half_inning: Indicates whether the play occurred in the top or bottom of the inning.
+            - event: The event that occurred (e.g., a hit, a strikeout).
+            - event_type: The type or classification of the event.
+            - description: A textual description of the play.
+            - start_time: The start time of the play.
+            - game_date: The official date of the game in which the play occurred.
     """
 
     team_id = TEAMS[team_name]
@@ -1049,7 +1235,7 @@ def fetch_player_plays_by_game_type(player_name: str, team_name: str, game_type:
             AND (g.home_team_id = {team_id} OR g.away_team_id = {team_id})
             AND g.game_type = @game_type
         ORDER BY 
-            g.official_date DESC,
+            p.end_time DESC,
             p.start_time ASC
         LIMIT @limit
         """
@@ -1200,7 +1386,7 @@ def generate_mlb_podcasts(contents: str) -> dict:
             *   **Game Context:** Determine the game type (e.g., regular season, playoffs, exhibition), any specific game focus (key plays, player performance), and critical moments (turning points, upsets).
             *   **Content Focus:** Pinpoint the desired podcast focus (e.g., game analysis, player highlights, team strategy, historical context, record-breaking events).
             *   **Stylistic Preferences:** Understand the desired podcast tone and style (e.g., analytical, enthusiastic, humorous, serious, historical, dramatic).
-            *    **Statistical Emphasis:** Identify any specific stats, metrics, or data points the user wants to highlight, including, but not limited to, game dates, final scores, player specific metrics, and any other metrics that provide greater depth to the game.
+            *    **Statistical Emphasis:** Identify any specific stats, metrics, or data points the user wants to highlight, including, but not limited to, game dates, final scores, player specific metrics, and any other metrics that provide greater depth to the game. **Crucially, prioritize including all available statistics for mentioned players, teams, and their opponents. This should include, but is not limited to, batting averages, home runs, RBIs, pitching stats (ERA, strikeouts, wins/losses), and fielding statistics. Additionally, be sure to include the names of all starting and key relief pitchers for the game.**
             *   **Implicit Needs:** Infer unspoken requirements based on the question's context (e.g., if a user asks about a close game, anticipate a focus on the final moments).
         *   **Data Prioritization Logic:**  Establish a clear hierarchy for data based on user needs. For example:
             *   Player-centric requests: Prioritize individual player stats, highlights, and pivotal moments.
@@ -1209,7 +1395,7 @@ def generate_mlb_podcasts(contents: str) -> dict:
         *   **Edge Case Management:** Implement robust logic to manage varied user inputs. Specifically:
             *   **Vague Queries:** Develop a fallback strategy for questions like "Tell me about the Lakers." Provide a balanced overview that includes recent games, important historical moments, and significant player performances.
             *   **Conflicting Directives:**  Create a resolution strategy for contradictory requirements (e.g., focus on Player A and Team B). Balance the requests or prioritize based on a logical interpretation of the question. Highlight points where those focus areas intersect in an organic way.
-            - **Data Gaps:** If specific game data (e.g., game dates, final scores, player stats) is missing, explicitly state in the script that the data was unavailable. Do not use placeholder values. 
+            - **Data Gaps:** If specific game data (e.g., game dates, final scores, **player stats**, , **pitcher information**) is missing, explicitly state in the script that the data was unavailable. Do not use placeholder values. 
             *  **Off-Topic Inquiries:** If the request falls outside the tool's scope (e.g., "What does player X eat"), acknowledge the request is out of scope with a concise message.
             *   **Multiple Entities:** If the user asks for information on multiple teams or players, without specifying a game, provide a summary of their recent performances.
             *  **Aggregated Data:** If the user requests a summary or comparison of multiple players across multiple games, generate an aggregated summary for each player across those games.
@@ -1222,8 +1408,10 @@ def generate_mlb_podcasts(contents: str) -> dict:
             *   **Critical Events:** Highlight game-changing plays (e.g., game-winning shots, home runs, interceptions).
             *   **Performance Extremes:** Note exceptional performances, unusual dips in performance, or record-breaking accomplishments.
             *   **Pivotal Moments:**  Identify turning points that altered the course of the game.
-            *   **Player Insight:** Analyze and report on detailed player actions, individual statistics, and contributions to the game.
-           *   **Game Details:** Extract and include game dates, final scores, and any other relevant game details that add depth and context to the discussion.
+            *   **Player Insight:** Analyze and report on detailed player actions, individual statistics, and contributions to the game. **Include all relevant stats, such as batting average, home runs, RBIs, and any other available metrics.**
+            *   **Game Details:** Extract and include game dates, final scores, and any other relevant game details that add depth and context to the discussion.
+            *    **Pitcher Information:** Include starting and key relief pitcher names for each team, as well as their individual stats for the game where available (e.g., innings pitched, strikeouts, earned runs).
+        *  **Contextual Layering:** Augment raw data with contextual information to enrich the analysis.
         *  **Contextual Layering:** Augment raw data with contextual information to enrich the analysis.
             *    **Historical Data:** Use past data, historical performance, and historical records, team or player-specific trends to provide the analysis greater depth.
             *    **Team Specific Data:** Use team specific data to better inform the analysis (e.g. if a team is known for strong defense, then analyze this and provide commentary on it).
@@ -1241,7 +1429,7 @@ def generate_mlb_podcasts(contents: str) -> dict:
         *   **Event-Driven Structure:** Structure the script around the key events identified in Step 2. For each event:
              *   Involve all three speaker roles in the conversation to provide multiple perspectives.
             *   Maintain a natural conversation flow, resembling a genuine podcast format.
-            *   Incorporate all available relevant information, including player names, team names, inning details, and applicable statistics, **game dates and final scores**.
+            *   Incorporate all available relevant information, including player names, team names, inning details, and applicable statistics, **game dates and final scores, and player and pitcher specific stats.**.
         *   **Seamless Transitions:** Use transitional phrases (e.g., "shifting to the next play," "now let's look at the defense") to ensure continuity.
         *   **Unbiased Tone:** Maintain a neutral and factual tone, avoiding any personal opinions, unless specifically instructed by the user.
         *   **Edge Case Handling:**
@@ -1259,7 +1447,7 @@ def generate_mlb_podcasts(contents: str) -> dict:
               - **For Spanish:**  
                    • Adopt a lively and engaging commentary style typical of Spanish sports media.  
                    • Stress the inclusion of the game date and final score by using phrases like "la fecha del partido" and "el marcador final" to provide clear factual anchors.  
-                   • Chain of Thought: Start the script by emphasizing the importance of the game’s date and final score, setting the stage for a dynamic narrative. Use vivid descriptions and energetic language to draw the listener into the game, making sure to highlight these key data points repeatedly throughout the script to reinforce the factual context. Detailed descriptions of pivotal plays and smooth transitions will maintain listener engagement while ensuring that the essential facts are always in focus.
+                   • Chain of Thought: Start the script by emphasizing the importance of the game date using spanish date format and final score, setting the stage for a dynamic narrative. Use vivid descriptions and energetic language to draw the listener into the game, making sure to highlight these key data points repeatedly throughout the script to reinforce the factual context. Detailed descriptions of pivotal plays and smooth transitions will maintain listener engagement while ensuring that the essential facts are always in focus.
               - **For English:**  
                    • Maintain the current detailed and structured narrative with clear emphasis on game dates and final scores as factual anchors.
         *  **Default Language Protocol:** If the user does not specify a language, English will be used as the default language.
