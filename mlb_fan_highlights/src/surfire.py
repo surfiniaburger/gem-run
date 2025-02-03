@@ -1209,7 +1209,7 @@ def generate_mlb_podcasts(contents: str) -> dict:
         *   **Edge Case Management:** Implement robust logic to manage varied user inputs. Specifically:
             *   **Vague Queries:** Develop a fallback strategy for questions like "Tell me about the Lakers." Provide a balanced overview that includes recent games, important historical moments, and significant player performances.
             *   **Conflicting Directives:**  Create a resolution strategy for contradictory requirements (e.g., focus on Player A and Team B). Balance the requests or prioritize based on a logical interpretation of the question. Highlight points where those focus areas intersect in an organic way.
-            *   **Data Gaps:** Manage requests for nonexistent data (future games, obscure information) gracefully. Provide a clear acknowledgement of limitations and suggest alternatives like previews or historical comparisons where appropriate.
+            - **Data Gaps:** If specific game data (e.g., game dates, final scores, player stats) is missing, explicitly state in the script that the data was unavailable. Do not use placeholder values. 
             *  **Off-Topic Inquiries:** If the request falls outside the tool's scope (e.g., "What does player X eat"), acknowledge the request is out of scope with a concise message.
             *   **Multiple Entities:** If the user asks for information on multiple teams or players, without specifying a game, provide a summary of their recent performances.
             *  **Aggregated Data:** If the user requests a summary or comparison of multiple players across multiple games, generate an aggregated summary for each player across those games.
@@ -1251,6 +1251,17 @@ def generate_mlb_podcasts(contents: str) -> dict:
 
     **Step 4: Globally Accessible Language Support**
         *   **Translation Integration:** Use translation tools to translate the full output, including all generated text, data-driven content, and speaker roles.
+        *   **Language-Specific Adjustments and Chain of Thought Emphasis:**
+              - **For Japanese:**  
+                   • Use culturally appropriate sports broadcasting language.  
+                   • Emphasize the inclusion of the game date and final score by using precise Japanese conventions. 
+                   • **Chain-of-Thought:** Begin by clearly stating the game date using Japanese date formats (e.g., "2024年5月15日") and then present the final score using phrases such as "最終スコア." Anchor the entire script in these key details to build a solid factual framework. As you proceed, refer back to these details when transitioning between segments, ensuring that every pivotal play is contextualized within the exact game date and score. This approach not only reinforces the factual basis of the narrative but also resonates with Japanese audiences who expect precision and clarity in sports reporting.
+              - **For Spanish:**  
+                   • Adopt a lively and engaging commentary style typical of Spanish sports media.  
+                   • Stress the inclusion of the game date and final score by using phrases like "la fecha del partido" and "el marcador final" to provide clear factual anchors.  
+                   • Chain of Thought: Start the script by emphasizing the importance of the game’s date and final score, setting the stage for a dynamic narrative. Use vivid descriptions and energetic language to draw the listener into the game, making sure to highlight these key data points repeatedly throughout the script to reinforce the factual context. Detailed descriptions of pivotal plays and smooth transitions will maintain listener engagement while ensuring that the essential facts are always in focus.
+              - **For English:**  
+                   • Maintain the current detailed and structured narrative with clear emphasis on game dates and final scores as factual anchors.
         *  **Default Language Protocol:** If the user does not specify a language, English will be used as the default language.
         *   **Translation Quality Assurance:** Verify that the translation is accurate and reflects the intended meaning. Ensure that the context of the original text is not lost in translation.
         *   **Edge Case Adaptations:**
