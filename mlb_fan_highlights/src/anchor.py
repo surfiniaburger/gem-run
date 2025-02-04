@@ -17,6 +17,11 @@ from typing import List, Dict, Union, Optional
 from datetime import datetime
 import urllib.parse
 import json
+import time
+import logging
+from typing import Dict, Any
+import json
+from datetime import datetime, timedelta
 
 
 logging.basicConfig(
@@ -53,17 +58,141 @@ safety_settings = [
 
 
 
-def anchor(team: str, query_type: str = "last_game_date") -> dict:
+
+class AdvancedGameInfoCache:
     """
-    Retrieves information about the last game for a specific MLB team.
+    An advanced caching mechanism for MLB team last game information
+    with sophisticated invalidation and logging strategies.
+    """
+    def __init__(self, 
+                 cache_duration: int = 3600,  # Default 1 hour
+                 max_cache_size: int = 50):   # Limit cache size
+        self._cache: Dict[str, Dict[str, Any]] = {}
+        self._cache_duration = cache_duration
+        self._max_cache_size = max_cache_size
+        
+        # Logging setup
+        self._logger = logging.getLogger('GameInfoCache')
+        self._logger.setLevel(logging.INFO)
+        
+        # Tracking cache statistics
+        self._stats = {
+            'hits': 0,
+            'misses': 0,
+            'refreshes': 0,
+            'evictions': 0
+        }
+    
+    def get(self, team: str) -> Dict[str, Any]:
+        """
+        Retrieve cached game information for a team if it's still valid.
+        
+        Args:
+            team (str): The name of the MLB team
+        
+        Returns:
+            Dict[str, Any]: Cached game information or None if not found/expired
+        """
+        if team in self._cache:
+            cached_item = self._cache[team]
+            current_time = time.time()
+            
+            # Check cache validity
+            if current_time - cached_item['timestamp'] < self._cache_duration:
+                self._stats['hits'] += 1
+                self._logger.info(f"Cache HIT for team {team}")
+                return cached_item['data']
+            else:
+                # Cache expired
+                self._stats['misses'] += 1
+                self._logger.info(f"Cache MISS for team {team} - Expired")
+                del self._cache[team]
+        
+        # Cache miss
+        self._stats['misses'] += 1
+        self._logger.info(f"Cache MISS for team {team}")
+        return None
+    
+    def set(self, team: str, data: Dict[str, Any]):
+        """
+        Store game information in the cache with intelligent management.
+        
+        Args:
+            team (str): The name of the MLB team
+            data (Dict[str, Any]): Game information to cache
+        """
+        # Enforce max cache size
+        if len(self._cache) >= self._max_cache_size:
+            # Remove oldest entry
+            oldest_team = min(self._cache, key=lambda k: self._cache[k]['timestamp'])
+            del self._cache[oldest_team]
+            self._stats['evictions'] += 1
+            self._logger.warning(f"Cache EVICTION: Removed {oldest_team} to make space")
+        
+        # Add new cache entry
+        self._cache[team] = {
+            'timestamp': time.time(),
+            'data': data,
+            'access_count': 0
+        }
+    
+    def refresh(self, team: str, new_data: Dict[str, Any]):
+        """
+        Explicitly refresh cache entry for a team.
+        
+        Args:
+            team (str): The name of the MLB team
+            new_data (Dict[str, Any]): Updated game information
+        """
+        self._stats['refreshes'] += 1
+        self._logger.info(f"Cache REFRESH for team {team}")
+        self.set(team, new_data)
+    
+    def get_stats(self) -> Dict[str, int]:
+        """
+        Retrieve cache usage statistics.
+        
+        Returns:
+            Dict[str, int]: Cache performance statistics
+        """
+        return self._stats.copy()
+    
+    def clear(self, team: str = None):
+        """
+        Clear cache for a specific team or entire cache.
+        
+        Args:
+            team (str, optional): Team name to clear. If None, clears entire cache.
+        """
+        if team:
+            if team in self._cache:
+                del self._cache[team]
+                self._logger.info(f"Manually cleared cache for {team}")
+        else:
+            self._cache.clear()
+            self._logger.info("Entire cache cleared")
+
+# Global cache instance
+game_info_cache = AdvancedGameInfoCache()
+
+def anchor(team: str, query_type: str = "last_game_date", force_refresh: bool = False) -> dict:
+    """
+    Retrieves information about the last game for a specific MLB team with advanced caching.
     
     Args:
         team (str): The name of the MLB team.
         query_type (str, optional): Type of query to perform. Defaults to "last_game_date".
+        force_refresh (bool, optional): Force retrieve new data, ignoring cache. Defaults to False.
     
     Returns:
         dict: A dictionary containing information about the last game.
     """
+    # Check cache first, unless force refresh is requested
+    if not force_refresh:
+        cached_result = game_info_cache.get(team)
+        if cached_result:
+            return cached_result
+    
     client = genai.Client(vertexai=True, project="gem-rush-007", location="us-central1")
     MODEL_ID = "gemini-2.0-flash-exp"
     
@@ -115,6 +244,13 @@ def anchor(team: str, query_type: str = "last_game_date") -> dict:
         try:
             # Parse the JSON response
             last_game_info = json.loads(text)
+            
+            # Cache the result (or refresh if force_refresh is True)
+            if force_refresh:
+                game_info_cache.refresh(team, last_game_info)
+            else:
+                game_info_cache.set(team, last_game_info)
+            
             return last_game_info
         except json.JSONDecodeError as e:
             logging.error(f"JSON Decode Error in anchor function: {e}")
