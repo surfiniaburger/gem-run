@@ -16,7 +16,7 @@ import logging
 from user_profile import UserProfile
 import streamlit.components.v1 as components
 import re
-from anchor import anchor
+from anchor import anchor, game_info_cache
 
 # Configure cloud logging at the top of the script, before other imports
 logging.basicConfig(level=logging.INFO)
@@ -473,7 +473,7 @@ def construct_prompt(selected_team, selected_players, selected_timeframe,
             timeframe_value = last_game_info['last_game_date']
     
 
- """Constructs the prompt for the podcast agent based on user inputs."""
+
  prompt_parts = [f"Generate a podcast about the {selected_team}."]
 
  # Players

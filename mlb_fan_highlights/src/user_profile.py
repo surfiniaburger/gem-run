@@ -215,7 +215,7 @@ class UserProfile:
             podcasts_generated = profile.get('podcasts_generated', 0)
             
             limits = {
-                'free': {'daily': 50, 'monthly': 300},
+                'free': {'daily': 200, 'monthly': 500},
                 'premium': {'daily': 100, 'monthly': 900}
             }
             
