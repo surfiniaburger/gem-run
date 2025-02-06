@@ -1,3 +1,4 @@
+from datetime import datetime, date
 import logging
 import google.cloud.logging
 from google.cloud.logging.handlers import CloudLoggingHandler
@@ -9,6 +10,7 @@ from google.cloud import bigquery
 from typing import Dict, List, Optional
 from vertexai.language_models import TextEmbeddingModel
 import numpy as np
+from pymongo.operations import SearchIndexModel
 
 
 # --- Setup (Logging, Secret Manager, BigQuery Client) ---
@@ -40,6 +42,14 @@ def get_secret(project_id, secret_id, version_id="latest", logger=None):
 PROJECT_ID = "gem-rush-007"  # Replace with your actual project ID
 bq_client = bigquery.Client(project=PROJECT_ID)
 
+
+TEAMS = [
+    'rangers', 'angels', 'astros', 'rays', 'blue_jays', 'yankees', 
+    'orioles', 'red_sox', 'twins', 'white_sox', 'guardians', 'tigers', 
+    'royals', 'padres', 'giants', 'diamondbacks', 'rockies', 'phillies', 
+    'braves', 'marlins', 'nationals', 'mets', 'pirates', 'cardinals', 
+    'brewers', 'cubs', 'reds', 'athletics', 'mariners', 'dodgers'
+]
 
 # --- MongoDB Connection and Database Functions ---
 
@@ -127,7 +137,7 @@ def get_bigquery_data_for_team(team_name: str) -> pd.DataFrame:
 
 def generate_embeddings(df: pd.DataFrame, text_column: str = "description") -> pd.DataFrame:
     """Generates text embeddings using Vertex AI."""
-    model = TextEmbeddingModel.from_pretrained("textembedding-gecko@003")
+    model = TextEmbeddingModel.from_pretrained("text-embedding-005")
 
     def _embed_text(text: str) -> List[float]:
         try:
@@ -143,11 +153,17 @@ def generate_embeddings(df: pd.DataFrame, text_column: str = "description") -> p
     return df
 
 def insert_data_with_embeddings(db, collection_name: str, df: pd.DataFrame):
-    """Inserts data with embeddings into MongoDB."""
+    """Inserts data with embeddings into MongoDB, converting dates to strings."""
     collection = db[collection_name]
     if collection.count_documents({}) > 0:
         logger.warning(f"Collection '{collection_name}' already exists. Appending data.")
 
+    # Convert ALL potential date/datetime columns to strings BEFORE conversion to dict
+    for col in df.columns:
+       if pd.api.types.is_datetime64_any_dtype(df[col]):  # Check for datetime
+           df[col] = df[col].astype(str)
+       elif isinstance(df[col].iloc[0], (pd.Timestamp, datetime, date)):
+            df[col] = df[col].apply(lambda x: x.strftime('%Y-%m-%d') if isinstance(x, (date, datetime, pd.Timestamp)) else x)
     records = df.to_dict("records")
     for record in records:
         if not record['embedding']:
@@ -160,43 +176,63 @@ def insert_data_with_embeddings(db, collection_name: str, df: pd.DataFrame):
             # Consider handling specific errors (e.g., duplicate keys)
 
     logger.info(f"Data inserted/appended to MongoDB collection: {collection_name}")
-
+    
 def create_atlas_vector_search_index(client: MongoClient, db_name: str, collection_name: str):
-    """Creates an Atlas Vector Search index if it doesn't exist."""
-    index_name = "vector_index"
+    """
+    Creates an Atlas Search index (for vector search) if it doesn't already exist.
+    This version uses the create_search_indexes() method and SearchIndexModel,
+    following the Atlas Search documentation.
+    """
     db = client[db_name]
     collection = db[collection_name]
-
-    existing_indexes = list(collection.list_indexes())
-    if any(index['name'] == index_name for index in existing_indexes):
-        logger.info(f"Index '{index_name}' already exists on {db_name}.{collection_name}.")
+    
+    # Check if an index with the name "vector_index" already exists.
+    # (list_search_indexes() is available on newer driver versions.)
+    try:
+        existing_indexes = collection.list_search_indexes()
+    except Exception as e:
+        logger.warning("Could not list existing search indexes: %s", e)
+        existing_indexes = []
+        
+    if any(idx.get('name') == "vector_index" for idx in existing_indexes):
+        logger.info(f"Index 'vector_index' already exists on {db_name}.{collection_name}.")
         return
 
+    # Define the Atlas Search index definition.
+    # Note: In Atlas Search indexes, the definition is nested under a "mappings" key.
+    # For a vector search index, we define the field (e.g. "embedding") with a type like "knnVector".
     index_definition = {
-        "name": index_name,
-        "type": "vectorSearch",
-        "fields": [
-            {
-                "type": "vector",
-                "path": "embedding",
-                "numDimensions": 768,
-                "similarity": "dotProduct",
+        "mappings": {
+            "dynamic": False,
+            "fields": {
+                "embedding": {
+                    "type": "knnVector",
+                    "dimensions": 768,       # number of dimensions in your embedding
+                    "similarity": "dotProduct"
+                }
             }
-        ]
+        }
     }
-    try:
-        result = collection.create_index([("embedding", "vector")], **index_definition)
-        logger.info(f"Created Atlas Vector Search index: {result}")
-    except Exception as e:
-        logger.error(f"Error creating index: {e}")
-        raise
 
+    # Create a SearchIndexModel using the above definition and a custom name.
+    search_index_model = SearchIndexModel(
+        definition=index_definition,
+        name="vector_index"
+    )
+
+    try:
+        # Create the search index.
+        result = collection.create_search_indexes(models=[search_index_model])
+        logger.info(f"Created Atlas Search index: {result}")
+    except Exception as e:
+        logger.error(f"Error creating search index: {e}")
+        raise
 
 # --- Querying with Embeddings ---
 
 def query_mongodb_with_embeddings(db, collection_name: str, query_text: str, limit: int = 5) -> List[Dict]:
     """Queries MongoDB using vector similarity."""
-    model = TextEmbeddingModel.from_pretrained("textembedding-gecko@003")
+    model = TextEmbeddingModel.from_pretrained("text-embedding-005")
     try:
         query_embedding = model.get_embeddings([query_text])[0].values
     except Exception as e:
@@ -241,68 +277,94 @@ def query_mongodb_with_embeddings(db, collection_name: str, query_text: str, lim
         return []
 
 
-
-def local_scann_search(searcher, query_text: str, limit : int = 5):
-        model = TextEmbeddingModel.from_pretrained("textembedding-gecko@003")
-
+def process_all_teams(client, db_name):
+    """
+    Process and insert data for all MLB teams into MongoDB.
+    
+    :param client: MongoDB client
+    :param db_name: Name of the database to use
+    """
+    db = create_mongodb_database(client, db_name)
+    
+    for team_name in TEAMS:
         try:
-            query_embedding = model.get_embeddings([query_text])[0].values
+            logger.info(f"Processing data for {team_name}")
+            
+            # Get data from BigQuery
+            df = get_bigquery_data_for_team(team_name)
+            if df.empty:
+                logger.warning(f"No data retrieved from BigQuery for {team_name}. Skipping.")
+                continue
+            
+            # Generate embeddings
+            df = generate_embeddings(df)
+            
+            # Create collection name
+            collection_name = f"{team_name}_plays"
+            
+            # Insert data into MongoDB
+            insert_data_with_embeddings(db, collection_name, df)
+            
+            # Create Atlas Vector Search index
+            create_atlas_vector_search_index(client, db_name, collection_name)
+            
+            logger.info(f"Successfully processed {team_name}")
+        
         except Exception as e:
-            logger.error(f"Failed to generate embedding for query: '{query_text}'. Error: {e}")
-            return []
-        if not query_embedding:
-            logger.error(f"Failed to generate embedding for query: '{query_text}'")
-            return []
-        neighbors, distances = searcher.search(query_embedding, final_num_neighbors=limit)
-        return neighbors, distances
+            logger.error(f"Error processing {team_name}: {e}")
+    
+    logger.info("Completed processing all teams")
 
 # --- Main Execution (Example Usage) ---
 
 if __name__ == "__main__":
     # 1. Connect to MongoDB and create the database (if needed)
     client = connect_to_mongodb()
-    db_name = "mlb_data"  # Choose a database name
-    db = create_mongodb_database(client, db_name)
+    #db_name = "mlb_data"  # Choose a database name
+    #db = create_mongodb_database(client, db_name)
 
-    # 2. Process data for a specific team (e.g., the Rangers)
-    team_name = "rangers"
-    collection_name = f"{team_name}_plays"  # Collection for plays
+    # Process all teams
+    process_all_teams(client, "mlb_data")
 
-    # 3. Get data from BigQuery
-    df = get_bigquery_data_for_team(team_name)
-    if df.empty:
-        logger.error(f"No data retrieved from BigQuery for {team_name}.")
-        exit()  # Exit if no data
+    # # 2. Process data for a specific team (e.g., the Rangers)
+    # team_name = "rangers"
+    # collection_name = f"{team_name}_plays"  # Collection for plays
 
-    # 4. Generate embeddings
-    df = generate_embeddings(df)
+    # # 3. Get data from BigQuery
+    # df = get_bigquery_data_for_team(team_name)
+    # if df.empty:
+    #     logger.error(f"No data retrieved from BigQuery for {team_name}.")
+    #     exit()  # Exit if no data
 
-    # 5. Insert data into MongoDB
-    insert_data_with_embeddings(db, collection_name, df)
+    # # 4. Generate embeddings
+    # df = generate_embeddings(df)
 
-    # 6. Create the Atlas Vector Search index
-    create_atlas_vector_search_index(client, db_name, collection_name)
+    # # 5. Insert data into MongoDB
+    # insert_data_with_embeddings(db, collection_name, df)
 
-    # 7. Example query
-    query = "a home run in the bottom of the ninth"
-    results = query_mongodb_with_embeddings(db, collection_name, query)
-    print(f"\nResults for query '{query}':")
-    for result in results:
-        print(result)
+    # # 6. Create the Atlas Vector Search index
+    # create_atlas_vector_search_index(client, db_name, collection_name)
 
-    # Example query 2
-    query2 = "a strikeout with bases loaded"
-    results2 = query_mongodb_with_embeddings(db, collection_name, query2)
-    print(f"\nResults for query '{query2}':")
-    for result in results2:
-        print(result)
+    # # 7. Example query
+    # query = "a home run in the bottom of the ninth"
+    # results = query_mongodb_with_embeddings(db, collection_name, query)
+    # print(f"\nResults for query '{query}':")
+    # for result in results:
+    #     print(result)
 
-    # Example query 3: No Results
-    query3 = "a goal scored by Messi"  # Irrelevant to MLB
-    results3 = query_mongodb_with_embeddings(db, collection_name, query3)
-    print(f"\nResults for query '{query3}':") #Should be empty.
-    for result in results3:
-        print(result)
+    # # Example query 2
+    # query2 = "a strikeout with bases loaded"
+    # results2 = query_mongodb_with_embeddings(db, collection_name, query2)
+    # print(f"\nResults for query '{query2}':")
+    # for result in results2:
+    #     print(result)
+
+    # # Example query 3: No Results
+    # query3 = "a goal scored by Messi"  # Irrelevant to MLB
+    # results3 = query_mongodb_with_embeddings(db, collection_name, query3)
+    # print(f"\nResults for query '{query3}':") #Should be empty.
+    # for result in results3:
+    #     print(result)
 
     # Clean up (optional):  Close the MongoDB connection
     client.close()
