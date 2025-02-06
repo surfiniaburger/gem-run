@@ -4414,7 +4414,7 @@ def fetch_all_mlb_teams(limit: int = 1000) -> list:
             name,
             
         FROM
-            `gem-rush-007.dodgers_mlb_data_2024.teams`
+            `gem-rush-007.teams.teams_data`
         WHERE
             active = true
             AND season = 2024
