@@ -30,7 +30,7 @@ os.environ["GOOGLE_CLOUD_PROJECT"] = PROJECT_ID # set this environment variable 
 bq_client = bigquery.Client(project=PROJECT_ID)
 
 client = genai.Client(vertexai=True, project="gem-rush-007", location="us-central1")
-MODEL_ID = "gemini-2.0-flash-exp"  # @param {type: "string"}
+MODEL_ID = "gemini-2.0-pro-exp-02-05"  # @param {type: "string"}
 
 safety_settings = [
     SafetySetting(
@@ -1365,7 +1365,7 @@ def evaluate_podcast_script(script: str, original_question: str) -> dict:
 def generate_mlb_podcasts(contents: str) -> dict:
    
     client = genai.Client(vertexai=True, project="gem-rush-007", location="us-central1")
-    MODEL_ID = "gemini-2.0-flash-exp"
+    MODEL_ID = "gemini-2.0-pro-exp-02-05"
 
     # Structure the prompt to explicitly request tool usage
     structured_prompt = f"""
