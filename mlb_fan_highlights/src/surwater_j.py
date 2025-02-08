@@ -1499,20 +1499,20 @@ def generate_mlb_podcasts(contents: str) -> dict:
         
          *  **Example JSON:**
             ```json
-            [
-                {{
-                    "speaker": "Play-by-play Announcer",
-                    "text": "Here's the pitch, swung on and a long drive..."
-                }},
-                {{
-                    "speaker": "Color Commentator",
-                    "text": "Unbelievable power from [Player Name] there, that was a no doubter."
-                }},
-                {{
-                    "speaker": "Player Quotes",
-                    "text": "I knew I was gonna hit that out of the park!"
-                }}
-            ]
+                [
+                   {{
+                      "speaker": "実況アナウンサー",
+                      "text": "ポッドキャストへようこそ！本日はです。さあ、ピッチャーが投げた！打った、大きな当たりだ！"
+                   }},
+                   {{
+                      "speaker": "解説者",
+                      "text": "[選手名]の信じられないパワーですね。文句なしのホームランでした。"
+                   }},
+                   {{
+                     "speaker": "選手の声",
+                     "text": "絶対ホームランになるって打った瞬間わかったよ！"
+                    }}
+                ]
             ```
         *   **Edge Case Management:**
             *   **JSON Errors:** If there is a problem creating the json object, then return a json object with an error message.

@@ -264,3 +264,69 @@ def anchor(team: str, query_type: str = "last_game_date", force_refresh: bool = 
         return {
             "error": f"An error occurred while fetching last game details: {e}"
         }
+
+
+def get_last_x_games(team: str, num_games: int) -> dict:
+    """
+    Retrieves information about the last X games for a specific MLB team.
+    
+    Args:
+        team (str): The name of the MLB team
+        num_games (int): Number of recent games to retrieve
+    
+    Returns:
+        dict: Information about the last X games
+    """
+    client = genai.Client(vertexai=True, project="gem-rush-007", location="us-central1")
+    
+    query_prompt = f"""
+    Please provide information about the last {num_games} games played by the {team} MLB team.
+    
+    Requirements:
+    - List the {num_games} most recent games
+    - Include date, opponent, and result for each game
+    
+    Return the response in a JSON format with the following structure:
+    {{
+        "team": "{team}",
+        "games": [
+            {{
+                "date": "YYYY-MM-DD",
+                "opponent": "Team Name",
+                "result": "Win/Loss",
+                "score": "Home Team Score - Away Team Score"
+            }},
+            ...
+        ]
+    }}
+    """
+    
+    try:
+        google_search_tool = Tool(google_search=GoogleSearch())
+        
+        response = client.models.generate_content(
+            model=MODEL_ID,
+            contents=query_prompt,
+            config=GenerateContentConfig(
+                temperature=0.2,
+                top_p=0.95,
+                top_k=40,
+                max_output_tokens=2048,
+                tools=[google_search_tool],
+                safety_settings=safety_settings,
+            ),
+        )
+        
+        text = response.text
+        if text.startswith("```"):
+            text = text.split("```")[1].strip()
+        if text.startswith("json"):
+            text = text[4:].strip()
+        
+        return json.loads(text)
+        
+    except Exception as e:
+        logging.error(f"Error retrieving last {num_games} games: {e}")
+        return {
+            "error": f"An error occurred while fetching game details: {e}"
+        }
