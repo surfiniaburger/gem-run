@@ -2,7 +2,7 @@
 from google.cloud import texttospeech_v1beta1 as texttospeech
 import json
 import os
-from surfire import generate_mlb_podcasts
+from surwater import generate_mlb_podcasts
 from spanish_audio_mixer import SpanishMLBAudioMixer
 import uuid
 from gcs_handler import GCSHandler

@@ -3,7 +3,7 @@ from google.api_core.client_options import ClientOptions
 import os
 import json
 from typing import List, Dict
-from surfire import generate_mlb_podcasts
+from surwater import generate_mlb_podcasts
 import logging
 from audio_mixer import MLBAudioMixer
 logging.basicConfig(level=logging.DEBUG)

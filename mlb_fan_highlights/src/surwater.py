@@ -155,8 +155,1141 @@ def get_team_key(team_name: str) -> Optional[str]:
     return None
 
 
+def _get_table_name(team_name: str) -> str:
+    """
+    Helper function to construct the table name from a team's full name.
+    
+    Args:
+        team_name (str): The full team name (e.g., "Minnesota Twins", "Arizona Diamondbacks")
+    
+    Returns:
+        str: The formatted table name (e.g., "`gem-rush-007.twins_mlb_data_2024`")
+    """
+    # Convert to lowercase for consistent matching
+    cleaned_name = team_name.lower().strip()
+    
+    # Try to find the team in the full names mapping
+    if cleaned_name in FULL_TEAM_NAMES:
+        team_key = FULL_TEAM_NAMES[cleaned_name]
+        return f"`gem-rush-007.{team_key}_mlb_data_2024`"
+    
+    # If the exact full name isn't found, try to match with the team key directly
+    for team_key in TEAMS:
+        if team_key in cleaned_name:
+            return f"`gem-rush-007.{team_key}_mlb_data_2024`"
+    
+    # If no match is found, return unknown table name
+    return f"`gem-rush-007.unknown_team_mlb_data_2024`"
 
 
+def fetch_team_games(team_name: str, limit: int = 2, specific_date: Optional[str] = None) -> list:
+    """
+    Fetches the most recent games (limited by 'limit') for a specified team
+    using plays data to determine game recency, with optional filtering by a specific date.
+
+    Args:
+        team_name (str): The team name as it appears in the TEAMS dictionary
+        limit (int, optional): The maximum number of games to return. Defaults to 2.
+        specific_date (str, optional): A specific date in 'YYYY-MM-DD' format to filter games.
+
+    Returns:
+        list: A list of dictionaries containing game details
+    """
+
+    team_id = TEAMS[team_name]
+    table_name = _get_table_name(team_name)
+
+    try:
+        query = f"""
+            SELECT
+                g.game_id,
+                g.official_date,
+                g.home_team_id,
+                g.home_team_name,
+                g.away_team_id,
+                g.away_team_name,
+                g.home_score,
+                g.away_score,
+                g.venue_name,
+                g.status,
+                {team_name}_win as team_win,
+                {team_name}_margin as team_margin
+                subquery.max_end_time
+            FROM
+                {table_name}.games AS g
+            INNER JOIN
+                (SELECT
+                    game_id,
+                    MAX(end_time) AS max_end_time
+                FROM
+                    {table_name}.plays
+        """
+
+        if specific_date:
+            query += f" WHERE DATE(end_time) = @specific_date"
+
+        query += f"""
+                GROUP BY game_id
+                ) AS subquery
+                ON g.game_id = subquery.game_id
+            WHERE
+                (g.home_team_id = {team_id} OR g.away_team_id = {team_id})
+        """
+
+        if specific_date:
+            query += f" AND g.official_date = @specific_date"
+
+        query += " ORDER BY subquery.max_end_time DESC LIMIT @limit"
+
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("limit", "INT64", limit),
+                bigquery.ScalarQueryParameter("specific_date", "DATE", specific_date),
+            ]
+        )
+
+        bq_client = bigquery.Client()
+        query_job = bq_client.query(query, job_config=job_config)
+
+        # Log the query and parameters for debugging
+        logging.info(f"Executing query: {query}")
+        logging.info(f"Query parameters: limit={limit}, specific_date={specific_date}")
+
+        # Fetch and log intermediate results from the subquery (for debugging)
+        subquery_results = list(query_job.result())  # Materialize the results
+        logging.info(f"Subquery results: {subquery_results}")
+
+        return process_game_results(query_job, specific_date)
+
+    except exceptions.NotFound as e:
+        logging.error(f"Table or dataset not found for {team_name}: {e}, Query: {query}, Parameters: limit={limit}, specific_date={specific_date}")
+        raise
+    except exceptions.BadRequest as e:
+        logging.error(f"Invalid query or bad request: {e}, Query: {query}, Parameters: limit={limit}, specific_date={specific_date}")
+        raise
+    except exceptions.Forbidden as e:
+        logging.error(f"Permission denied: {e}, Query: {query}, Parameters: limit={limit}, specific_date={specific_date}")
+        raise
+    except exceptions.GoogleAPIError as e:
+        logging.error(f"BigQuery API error: {e}, Query: {query}, Parameters: limit={limit}, specific_date={specific_date}")
+        raise
+    except Exception as e:
+        logging.error(f"Unexpected error in fetch_team_games: {e}, Query: {query}, Parameters: limit={limit}, specific_date={specific_date}")
+        raise
+
+def fetch_team_player_stats(team_name: str, limit: int = 100, specific_date: Optional[str] = None) -> list:
+    """
+    Fetches player statistics for the most recent games of a team, optionally filtered by a specific date,
+    ordered by play end time.
+    Args:
+        team_name (str): Team name from TEAMS dictionary
+        limit (int, optional): Maximum number of records to return. Defaults to 100.
+        specific_date (Optional[str], optional): A specific date in 'YYYY-MM-DD' format to filter games.
+    Returns:
+        List: A list of dictionaries containing player stats.
+    """
+    team_id = TEAMS[team_name]
+    table_name = _get_table_name(team_name)
+    try:
+        query = f"""
+            SELECT
+                ps.player_id,
+                r.full_name,
+                g.official_date as game_date,
+                ps.at_bats,
+                ps.hits,
+                ps.home_runs,
+                ps.rbi,
+                ps.walks,
+                ps.strikeouts,
+                ps.batting_average,
+                ps.on_base_percentage,
+                ps.slugging_percentage
+            FROM
+                {table_name}.player_stats AS ps
+            JOIN
+                {table_name}.roster AS r
+                ON ps.player_id = r.player_id
+            INNER JOIN
+                {table_name}.games AS g
+                ON ps.game_id = g.game_id
+            INNER JOIN (
+                SELECT
+                    game_id,
+                    MAX(end_time) as max_end_time
+                FROM
+                    {table_name}.plays
+        """
+        if specific_date:
+            query += f" WHERE DATE(end_time) = @specific_date"
+        query += f"""
+                GROUP BY game_id
+            ) AS subquery
+            ON g.game_id = subquery.game_id
+            WHERE
+                (g.home_team_id = {team_id} OR g.away_team_id = {team_id})
+        """
+        if specific_date:
+            query += f" AND g.official_date = @specific_date"
+        query += f"""
+           ORDER BY subquery.max_end_time DESC
+           LIMIT @limit
+        """
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("limit", "INT64", limit),
+                bigquery.ScalarQueryParameter("specific_date", "DATE", specific_date)
+            ]
+        )
+        bq_client = bigquery.Client()
+        query_job = bq_client.query(query, job_config=job_config)
+        results = list(query_job.result())
+        return [dict(row) for row in results]  # No need to change process_game_results here
+    except Exception as e:
+        logging.error(f"Error in fetch_team_player_stats for {team_name}: {e}, Query: {query}, Parameters: limit={limit}, specific_date={specific_date}")
+        return []
+
+
+
+
+def fetch_team_player_stats_by_opponent(team_name: str, opponent_team: str, limit: int = 100, specific_date: Optional[str] = None) -> list:
+    """
+    Fetches player statistics for any team's games against a specific opponent,
+    optionally filtered by a specific date.
+    Args:
+        team_name (str): Team name from TEAMS dictionary
+        opponent_team (str): Opponent team name
+        limit (int, optional): Maximum records to return. Defaults to 100.
+        specific_date (Optional[str], optional): A specific date in 'YYYY-MM-DD' format to filter games.
+    Returns:
+        List: A list of dictionaries containing player stats
+    """
+    team_id = TEAMS[team_name]
+    table_name = _get_table_name(team_name)
+    try:
+        query = f"""
+        SELECT
+            ps.player_id,
+            r.full_name,
+            g.official_date as game_date,
+            ps.at_bats,
+            ps.hits,
+            ps.home_runs,
+            ps.rbi,
+            ps.walks,
+            ps.strikeouts,
+            ps.batting_average,
+            ps.on_base_percentage,
+            ps.slugging_percentage
+        FROM
+            {table_name}.player_stats AS ps
+        JOIN
+            {table_name}.roster AS r
+            ON ps.player_id = r.player_id
+        INNER JOIN
+            {table_name}.games AS g
+            ON ps.game_id = g.game_id
+        INNER JOIN (
+            SELECT
+                game_id,
+                MAX(end_time) as max_end_time
+            FROM
+                {table_name}.plays
+        """
+        if specific_date:
+            query += f" WHERE DATE(end_time) = @specific_date"
+        query += f"""
+            GROUP BY game_id
+        ) AS subquery
+        ON g.game_id = subquery.game_id
+        WHERE
+            (g.home_team_id = {team_id} OR g.away_team_id = {team_id})
+            AND ((g.home_team_name = @opponent_team) OR (g.away_team_name = @opponent_team))
+        """
+        if specific_date:
+            query += f" AND g.official_date = @specific_date"
+        query += f"""
+        ORDER BY subquery.max_end_time DESC
+        LIMIT @limit
+        """
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("opponent_team", "STRING", opponent_team),
+                bigquery.ScalarQueryParameter("limit", "INT64", limit),
+                bigquery.ScalarQueryParameter("specific_date", "DATE", specific_date)
+            ]
+        )
+        bq_client = bigquery.Client()
+        query_job = bq_client.query(query, job_config=job_config)
+        results = list(query_job.result())
+        return [dict(row) for row in results]
+    except Exception as e:
+        logging.error(f"Error in fetch_team_player_stats_by_opponent for {team_name}: {e}, Query: {query}, Parameters: opponent_team={opponent_team}, limit={limit}, specific_date={specific_date}")
+        return []
+    
+
+def fetch_team_player_stats_by_game_type(team_name: str, game_type: str, limit: int = 100, specific_date: Optional[str] = None) -> list:
+    """
+    Fetches player statistics for any team by game type, optionally filtered by a specific date.
+    Args:
+        team_name (str): Team name from TEAMS dictionary
+        game_type (str): Game type (R, P, etc.)
+        limit (int): Max records to return. Default 100.
+        specific_date (Optional[str], optional): A specific date in 'YYYY-MM-DD' format to filter games.
+    Returns:
+        List: A list of dictionaries containing player stats
+    """
+    team_id = TEAMS[team_name]
+    table_name = _get_table_name(team_name)
+    try:
+        query = f"""
+        SELECT
+            ps.player_id,
+            g.official_date as game_date,
+            r.full_name,
+            ps.at_bats,
+            ps.hits,
+            ps.home_runs,
+            ps.rbi,
+            ps.walks,
+            ps.strikeouts,
+            ps.batting_average,
+            ps.on_base_percentage,
+            ps.slugging_percentage
+        FROM
+            {table_name}.player_stats AS ps
+        JOIN
+            {table_name}.roster AS r
+            ON ps.player_id = r.player_id
+        INNER JOIN
+            {table_name}.games AS g
+            ON ps.game_id = g.game_id
+        INNER JOIN (
+            SELECT
+                game_id,
+                MAX(end_time) as max_end_time
+            FROM
+                {table_name}.plays
+        """
+        if specific_date:
+            query += f" WHERE DATE(end_time) = @specific_date"
+        query += f"""
+            GROUP BY game_id
+        ) AS subquery
+        ON g.game_id = subquery.game_id
+        WHERE
+            (g.home_team_id = {team_id} OR g.away_team_id = {team_id})
+            AND g.game_type = @game_type
+        """
+        if specific_date:
+            query += f" AND g.official_date = @specific_date"
+        query += f"""
+        ORDER BY subquery.max_end_time DESC
+        LIMIT @limit
+        """
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("game_type", "STRING", game_type),
+                bigquery.ScalarQueryParameter("limit", "INT64", limit),
+                bigquery.ScalarQueryParameter("specific_date", "DATE", specific_date)
+            ]
+        )
+        bq_client = bigquery.Client()
+        query_job = bq_client.query(query, job_config=job_config)
+        results = list(query_job.result())
+        return [dict(row) for row in results]
+    except Exception as e:
+        logging.error(f"Error in fetch_team_player_stats_by_game_type for {team_name}: {e}, Query: {query}, Parameters: game_type={game_type}, limit={limit}, specific_date={specific_date}")
+        return []
+
+
+def fetch_team_plays(team_name: str, limit: int = 100, specific_date: Optional[str] = None) -> list:
+    """
+    Fetches plays from any team's games, optionally filtered by a specific date.
+    Args:
+        team_name (str): Team name from TEAMS dictionary
+        limit (int): Max plays to return. Default 100.
+        specific_date (Optional[str], optional): A specific date in 'YYYY-MM-DD' format to filter games.
+    Returns:
+        List[Dict]: A list of dictionaries containing play data
+    """
+    team_id = TEAMS[team_name]
+    table_name = _get_table_name(team_name)
+    try:
+        query = f"""
+        SELECT
+            p.play_id,
+            p.inning,
+            p.half_inning,
+            p.event,
+            p.event_type,
+            p.description,
+            p.rbi,
+            p.is_scoring_play,
+            r_batter.full_name as batter_name,
+            r_pitcher.full_name as pitcher_name,
+            p.start_time,
+            p.end_time
+        FROM
+            {table_name}.plays AS p
+        LEFT JOIN
+            {table_name}.roster as r_batter
+            ON p.batter_id = r_batter.player_id
+        LEFT JOIN
+            {table_name}.roster as r_pitcher
+            ON p.pitcher_id = r_pitcher.player_id
+        INNER JOIN
+            {table_name}.games AS g
+            ON p.game_id = g.game_id
+        WHERE
+            g.home_team_id = {team_id} OR g.away_team_id = {team_id}
+        """
+        if specific_date:
+            query += f" AND g.official_date = @specific_date AND DATE(p.start_time) = @specific_date"
+        query += f"""
+        ORDER BY
+            p.end_time DESC
+        LIMIT @limit
+        """
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("limit", "INT64", limit),
+                bigquery.ScalarQueryParameter("specific_date", "DATE", specific_date)
+            ]
+        )
+        bq_client = bigquery.Client()
+        query_job = bq_client.query(query, job_config=job_config)
+        results = list(query_job.result())
+        return [dict(row) for row in results]
+    except Exception as e:
+        logging.error(f"Error in fetch_team_plays for {team_name}: {e}, Query: {query}, Parameters: limit={limit}, specific_date={specific_date}")
+        return []
+
+
+def fetch_team_plays_by_opponent(team_name: str, opponent_team: str, limit: int = 100, specific_date: Optional[str] = None) -> list:
+    """
+    Fetches plays from any team's games against a specific opponent, optionally filtered by a specific date.
+    Args:
+        team_name (str): Team name from TEAMS dictionary
+        opponent_team (str): Opponent team name
+        limit (int): Max plays to return. Default 100.
+        specific_date (Optional[str], optional): A specific date in 'YYYY-MM-DD' format to filter games.
+    Returns:
+        List: A list of dictionaries containing play data
+    """
+    team_id = TEAMS[team_name]
+    table_name = _get_table_name(team_name)
+    try:
+        query = f"""
+        SELECT
+            p.play_id,
+            p.inning,
+            p.half_inning,
+            p.event,
+            p.event_type,
+            p.description,
+            p.rbi,
+            p.is_scoring_play,
+            r_batter.full_name as batter_name,
+            r_pitcher.full_name as pitcher_name,
+            p.start_time,
+            p.end_time
+        FROM
+            {table_name}.plays AS p
+        LEFT JOIN
+            {table_name}.roster as r_batter
+            ON p.batter_id = r_batter.player_id
+        LEFT JOIN
+            {table_name}.roster as r_pitcher
+            ON p.pitcher_id = r_pitcher.player_id
+        INNER JOIN
+            {table_name}.games AS g
+            ON p.game_id = g.game_id
+        WHERE
+            (g.home_team_id = {team_id} OR g.away_team_id = {team_id})
+            AND ((g.home_team_name = @opponent_team) OR (g.away_team_name = @opponent_team))
+        """
+        if specific_date:
+            query += f" AND g.official_date = @specific_date AND DATE(p.start_time) = @specific_date"
+        query += f"""
+        ORDER BY
+            p.end_time DESC, p.start_time ASC
+        LIMIT @limit
+        """
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("opponent_team", "STRING", opponent_team),
+                bigquery.ScalarQueryParameter("limit", "INT64", limit),
+                bigquery.ScalarQueryParameter("specific_date", "DATE", specific_date)
+            ]
+        )
+        bq_client = bigquery.Client()
+        query_job = bq_client.query(query, job_config=job_config)
+        results = list(query_job.result())
+        return [dict(row) for row in results]
+    except Exception as e:
+        logging.error(f"Error in fetch_team_plays_by_opponent for {team_name}: {e}, Query: {query}, Parameters: opponent_team={opponent_team}, limit={limit}, specific_date={specific_date}")
+        return []
+    
+
+def fetch_team_plays_by_game_type(team_name: str, game_type: str, limit: int = 100, specific_date: Optional[str] = None) -> list:
+    """
+    Fetches plays from any team's games by game type, optionally filtered by a specific date.
+
+    Args:
+        team_name (str): Team name from TEAMS dictionary
+        game_type (str): Game type (R, P, etc.)
+        limit (int): Max plays to return. Default 100.
+        specific_date (str, optional): A specific date in 'YYYY-MM-DD' format to filter games.
+
+    Returns:
+        list: A list of dictionaries
+    """
+
+    team_id = TEAMS[team_name]
+    table_name = _get_table_name(team_name)
+
+    try:
+        query = f"""
+        SELECT
+            p.play_id,
+            p.inning,
+            p.half_inning,
+            p.event,
+            p.event_type,
+            p.description,
+            p.rbi,
+            p.is_scoring_play,
+            r_batter.full_name as batter_name,
+            r_pitcher.full_name as pitcher_name,
+            p.start_time,
+            p.end_time
+        FROM
+            {table_name}.plays AS p
+        LEFT JOIN
+            {table_name}.roster as r_batter
+            ON p.batter_id = r_batter.player_id
+        LEFT JOIN
+            {table_name}.roster as r_pitcher
+            ON p.pitcher_id = r_pitcher.player_id
+        INNER JOIN
+            {table_name}.games AS g
+            ON p.game_id = g.game_id
+        WHERE
+            (g.home_team_id = {team_id} OR g.away_team_id = {team_id})
+            AND g.game_type = @game_type
+        """
+
+        # Add date filtering
+        if specific_date:
+            query += f" AND g.official_date = @specific_date AND DATE(p.start_time) = @specific_date"
+
+        query += f"""
+        ORDER BY
+            p.end_time DESC, p.start_time ASC
+        LIMIT @limit
+        """
+
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("game_type", "STRING", game_type),
+                bigquery.ScalarQueryParameter("limit", "INT64", limit),
+                bigquery.ScalarQueryParameter("specific_date", "DATE", specific_date)
+            ]
+        )
+
+        bq_client = bigquery.Client()
+        query_job = bq_client.query(query, job_config=job_config)
+        results = list(query_job.result())
+        return [dict(row) for row in results]
+
+    except Exception as e:
+        logging.error(f"Error in fetch_team_plays_by_game_type for {team_name}: {e}, Query: {query}, Parameters: game_type={game_type}, limit={limit}, specific_date={specific_date}")
+        return []
+
+def fetch_team_games_by_opponent(team_name: str, opponent_team: str = 'New York Yankees', limit: int = 2, specific_date: Optional[str] = None) -> list:
+    """
+    Fetches any team's games against specific opponent, optionally filtered by a specific date.
+
+    Args:
+        team_name (str): Team name from TEAMS dictionary
+        opponent_team (str): Opponent team name
+        limit (int): Max games to return. Default 2
+        specific_date (str, optional): A specific date in 'YYYY-MM-DD' format to filter games.
+
+    Returns:
+        list: A list of dictionaries
+    """
+
+    if not isinstance(limit, int) or limit <= 0:
+        raise ValueError("limit must be a positive integer")
+    if not isinstance(opponent_team, str) or not opponent_team.strip():
+        raise ValueError("opponent_team must be a non-empty string")
+
+    team_id = TEAMS[team_name]
+    table_name = _get_table_name(team_name)
+
+    try:
+        query = f"""
+        SELECT
+            g.game_id,
+            g.official_date,
+            g.home_team_id,
+            g.home_team_name,
+            g.away_team_id,
+            g.away_team_name,
+            g.home_score,
+            g.away_score,
+            g.venue_name,
+            g.status,
+            {team_name}_win as team_win,
+            {team_name}_margin as team_margin
+        FROM
+            {table_name}.games AS g
+        INNER JOIN
+            (SELECT
+                game_id,
+                MAX(end_time) AS max_end_time
+            FROM
+                {table_name}.plays
+        """
+
+        #Add the Date
+
+        if specific_date:
+          query += f"WHERE DATE(start_time) = '{specific_date}'"
+
+        query += f"""
+            GROUP BY game_id
+            ORDER BY max_end_time DESC
+            LIMIT @limit
+        ) AS subquery
+        ON g.game_id = subquery.game_id
+        WHERE
+            (g.home_team_id = {team_id} OR g.away_team_id = {team_id})
+            AND ((g.home_team_name = @opponent_team) OR (g.away_team_name = @opponent_team))
+        """
+         # Apply the date filter to the outer query as well
+        if specific_date:
+            query += f" AND g.official_date = '{specific_date}'"
+
+        query += f"""
+        ORDER BY subquery.max_end_time DESC
+        """
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("limit", "INT64", limit),
+                bigquery.ScalarQueryParameter("opponent_team", "STRING", opponent_team)
+            ]
+        )
+
+        bq_client = bigquery.Client()
+        query_job = bq_client.query(query, job_config=job_config)
+        return process_game_results(query_job)
+
+    except (exceptions.BadRequest, exceptions.Forbidden, exceptions.GoogleAPIError) as e:
+        logging.error(f"API error in fetch_team_games_by_opponent for {team_name}: {e}")
+        raise
+    except Exception as e:
+        logging.error(f"Unexpected error in fetch_team_games_by_opponent for {team_name}: {e}")
+        raise
+
+
+def fetch_team_games_by_type(team_name: str, game_type: str = 'R', limit: int = 2, specific_date: Optional[str] = None) -> list:
+    """
+    Fetches any team's games by game type.
+
+    Args:
+        team_name (str): Team name from TEAMS dictionary
+        game_type (str): Game type (R=Regular, L=League Championship, etc.)
+        limit (int): Max games to return. Default 2
+        specific_date (str, optional): A specific date in 'YYYY-MM-DD' format to filter games.
+
+    Returns:
+        list: A list of dictionaries, each containing game details
+    """
+    if not isinstance(limit, int) or limit <= 0:
+        raise ValueError("limit must be a positive integer")
+    if not isinstance(game_type, str) or not game_type.strip():
+        raise ValueError("game_type must be a non-empty string")
+
+    team_id = TEAMS[team_name]
+    table_name = _get_table_name(team_name)
+
+    try:
+        query = f"""
+        SELECT
+            g.game_id,
+            g.official_date,
+            g.home_team_id,
+            g.home_team_name,
+            g.away_team_id,
+            g.away_team_name,
+            g.home_score,
+            g.away_score,
+            g.venue_name,
+            g.status,
+            {team_name}_win as team_win,
+            {team_name}_margin as team_margin
+        FROM
+              {table_name}.games AS g
+        INNER JOIN
+              (SELECT
+                game_id,
+                MAX(end_time) AS max_end_time
+              FROM
+                  {table_name}.plays
+        """
+        if specific_date:
+            query += f" WHERE DATE(start_time) = @specific_date"
+        query += f"""
+              GROUP BY game_id
+            ) AS subquery
+              ON g.game_id = subquery.game_id
+        WHERE
+            (g.home_team_id = {team_id} OR g.away_team_id = {team_id})
+            AND g.game_type = @game_type
+        """
+        if specific_date:
+            query += f" AND g.official_date = @specific_date"
+        query += f"""
+        ORDER BY subquery.max_end_time DESC
+        LIMIT @limit
+        """
+
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("limit", "INT64", limit),
+                bigquery.ScalarQueryParameter("game_type", "STRING", game_type),
+                bigquery.ScalarQueryParameter("specific_date", "DATE", specific_date)
+            ]
+        )
+
+        bq_client = bigquery.Client()
+        query_job = bq_client.query(query, job_config=job_config)
+        return process_game_results(query_job)
+
+    except (exceptions.BadRequest, exceptions.Forbidden, exceptions.GoogleAPIError) as e:
+        logging.error(f"API error in fetch_team_games_by_type for {team_name}: {e}, Query: {query}, Parameters: limit={limit}, game_type={game_type}, specific_date={specific_date}")
+        raise
+    except Exception as e:
+        logging.error(f"Unexpected error in fetch_team_games_by_type for {team_name}: {e}, Query: {query}, Parameters: limit={limit}, game_type={game_type}, specific_date={specific_date}")
+        raise
+
+
+def process_game_results(query_job, specific_date=None):
+    """
+    Helper function to process query results, validate data, and check against specific_date.
+
+    Args:
+        query_job: BigQuery query job result
+        specific_date (str, optional): A specific date in 'YYYY-MM-DD' format.
+
+    Returns:
+        list: Processed and validated results
+    """
+    results = []
+    for row in query_job:
+        row_dict = dict(row)
+
+        # Convert date object to string if present and not already a string
+        if row_dict.get('official_date') and not isinstance(row_dict['official_date'], str):
+            row_dict['official_date'] = row_dict['official_date'].strftime('%Y-%m-%d')
+
+        # Validate against specific_date
+        if specific_date and row_dict.get('official_date') != specific_date:
+            logging.warning(
+                f"Skipping record with date mismatch: Expected {specific_date}, Got {row_dict.get('official_date')}, Game ID: {row_dict.get('game_id')}"
+            )
+            continue
+
+        # Validate required fields
+        required_fields = ['game_id', 'official_date']
+        if not all(row_dict.get(field) for field in required_fields):
+            logging.warning(
+                f"Skipping record with missing required information: {row_dict.get('game_id', 'Unknown Game')}"
+            )
+            continue
+
+        # Validate numeric fields
+        numeric_fields = ['home_score', 'away_score', 'team_margin']
+        for field in numeric_fields:
+            try:
+                if row_dict.get(field) is not None:
+                    row_dict[field] = int(row_dict[field])
+            except (TypeError, ValueError) as e:
+                logging.warning(
+                    f"Invalid {field} data for game {row_dict['game_id']}: {e}"
+                )
+                row_dict[field] = None
+
+        results.append(row_dict)
+
+    if not results:
+        logging.warning("Query returned no results")
+
+    return results
+
+def fetch_player_game_stats(team_name: str, game_ids: list = None, limit: int = 100, player_ids: list = None, specific_date: Optional[str] = None) -> list:
+    """
+    Fetches player statistics for any team's games/players, with an option to filter by a specific date.
+
+    Args:
+        team_name (str): Team name from TEAMS dictionary.
+        limit (int, optional): Maximum number of records to return.
+        game_ids (list, optional): Game IDs to filter by.
+        player_ids (list, optional): Player IDs to filter by.
+        specific_date (str, optional): A specific date in 'YYYY-MM-DD' format to filter games.
+
+    Returns:
+        list: A list of dictionaries, each containing player stats.
+    """
+    if game_ids is not None and not isinstance(game_ids, list):
+        raise ValueError("game_ids must be a list or None")
+    if player_ids is not None and not isinstance(player_ids, list):
+        raise ValueError("player_ids must be a list or None")
+
+    table_name = _get_table_name(team_name)
+    team_id = TEAMS[team_name]
+
+    try:
+        query = f"""
+        SELECT
+            ps.player_id,
+            g.official_date as game_date,
+            r.full_name,
+            ps.at_bats,
+            ps.hits,
+            ps.home_runs,
+            ps.rbi,
+            ps.walks,
+            ps.strikeouts,
+            ps.batting_average,
+            ps.on_base_percentage,
+            ps.slugging_percentage
+        FROM
+            {table_name}.player_stats AS ps
+        JOIN 
+            {table_name}.roster AS r
+        ON 
+            ps.player_id = r.player_id
+        INNER JOIN 
+            {table_name}.games AS g 
+            ON ps.game_id = g.game_id
+        INNER JOIN (
+          SELECT 
+              game_id,
+              MAX(end_time) as max_end_time
+          FROM
+             {table_name}.plays
+        """
+        if specific_date:
+            query += f" WHERE DATE(end_time) = @specific_date"
+
+        query += f"""
+          GROUP BY game_id
+         ) AS subquery
+         ON g.game_id = subquery.game_id
+        WHERE
+            (g.home_team_id = {team_id} OR g.away_team_id = {team_id})
+        """
+
+        if specific_date:
+            query += f" AND g.official_date = @specific_date"
+
+        query += f"""
+        ORDER BY subquery.max_end_time DESC
+        LIMIT @limit
+        """
+
+        query_params = [
+            bigquery.ScalarQueryParameter("limit", "INT64", limit),
+            bigquery.ScalarQueryParameter("specific_date", "DATE", specific_date)
+        ]
+        where_conditions = []
+
+        if game_ids:
+            where_conditions.append("ps.game_id IN UNNEST(@game_id_list)")
+            query_params.append(
+                bigquery.ArrayQueryParameter("game_id_list", "STRING", game_ids)
+            )
+
+        if player_ids:
+            where_conditions.append("ps.player_id IN UNNEST(@player_id_list)")
+            query_params.append(
+                bigquery.ArrayQueryParameter("player_id_list", "STRING", player_ids)
+            )
+
+        # if where_conditions:
+        #     query += "\n AND " + " AND ".join(where_conditions)
+
+        job_config = bigquery.QueryJobConfig(query_parameters=query_params)
+        bq_client = bigquery.Client()
+        query_job = bq_client.query(query, job_config=job_config)
+
+        results = []
+        for row in query_job:
+            row_dict = dict(row)
+
+            if not all(row_dict.get(field) for field in ['player_id', 'full_name']):
+                logging.warning(f"Skipping record with missing required information: {row_dict.get('player_id', 'Unknown Player')}")
+                continue
+
+            numeric_fields = [
+                'at_bats', 'hits', 'home_runs', 'rbi', 'walks', 'strikeouts',
+                'batting_average', 'on_base_percentage', 'slugging_percentage'
+            ]
+
+            for field in numeric_fields:
+                try:
+                    if row_dict.get(field) is not None:
+                        if field in ['batting_average', 'on_base_percentage', 'slugging_percentage']:
+                            row_dict[field] = float(row_dict[field])
+                        else:
+                            row_dict[field] = int(row_dict[field])
+                except (TypeError, ValueError) as e:
+                    logging.warning(f"Invalid {field} data for player {row_dict['full_name']}: {e}")
+                    row_dict[field] = None
+
+            results.append(row_dict)
+
+        if not results:
+            logging.warning(f"Query returned no results for {team_name}")
+            return []
+
+        return results
+
+    except (exceptions.NotFound, exceptions.BadRequest, exceptions.Forbidden, exceptions.GoogleAPIError) as e:
+        logging.error(f"API error in fetch_player_game_stats for {team_name}: {e}, Query: {query}, Parameters: limit={limit}, game_ids={game_ids}, player_ids={player_ids}, specific_date={specific_date}")
+        raise
+    except Exception as e:
+        logging.error(f"Unexpected error in fetch_player_game_stats for {team_name}: {e}, Query: {query}, Parameters: limit={limit}, game_ids={game_ids}, player_ids={player_ids}, specific_date={specific_date}")
+        raise
+
+
+def fetch_player_plays(player_name: str, team_name: str, limit: int = 100, specific_date: Optional[str] = None) -> list:
+    """
+    Fetches play-by-play data for a specific player from any team's games, with an option to filter by a specific date.
+
+    Args:
+        player_name (str): Full name of the player.
+        team_name (str): Team name from TEAMS dictionary.
+        limit (int, optional): Maximum number of plays to return. Defaults to 100.
+        specific_date (str, optional): A specific date in 'YYYY-MM-DD' format to filter games.
+
+    Returns:
+        list: A list of dictionaries, each containing play details.
+    """
+
+    team_id = TEAMS[team_name]
+    table_name = _get_table_name(team_name)
+
+    try:
+        query = f"""
+        SELECT
+            p.play_id,
+            p.inning,
+            p.half_inning,
+            p.event,
+            p.event_type,
+            p.description,
+            p.start_time,
+            g.official_date as game_date
+        FROM
+            {table_name}.plays AS p
+        INNER JOIN 
+            {table_name}.games AS g 
+            ON p.game_id = g.game_id
+        INNER JOIN
+            {table_name}.roster AS r
+            ON (p.batter_id = r.player_id OR p.pitcher_id = r.player_id)
+        WHERE
+            r.full_name = @player_name
+            AND (g.home_team_id = {team_id} OR g.away_team_id = {team_id})
+        """
+
+        if specific_date:
+            query += f" AND g.official_date = @specific_date AND DATE(p.start_time) = @specific_date"
+
+        query += f"""
+        ORDER BY 
+            p.end_time DESC,
+            p.start_time ASC
+        LIMIT @limit
+        """
+
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("player_name", "STRING", player_name),
+                bigquery.ScalarQueryParameter("limit", "INT64", limit),
+                bigquery.ScalarQueryParameter("specific_date", "DATE", specific_date)
+            ]
+        )
+
+        bq_client = bigquery.Client()
+        query_job = bq_client.query(query, job_config=job_config)
+        results = list(query_job.result())
+
+        formatted_results = []
+        for row in results:
+            row_dict = dict(row)
+            # Ensure datetime objects before formatting
+            if 'start_time' in row_dict and row_dict['start_time'] and isinstance(row_dict['start_time'], datetime):
+                row_dict['start_time'] = row_dict['start_time'].isoformat()
+            if 'game_date' in row_dict and row_dict['game_date'] and isinstance(row_dict['game_date'], datetime.date):
+                row_dict['game_date'] = row_dict['game_date'].isoformat()
+            formatted_results.append(row_dict)
+        return formatted_results
+
+    except Exception as e:
+        logging.error(f"Error in fetch_player_plays for {player_name} on {team_name}: {e}, Query: {query}, Parameters: limit={limit}, specific_date={specific_date}")
+        return []
+
+
+def fetch_player_plays_by_opponent(player_name: str, team_name: str, opponent_team: str, limit: int = 100, specific_date: Optional[str] = None) -> list:
+    """
+    Fetches play-by-play data for a specific player against a specific opponent, with an option to filter by a specific date.
+
+    Args:
+        player_name (str): Full name of the player.
+        team_name (str): Team name from TEAMS dictionary.
+        opponent_team (str): Name of the opponent team.
+        limit (int, optional): Maximum number of plays to return. Defaults to 100.
+        specific_date (str, optional): A specific date in 'YYYY-MM-DD' format to filter games.
+
+    Returns:
+        list: A list of dictionaries, each containing play details.
+    """
+
+    team_id = TEAMS[team_name]
+    table_name = _get_table_name(team_name)
+
+    try:
+        query = f"""
+        SELECT
+            p.play_id,
+            p.inning,
+            p.half_inning,
+            p.event,
+            p.event_type,
+            p.description,
+            p.start_time,
+            g.official_date as game_date
+        FROM
+            {table_name}.plays AS p
+        INNER JOIN 
+            {table_name}.games AS g 
+            ON p.game_id = g.game_id
+        INNER JOIN
+            {table_name}.roster AS r
+            ON p.batter_id = r.player_id
+        WHERE
+            r.full_name = @player_name
+            AND (g.home_team_id = {team_id} OR g.away_team_id = {team_id})
+            AND ((g.home_team_name = @opponent_team) OR (g.away_team_name = @opponent_team))
+        """
+        if specific_date:
+            query += f" AND g.official_date = @specific_date AND DATE(p.start_time) = @specific_date"
+
+        query += f"""
+        ORDER BY 
+            p.end_time DESC,
+            p.start_time ASC
+        LIMIT @limit
+        """
+
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("player_name", "STRING", player_name),
+                bigquery.ScalarQueryParameter("opponent_team", "STRING", opponent_team),
+                bigquery.ScalarQueryParameter("limit", "INT64", limit),
+                bigquery.ScalarQueryParameter("specific_date", "DATE", specific_date)
+            ]
+        )
+
+        bq_client = bigquery.Client()
+        query_job = bq_client.query(query, job_config=job_config)
+        results = list(query_job.result())
+        return [dict(row) for row in results]
+
+    except Exception as e:
+        logging.error(f"Error in fetch_player_plays_by_opponent for {player_name} on {team_name} vs {opponent_team}: {e}, Query: {query}, Parameters: limit={limit}, specific_date={specific_date}")
+        return []
+
+def fetch_player_plays_by_game_type(player_name: str, team_name: str, game_type: str, limit: int = 100, specific_date: Optional[str] = None) -> list:
+    """
+    Fetches play-by-play data for a specific player from games of a specific type, with an option to filter by a specific date.
+
+    Args:
+        player_name (str): Full name of the player.
+        team_name (str): Team name from TEAMS dictionary.
+        game_type (str): Type of game (R for Regular Season, P for Postseason, etc.).
+        limit (int, optional): Maximum number of plays to return. Defaults to 100.
+        specific_date (str, optional): A specific date in 'YYYY-MM-DD' format to filter games.
+
+    Returns:
+        list: A list of dictionaries, each containing play details.
+    """
+
+    team_id = TEAMS[team_name]
+    table_name = _get_table_name(team_name)
+
+    try:
+        query = f"""
+        SELECT
+            p.play_id,
+            p.inning,
+            p.half_inning,
+            p.event,
+            p.event_type,
+            p.description,
+            p.start_time,
+            g.official_date as game_date
+        FROM
+            {table_name}.plays AS p
+        INNER JOIN 
+            {table_name}.games AS g 
+            ON p.game_id = g.game_id
+        INNER JOIN
+            {table_name}.roster AS r
+            ON p.batter_id = r.player_id
+        WHERE
+            r.full_name = @player_name
+            AND (g.home_team_id = {team_id} OR g.away_team_id = {team_id})
+            AND g.game_type = @game_type
+        """
+
+        if specific_date:
+            query += f" AND g.official_date = @specific_date AND DATE(p.start_time) = @specific_date"
+
+        query += f"""
+        ORDER BY 
+            p.end_time DESC,
+            p.start_time ASC
+        LIMIT @limit
+        """
+
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("player_name", "STRING", player_name),
+                bigquery.ScalarQueryParameter("game_type", "STRING", game_type),
+                bigquery.ScalarQueryParameter("limit", "INT64", limit),
+                bigquery.ScalarQueryParameter("specific_date", "DATE", specific_date)
+            ]
+        )
+
+        bq_client = bigquery.Client()
+        query_job = bq_client.query(query, job_config=job_config)
+        results = list(query_job.result())
+        return [dict(row) for row in results]
+
+    except Exception as e:
+        logging.error(f"Error in fetch_player_plays_by_game_type for {player_name} on {team_name} ({game_type}): {e}, Query: {query}, Parameters: limit={limit}, specific_date={specific_date}")
+        return []
+
+
+
+# teams available now include rays, rangers, astros, angels
 def query_mongodb_for_agent(
     query_text: str, db_name: str = "mlb_data", limit: int = 5
 ) -> list:
@@ -263,7 +1396,7 @@ def query_mongodb_for_agent(
         client.close()  # ALWAYS close the connection when done
 
 
-# teams available now include rays, rangers, astros, angels
+
 
 
 def generate_mlb_podcasts(contents: str) -> dict:
@@ -386,7 +1519,21 @@ def generate_mlb_podcasts(contents: str) -> dict:
     # Create chat session with automatic function calling
     model = genai.GenerativeModel(
         model_name=MODEL_ID,
-        tools=[query_mongodb_for_agent],  # Directly pass the function
+        tools=[     
+                    query_mongodb_for_agent,
+                    fetch_player_plays,
+                    fetch_team_games,
+                    fetch_team_games_by_opponent,
+                    fetch_team_games_by_type,
+                    fetch_team_plays,
+                    fetch_team_plays_by_opponent,
+                    fetch_team_plays_by_game_type,
+                    fetch_team_player_stats,
+                    fetch_team_player_stats_by_game_type,
+                    fetch_team_player_stats_by_opponent,
+                    fetch_player_plays_by_game_type,
+                    fetch_player_plays_by_opponent,
+               ],  
         system_instruction=structured_prompt
     )
     chat = model.start_chat(enable_automatic_function_calling=True) 
@@ -447,6 +1594,3 @@ def clean_json_response(text):
         logging.error(f"Failed to parse JSON response: {clean_text}")
         return {"error": "Invalid JSON format in response"}
 
-generate_mlb_podcasts("Show me recent plays by angels")
-query_mongodb_for_agent("Show me recent plays by angels")
-print(query_mongodb_for_agent("Show me recent plays by angels"))

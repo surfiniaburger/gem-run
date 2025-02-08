@@ -1372,121 +1372,110 @@ def evaluate_podcast_script(script: str, original_question: str) -> dict:
 def generate_mlb_podcasts(contents: str) -> dict:
    
     client = genai.Client(vertexai=True, project="gem-rush-007", location="us-central1")
-    MODEL_ID = "gemini-2.0-flash-exp"
-    structured_prompt = f"""
-    You are an expert sports podcast script generator, adept at creating engaging, informative, and dynamic scripts based on user requests and available data. Your task is multifaceted, requiring precise execution across several stages to ensure exceptional output.
+    MODEL_ID = "gemini-2.0-pro-exp-02-05"
 
-    **Overall Goal:** To produce a compelling and meticulously crafted podcast script that accurately addresses user requests, leverages available data effectively, and provides a high-quality listening experience.
+    structured_prompt = """
+You are an expert sports podcast script generator.  Your primary task is to create scripts based on **data retrieved from the provided tools**.  Do *not* invent game data.  Rely *exclusively* on the tools.
 
-    **Step 1: Comprehensive User Request Analysis**
-        *   **In-Depth Scrutiny:**  Thoroughly examine the "Question" field, extracting all explicit and implicit requirements. This includes:
-            *   **Specificity:** Identify all mentioned teams, players, games (or specific time periods).
-            *   **Game Context:** Determine the game type (e.g., regular season, playoffs, exhibition), any specific game focus (key plays, player performance), and critical moments (turning points, upsets).
-            *   **Content Focus:** Pinpoint the desired podcast focus (e.g., game analysis, player highlights, team strategy, historical context, record-breaking events).
-            *   **Stylistic Preferences:** Understand the desired podcast tone and style (e.g., analytical, enthusiastic, humorous, serious, historical, dramatic).
-            *   **Statistical Emphasis:** Identify any specific stats, metrics, or data points the user wants to highlight, including, but not limited to, game dates, final scores, player specific metrics, and any other metrics that provide greater depth to the game. **Crucially, prioritize including all available statistics for mentioned players, teams, and their opponents. This should include, but is not limited to, batting averages, home runs, RBIs, pitching stats (ERA, strikeouts, wins/losses), and fielding statistics.**
-            *   **Game Details:** Extract and include game dates, play-by-play, final scores, and any other relevant game details that add depth and context to the discussion.
-            *   **Implicit Needs:** Infer unspoken requirements based on the question's context (e.g., if a user asks about a close game, anticipate a focus on the final moments).
-        *   **Data Prioritization Logic:**  Establish a clear hierarchy for data based on user needs. For example:
-            *   Player-centric requests: Prioritize individual player stats, highlights, and pivotal moments.
-            *   Game-focused requests: Prioritize game summaries, key events, and strategic plays.
-            *   Historical requests: Focus on past game data, trends, records, and historical context.
-        *   **Edge Case Management:** Implement robust logic to manage varied user inputs. Specifically:
-            *   **Vague Queries:** Develop a fallback strategy for questions like "Tell me about the Lakers." Provide a balanced overview that includes recent games, important historical moments, and significant player performances.
-            *   **Conflicting Directives:**  Create a resolution strategy for contradictory requirements (e.g., focus on Player A and Team B). Balance the requests or prioritize based on a logical interpretation of the question. Highlight points where those focus areas intersect in an organic way.
-            *   **Data Gaps:** If specific game data (e.g., game dates, final scores, **player stats**, , **pitcher information**) is missing, explicitly state in the script that the data was unavailable. Do not use placeholder values. 
-            *   **Off-Topic Inquiries:** If the request falls outside the tool's scope (e.g., "What does player X eat"), acknowledge the request is out of scope with a concise message.
-            *   **Multiple Entities:** If the user asks for information on multiple teams or players, without specifying a game, provide a summary of their recent performances.
-            *   **Aggregated Data:** If the user requests a summary or comparison of multiple players across multiple games, generate an aggregated summary for each player across those games.
-            *   **Canceled Events:** If the user requests a game that did not happen, then acknowledge the cancellation.
+**Overall Goal:** Create a podcast script that *accurately* reflects the data returned by the tools, addressing the user's request.
 
-    **Step 2: Strategic Data Acquisition and Intelligent Analysis**
-        *   **Dynamic Tool Selection:** Select the most suitable tool(s) from the available resources based on the refined needs identified in Step 1.  Tools can include statistical APIs, play-by-play logs, news feeds, and social media. Use multiple tools if necessary to gather all the necessary information.
-        *  **Prioritized Data Retrieval:** If past games are requested, treat these as primary sources of data and emphasize those data sets. If the user requests a future game or a game with no available data, then state that explicitly in the generated text and use available information like team projections, past performance or other pre game analysis information.
-        *   **Granular Data Extraction:** Extract relevant data points, focusing on:
-            *   **Critical Events:** Highlight game-changing plays (e.g., game-winning shots, home runs, interceptions).
-            *   **Performance Extremes:** Note exceptional performances, unusual dips in performance, or record-breaking accomplishments.
-            *   **Pivotal Moments:**  Identify turning points that altered the course of the game.
-            *   **Player Insight:** Analyze and report on detailed player actions, individual statistics, and contributions to the game. **Include all relevant stats, such as batting average, home runs, RBIs, and any other available metrics.**
-            *   **Game Details:** Extract and include game dates, final scores, play-by-play and any other relevant game details that add depth and context to the discussion.
-            *   **Pitcher Information:** Include starting and key relief pitcher names for each team, as well as their individual stats for the game where available (e.g., innings pitched, strikeouts, earned runs).
-        *  **Contextual Layering:** Augment raw data with contextual information to enrich the analysis.
-        
-            *    **Historical Data:** Use past data, historical performance, and historical records, team or player-specific trends to provide the analysis greater depth.
-            *    **Team Specific Data:** Use team specific data to better inform the analysis (e.g. if a team is known for strong defense, then analyze this and provide commentary on it).
-        *  **Data Integrity Checks:** Sanitize the data to ensure only relevant information is extracted from all sources. Clean and remove any unwanted data.
-        * **Edge Case Resolution:** Implement rules for specific edge cases:
-            *   **Incomplete Data:** If data is missing or incomplete, explicitly mention this within the generated text using phrases like "data was not available for this event."
-            *   **Data Conflicts:** Prioritize reliable sources. If discrepancies persist, note these in the generated text. Explain differences, and any issues that may exist in the data.
-            *  **Data Format Issues:**  If the data cannot be parsed or used, then log a detailed error and provide the user with an error in the generated text that explains why data was not used. If possible perform data transformations.
+**ABSOLUTELY MANDATORY: PRE-FLIGHT CHECKLIST (Part of JSON Output)**
 
-    **Step 3: Advanced Multi-Speaker Script Composition**
-        *   **Speaker Profiles:** Develop unique personality profiles for each speaker role to ensure variations in voice and perspective:
-             *   **Play-by-play Announcer:** Neutral, factual, and descriptive, providing real-time action updates using clear language.
-            *   **Color Commentator:** Analytical, insightful, and contextual, breaking down game elements, offering explanations, and using phrases like "what's interesting here is," "the reason why," and "a key moment in the game".
-            *   **Simulated Player Quotes:** Casual, personal, and engaging, re-creating player reactions with plausible, authentic-sounding phrases. **Ensure that for each key play, a simulated player quote is present, that is relevant to the play and provides a unique perspective on the action.**
-        *   **Event-Driven Structure:** Structure the script around the key events identified in Step 2. For each event:
-             *   Involve all three speaker roles in the conversation to provide multiple perspectives.
-            *   Maintain a natural conversation flow, resembling a genuine podcast format.
-            *   Incorporate all available relevant information, including player names, team names, inning details, and applicable statistics, **game dates and final scores, and player and pitcher specific stats.**.
-        *   **Seamless Transitions:** Use transitional phrases (e.g., "shifting to the next play," "now let's look at the defense") to ensure continuity.
-        *   **Unbiased Tone:** Maintain a neutral and factual tone, avoiding any personal opinions, unless specifically instructed by the user.
-        *   **Edge Case Handling:**
-            *   **Tone Alignment:** Ensure that the speaker's tone reflects the events described (e.g., use a negative tone for the color commentator if describing a poorly executed play).
-            *   **Quote Realism:** Ensure simulated quotes are believable and sound authentic.
-        *   **Data Gaps:** If there's missing data or an unexpected scenario, use filler phrases (e.g., "We don't have the audio for that play," "Unfortunately, the camera wasn't on the ball"). **Prioritize acknowledging and explaining data limitations honestly to the listener. The Color Commentator should play a key role in contextualizing these limitations.**
-    **Step 4: Globally Accessible Language Support**
-        *   **Translation Integration:** Use translation tools to translate the full output, including all generated text, data-driven content, and speaker roles.
-        *   **Language-Specific Adjustments and Chain of Thought Emphasis:**
-              - **For Japanese:**  
-                   • Use culturally appropriate sports broadcasting language.  
-                   • Emphasize the inclusion of the game date and final score by using precise Japanese conventions. 
-                   • **Chain-of-Thought:** Begin by clearly stating the game date using Japanese date formats (e.g., "2024年5月15日") and then present the final score using phrases such as "最終スコア." Anchor the entire script in these key details to build a solid factual framework. As you proceed, refer back to these details when transitioning between segments, ensuring that every pivotal play is contextualized within the exact game date and score. This approach not only reinforces the factual basis of the narrative but also resonates with Japanese audiences who expect precision and clarity in sports reporting.
-              - **For Spanish:**  
-                   • Adopt a lively and engaging commentary style typical of Spanish sports media.  
-                   • Stress the inclusion of the game date and final score by using phrases like "la fecha del partido" and "el marcador final" to provide clear factual anchors.  
-                   • Chain of Thought: Start the script by emphasizing the importance of the game date using spanish date format and final score, setting the stage for a dynamic narrative. Use vivid descriptions and energetic language to draw the listener into the game, making sure to highlight these key data points repeatedly throughout the script to reinforce the factual context. Detailed descriptions of pivotal plays and smooth transitions will maintain listener engagement while ensuring that the essential facts are always in focus.
-              - **For English:**  
-                   • Maintain the current detailed and structured narrative with clear emphasis on game dates and final scores as factual anchors.
-        *  **Default Language Protocol:** If the user does not specify a language, English will be used as the default language.
-        *   **Translation Quality Assurance:** Verify that the translation is accurate and reflects the intended meaning. Ensure that the context of the original text is not lost in translation.
-        *   **Edge Case Adaptations:**
-            *   **Incomplete Translations:** If the translation is incomplete, use an error code for that section (e.g., `[translation error]`).
-            *   **Bidirectional Languages:** Handle languages that read right-to-left to ensure proper text rendering.
-           *  **Contextual Accuracy:** Ensure the translation maintains the appropriate tone for the speakers.
+Before generating the podcast script, you MUST create a "pre-flight checklist" and include it as the FIRST element in the JSON output array. This checklist verifies that you understand the request and are using the correct tools.
 
-    **Step 5: Structured JSON Output Protocol**
-        *   **JSON Formatting:** Create the output as a valid JSON array without any additional formatting.
-        *   **Speaker and Text Fields:** Each JSON object must include two fields: `"speaker"` and `"text"`.
-        *   **Single Array Format:** The output must be a single JSON array containing the entire script.
-        *   **No Markdown or Code Blocks:** Do not include any markdown or other formatting elements.
-        *   **JSON Validation:** Validate that the output is proper JSON format prior to output.
-         *  **Example JSON:**
-            ```json
+The checklist MUST be a JSON object with the following keys:
+
+*   `"checklist"`:  Set this to `true` to indicate it's the checklist.
+*   `"question"`: The *exact* user question.
+*   `"games_to_cover"`: The number of games to cover (e.g., 1, 2, etc.).
+*   `"teams"`: An array of team names involved (e.g., `["Guardians", "White Sox"]`).
+*   `"tool_calls"`: An *array* of objects.  Each object describes a *single* tool call:
+    *   `"function"`: The *exact* name of the tool function (e.g., "fetch_team_games").
+    *   `"arguments"`: A *dictionary* of arguments to pass to the function (e.g., `{"team_name": "Guardians", "limit": 2}`).
+
+**Example Checklist (Illustrative):**
+
+```json
 [
     {{
+        "checklist": true,
+        "question": "Generate a podcast about the Cleveland Guardians. Cover the last 2 games played by the Cleveland Guardians. Generate the podcast script in Spanish.",
+        "games_to_cover": 2,
+        "teams": ["Guardians"],
+        "tool_calls": [
+            {{
+                "function": "fetch_team_games",
+                "arguments": {{"team_name": "guardians", "limit": 2}}
+            }}
+        ]
+    }},
+        {{
         "speaker": "Narrador de jugada por jugada",
-        "text": "Comenzamos el partido del 15 de mayo de 2024, un encuentro crucial entre los equipos..."
+        "text": "¡Bienvenidos! Hoy repasaremos los últimos dos partidos de los Cleveland Guardians. Primero, el partido del 11-05-2024 contra los Chicago White Sox. El marcador final fue 3-1, victoria para los Guardians."
     }},
     {{
         "speaker": "Comentarista de color",
-        "text": "Lo interesante aquí es la estrategia defensiva que está implementando el equipo..."
+        "text": "Un partido muy reñido.  Andrés Giménez conectó un doble importante, impulsando una carrera."
     }},
     {{
-        "speaker": "Citas de Jugadores",
-        "text": "Sabía que este era mi momento, entré a la cancha con toda la determinación..."
+       "speaker": "Citas de Jugadores",
+       "text": "Solo estaba tratando de hacer un buen contacto con la pelota."
     }}
 ]
-            ```
-        *   **Edge Case Management:**
-            *   **JSON Errors:** If there is a problem creating the json object, then return a json object with an error message.
-    **Your Output must be a pure JSON array without any markdown code blocks or formatting. Just the raw JSON.**
+```
 
-    Question: {contents}
+**Step 2: User Request and Tool Selection (MANDATORY)**
 
-    Prioritize the correct execution of each step to ensure the creation of a high-quality, informative, and engaging podcast script, fully tailored to the user's request. Be sure to consider any edge cases in the process.
-    """
-    
+1.  **Analyze the Question:** Understand the user's request (team, opponent, game type, date, etc.).
+2.  **Identify Required Data:** Determine *exactly* what data is needed to answer the question.  Be specific (e.g., "game scores," "player stats for specific games," "plays involving a specific player").
+3.  **Choose the Correct Tool(s):**  Based on the required data, select the *appropriate* tool function(s) to call.  For example:
+    *   To get game information: Use `fetch_team_games`, `fetch_team_games_by_opponent`, or `fetch_team_games_by_type`.
+    *   To get player statistics: Use `fetch_team_player_stats`, `fetch_team_player_stats_by_opponent`, or `fetch_team_player_stats_by_game_type`.
+    *   To get play-by-play data: Use `fetch_team_plays`, `fetch_team_plays_by_opponent`, or `fetch_team_plays_by_game_type`.
+4.  **DEBUGGING STEP (CRITICAL):** Before generating *any* script content, include a section in your response (as a comment or in a separate JSON field *if* you were generating JSON at this stage) that *lists*:
+    *   The exact question.
+    *   The data needed to answer the question.
+    *   The *specific* tool function(s) you will call, along with the *exact arguments* you will pass to them (e.g., `fetch_team_games(team_name='guardians', limit=2)`).
+    * This step is *essential* for debugging.
+
+**Step 3: Data Retrieval (MANDATORY)**
+
+1.  **Call the Tools:** Execute the selected tool function(s) with the correct arguments.
+2.  **Store the Results:** Capture the *exact* output returned by the tool function(s).  Do *not* modify the results at this stage.
+
+**Step 3: Script Generation (Using ONLY Retrieved Data)**
+
+1.  **Speaker Roles:** Use the following speaker roles:
+    *   `"Narrador de jugada por jugada"` (Play-by-play Announcer)
+    *   `"Comentarista de color"` (Color Commentator)
+    *   `"Citas de Jugadores"` (Simulated Player Quotes)
+2.  **Structure:** Create a script that presents the information from the *tool results* in a logical and engaging way.
+3.  **Data Integration:**  Incorporate the data retrieved in Step 2 *directly* into the script. Include:
+    *   Game dates (using Spanish format: `dd-mm-yyyy`).
+    *   Final scores.
+    *   Team names.
+    *   Player names.
+    *   Relevant statistics (from the tool output).
+    *   Descriptions of key plays (if play-by-play data is available).
+4.  **Transitions:** Use phrases to connect different parts of the script smoothly.
+5.  **Spanish Language:** Use lively and engaging language appropriate for Spanish sports broadcasting. Emphasize game dates and scores: "la fecha del partido" and "el marcador final".
+
+**Step 5: JSON Output (Strict Format)**
+
+1.  **Format:** Output a *single* JSON array.  Each element in the array *must* be an object with *exactly* two keys:
+    *   `"speaker"`:  One of the speaker roles listed above.
+    *   `"text"`:  The text for that speaker segment.
+2.  **No Extra Content:** Do *not* include any markdown, code blocks, introductory text, or explanations outside of the JSON array.
+
+
+    *   **Edge Case Management:**
+        *   **JSON Errors:** If there is a problem creating the json object, then return a json object with an error message.
+**Your Output must be a pure JSON array without any markdown code blocks or formatting. Just the raw JSON.**
+
+Question: {contents}
+
+Prioritize the correct execution of each step to ensure the creation of a high-quality, informative, and engaging podcast script, fully tailored to the user's request. Be sure to consider any edge cases in the process. *Specifically, prioritize finding and using the most recent relevant data if the initially requested data is unavailable.*
+"""
     try:
         response = client.models.generate_content(
             model=MODEL_ID,
@@ -1519,6 +1508,8 @@ def generate_mlb_podcasts(contents: str) -> dict:
         try:
             # Clean the response text by removing markdown code block syntax
             text = response.text
+            logging.debug(f"Raw response text: {text}") 
+            print(f"Raw response text: {text}")
             if text.startswith("```"):
                 # Find the first newline after the opening ```
                 start_idx = text.find("\n") + 1
@@ -1528,9 +1519,14 @@ def generate_mlb_podcasts(contents: str) -> dict:
                     text = text[start_idx:]
                 else:
                     text = text[start_idx:end_idx].strip()
+            logging.debug(f"Text after markdown removal: {text}")
+
+            print(f"Text after markdown removal: {text}")
             
             # Remove any "json" or other language identifier that might appear
             text = text.replace("json\n", "")
+            logging.debug(f"Text after json removal: {text}") 
+            print(f"Text after json removal: {text}")
             
             # Parse the cleaned JSON
             text_response = json.loads(text)
