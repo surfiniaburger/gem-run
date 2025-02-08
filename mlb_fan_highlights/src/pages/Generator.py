@@ -16,7 +16,7 @@ import logging
 from user_profile import UserProfile
 import streamlit.components.v1 as components
 import re
-from anchor import anchor, game_info_cache
+from anchor import anchor, game_info_cache, get_last_x_games
 
 # Configure cloud logging at the top of the script, before other imports
 logging.basicConfig(level=logging.INFO)
@@ -462,9 +462,27 @@ def main():
          except Exception as e:
              st.error(f"An error occurred while generating {selected_language} audio: {str(e)}")
 
+
+def get_podcast_timestamp() -> dict:
+    """
+    Gets the current timestamp for podcast generation.
+    
+    Returns:
+        dict: Current date and time information
+    """
+    current = datetime.now()
+    return {
+        "date": current.strftime("%Y-%m-%d"),
+        "time": current.strftime("%H:%M:%S"),
+        "timezone": current.astimezone().tzname(),
+        "full_timestamp": current.strftime("%Y-%m-%d %H:%M:%S %Z")
+    }
+
 def construct_prompt(selected_team, selected_players, selected_timeframe, 
                  timeframe_value, selected_game_type, selected_opponent, 
                  selected_language):
+# Get current timestamp
+ timestamp = get_podcast_timestamp()
 
     # If last game is selected, get the exact date
  if selected_timeframe == "Last game":
@@ -473,8 +491,10 @@ def construct_prompt(selected_team, selected_players, selected_timeframe,
             timeframe_value = last_game_info['last_game_date']
     
 
-
- prompt_parts = [f"Generate a podcast about the {selected_team}."]
+ prompt_parts = [
+                 f"Generate a podcast about the {selected_team}.",
+                 f"Podcast generated on {timestamp['full_timestamp']}."
+                ]
 
  # Players
  if selected_players:
@@ -484,7 +504,10 @@ def construct_prompt(selected_team, selected_players, selected_timeframe,
  if selected_timeframe == "Last game":
         prompt_parts.append(f"Cover the last game played by the {selected_team} on {timeframe_value}.")
  elif selected_timeframe == "Last X games":
-     prompt_parts.append(f"Cover the last {timeframe_value} games played by the {selected_team}.")
+     games_info = get_last_x_games(selected_team, timeframe_value)
+     if 'games' in games_info:
+            game_dates = [game['date'] for game in games_info['games']]     
+            prompt_parts.append(f"Cover the last {timeframe_value} games played by the {selected_team} from {game_dates[-1]} to {game_dates[0]}.")
  elif selected_timeframe == "Specific date":
      prompt_parts.append(f"Cover the {selected_team} game on {timeframe_value}.")
  elif selected_timeframe == "Date Range":

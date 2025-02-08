@@ -1500,18 +1500,18 @@ def generate_mlb_podcasts(contents: str) -> dict:
          *  **Example JSON:**
             ```json
             [
-                {{
-                    "speaker": "Play-by-play Announcer",
-                    "text": "Here's the pitch, swung on and a long drive..."
-                }},
-                {{
-                    "speaker": "Color Commentator",
-                    "text": "Unbelievable power from [Player Name] there, that was a no doubter."
-                }},
-                {{
-                    "speaker": "Player Quotes",
-                    "text": "I knew I was gonna hit that out of the park!"
-                }}
+                 {{
+                    "speaker": "Narrador de jugada por jugada",
+                    "text": "¡Bienvenidos! Hoy repasaremos los últimos dos partidos de los Cleveland Guardians. Primero, el partido del 11-05-2024 contra los Chicago White Sox. El marcador final fue 3-1, victoria para los Guardians."
+                 }},
+                 {{
+                     "speaker": "Comentarista de color",
+                     "text": "Un partido muy reñido.  Andrés Giménez conectó un doble importante, impulsando una carrera."
+                  }},
+                  {{
+                     "speaker": "Citas de Jugadores",
+                     "text": "Solo estaba tratando de hacer un buen contacto con la pelota."
+                  }}
             ]
             ```
         *   **Edge Case Management:**
