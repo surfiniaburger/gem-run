@@ -15,6 +15,8 @@ import os
 
 app = Flask(__name__)
 
+app_version = "0.0.0"
+
 # Google Cloud Logging setup
 client = cloud_logging.Client()
 handler = CloudLoggingHandler(client, name="flask_app")
