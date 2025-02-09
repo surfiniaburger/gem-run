@@ -366,6 +366,7 @@ def main():
  with st.expander("Customize your podcast options", expanded=True):
      # Primary team selection
      selected_team = st.selectbox("Select Primary Team", [""] + mlb_teams)
+     print(f"Selected team: {selected_team}")
 
      # Player Selection (dependent on team selection)
      selected_players = []
