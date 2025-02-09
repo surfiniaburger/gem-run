@@ -1,3 +1,4 @@
+# Home.py
 import streamlit as st
 from firebase_config import get_auth, get_firestore
 from datetime import datetime
@@ -5,39 +6,35 @@ from firebase_admin import firestore
 import uuid
 import pytz
 from user_profile import UserProfile
-from auth import sign_in_or_sign_up
+from auth import sign_in_or_sign_up  # Import the authentication functions
 
-def streamlit_app():
-    """
-    Main function for the MLB Podcast Generator home page.
-    Includes Firebase integration, Google Analytics, and user dashboard.
-    """
-    # Get Firebase services
-    auth = get_auth()
-    db = get_firestore()
+# Get Firebase services
+auth = get_auth()
+db = get_firestore()
 
-    # Google Analytics tracking code
-    ga_script = """
-    <!-- Google tag (gtag.js) -->
-    <script async src="https://www.googletagmanager.com/gtag/js?id=G-98KGSC9LXG"></script>
-    <script>
-        window.dataLayer = window.dataLayer || [];
-        function gtag(){dataLayer.push(arguments);}
-        gtag('js', new Date());
-        gtag('config', 'G-98KGSC9LXG');
-    </script>
-    """
-
-    # Inject GA script using streamlit HTML function
+# Add Google Analytics tracking code
+ga_script = """
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-98KGSC9LXG"></script>
+<script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', 'G-98KGSC9LXG');
+</script>
+"""
+# Inject GA script using streamlit HTML function
+def inject_ga():
     st.components.v1.html(ga_script, height=0)
 
-    # Set page config
-    st.set_page_config(
-        page_title="MLB Podcast Generator",
-        layout="wide",
-        initial_sidebar_state="expanded"
-    )
+# Inject GA script into Streamlit
+st.set_page_config(
+    page_title="MLB Podcast Generator",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
+def create_analytics_landing():
     # Custom CSS for animations and styling
     st.markdown("""
         <style>
@@ -112,12 +109,6 @@ def streamlit_app():
         </style>
     """, unsafe_allow_html=True)
 
-    # Check if user is in session
-    if 'user' not in st.session_state:
-        st.warning("Please log in to access this page.")
-        sign_in_or_sign_up()
-        return
-
     # Welcome Banner
     st.markdown("""
         <div class="welcome-banner">
@@ -169,18 +160,32 @@ def streamlit_app():
         </div>
     """, unsafe_allow_html=True)
 
+def main():
+    # Inject the GA script
+    inject_ga()
+
+    # Check if user is in session
+    if 'user' not in st.session_state:
+        st.warning("Please log in to access this page.")
+        sign_in_or_sign_up()  # Use the imported function
+        return
+    
+    # If user is logged in, show the analytics landing page
+    create_analytics_landing()
+
     # Get user profile and display relevant information
     if 'user' in st.session_state:
         profile = UserProfile(st.session_state['user'].uid, st.session_state['user'].email)
         user_data = profile.get_profile()
         
         if user_data:
+            # Display user-specific analytics in a styled container
             st.markdown("""
                 <div style="background: white; padding: 20px; border-radius: 10px; margin-top: 20px;">
                     <h3 style="color: #1e3c72;">Your Activity Summary</h3>
-                </div>
-            """, unsafe_allow_html=True)
+                """, unsafe_allow_html=True)
             
+            # Display usage statistics with proper datetime handling
             usage_stats = profile.get_usage_stats()
             if usage_stats:
                 col1, col2 = st.columns(2)
@@ -188,20 +193,22 @@ def streamlit_app():
                     st.metric("Podcasts Generated", usage_stats['podcasts_generated'])
                 with col2:
                     if usage_stats['account_created']:
+                        # Convert account_created to UTC if it's naive
                         account_created = usage_stats['account_created']
                         if account_created.tzinfo is None:
                             account_created = pytz.UTC.localize(account_created)
+                        
+                        # Use UTC for current time as well
                         current_time = datetime.now(pytz.UTC)
                         days_active = (current_time - account_created).days
                         st.metric("Days as Member", days_active)
-
-        # Show podcast history
-        history = profile.get_podcast_history()
-        if history:
-            with st.expander("Your Previous Podcasts"):
-                for podcast in history:
-                    st.audio(podcast['url'])
-                    st.caption(f"Generated: {podcast['generated_at']}")
+    # Show podcast history
+    history = profile.get_podcast_history()
+    if history:
+         st.expander("Your Previous Podcasts")
+         for podcast in history:
+             st.audio(podcast['url'])
+             st.caption(f"Generated: {podcast['generated_at']}")
 
 if __name__ == "__main__":
-    streamlit_app()
+    main()
