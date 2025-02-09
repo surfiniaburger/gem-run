@@ -11,6 +11,8 @@ WORKDIR /app
 
 COPY . ./
 
-RUN pip install --no-cache-dir -r requirements.txt
+# Add the source directory to PYTHONPATH
+ENV PYTHONPATH="${PYTHONPATH}:/app/mlb_fan_highlights/src"
 
-ENTRYPOINT ["streamlit", "run", "mlb_fan_highlights/src/Home.py", "--server.port=8080", "--server.address=0.0.0.0"]
+# Update CMD to use the correct path
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "mlb_fan_highlights.src.middleware:application"]
