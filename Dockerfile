@@ -13,4 +13,8 @@ COPY . ./
 
 RUN pip install --no-cache-dir -r requirements.txt
 
-CMD gunicorn --bind :8080 --workers 1 --threads 8 mlb_fan_highlights.src.main:app
+# Add the source directory to PYTHONPATH
+ENV PYTHONPATH="${PYTHONPATH}:/app/mlb_fan_highlights/src"
+
+# Update CMD to use the correct path
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "mlb_fan_highlights.src.middleware:application"]
