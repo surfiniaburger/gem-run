@@ -5,11 +5,11 @@ import uuid
 import logging
 from google.cloud.logging.handlers import CloudLoggingHandler
 from google.cloud import logging as cloud_logging
-from surfire2 import generate_mlb_analysis
-from pod import generate_mlb_podcast_with_audio
-from pall import generate_spanish_audio
-from jap import generate_japanese_audio
-from anchor import anchor, game_info_cache, get_last_x_games
+from src.surfire2 import generate_mlb_analysis
+from src.pod import generate_mlb_podcast_with_audio
+from src.pall import generate_spanish_audio
+from src.jap import generate_japanese_audio
+from src.anchor import anchor, game_info_cache, get_last_x_games
 import re
 import os
 
