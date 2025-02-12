@@ -1453,21 +1453,82 @@ def generate_mlb_podcasts(contents: str) -> dict:
             *   **Player Insight:** Analyze and report on detailed player actions, individual statistics, and contributions to the game. **Include all relevant stats, such as batting average, home runs, RBIs, and any other available metrics.**
             *   **Game Details:** Extract and include game dates, final scores, and any other relevant game details that add depth and context to the discussion.
             *    **Pitcher Information:** Include starting and key relief pitcher names for each team, as well as their individual stats for the game where available (e.g., innings pitched, strikeouts, earned runs).
+            *   **Comprehensive Player Statistics:**  For *every* mentioned player (both batters and pitchers), include the following statistics *from the specific game*, if available.  If a stat is not available from the MLB Stats API, explicitly state this (see Edge Case Handling below).
+            *   **Batters:**
+                *   At-Bats (AB)
+                *   Runs (R)
+                *   Hits (H)
+                *   Doubles (2B)
+                *   Triples (3B)
+                *   Home Runs (HR)
+                *   Runs Batted In (RBI)
+                *   Walks (BB)
+                *   Strikeouts (SO)
+                *   Stolen Bases (SB)
+                *   Caught Stealing (CS)
+                *   Left on Base (LOB) - *This is often a team stat, but individual LOB can sometimes be found.*
+                *   Batting Average (AVG) - *For the game itself.*
+                *   On-Base Percentage (OBP) - *For the game itself.*
+                *   Slugging Percentage (SLG) - *For the game itself.*
+                *   On-Base Plus Slugging (OPS) - *For the game itself.*
+            *   **Pitchers:**
+                *   Innings Pitched (IP)
+                *   Hits Allowed (H)
+                *   Runs Allowed (R)
+                *   Earned Runs Allowed (ER)
+                *   Walks Allowed (BB)
+                *   Strikeouts (K)
+                *   Home Runs Allowed (HR)
+                *   Earned Run Average (ERA) - *For the game itself.*
+                *   Hit Batsmen (HBP)
+                *   Wild Pitches (WP)
+                *   Balks (BK)
+                *   Total Pitches (if available)
+                *   Strikes (if available)
+                *   Balls (if available)
+
+        * **Team Statistics (Game Level):** Include, when available:
+            * Total Runs
+            * Total Hits
+            * Total Errors
+            * Total Left on Base
+            * Double Plays Turned
+            * Runners Caught Stealing
+
         *  **Contextual Layering:** Augment raw data with contextual information to enrich the analysis.
         *  **Contextual Layering:** Augment raw data with contextual information to enrich the analysis.
             *    **Historical Data:** Use past data, historical performance, and historical records, team or player-specific trends to provide the analysis greater depth.
             *    **Team Specific Data:** Use team specific data to better inform the analysis (e.g. if a team is known for strong defense, then analyze this and provide commentary on it).
         *  **Data Integrity Checks:** Sanitize the data to ensure only relevant information is extracted from all sources. Clean and remove any unwanted data.
         * **Edge Case Resolution:** Implement rules for specific edge cases:
-            *   **Incomplete Data:** If data is missing or incomplete, explicitly mention this within the generated text using phrases like "data was not available for this event."
+            *   **Incomplete Data:** If data is missing or incomplete, explicitly mention this within the generated text using phrases like:
+                                    *   "The MLB Stats API does not provide data for [missing statistic] in this game."
+                                    *   "Data on [missing statistic] was unavailable for [player name]."
+                                    *   "We don't have complete information on [missing aspect of the game]."
+                                    *   "Unfortunately, [missing statistic] is not available through the API for this specific game."
             *   **Data Conflicts:** Prioritize reliable sources. If discrepancies persist, note these in the generated text. Explain differences, and any issues that may exist in the data.
             *  **Data Format Issues:**  If the data cannot be parsed or used, then log a detailed error and provide the user with an error in the generated text that explains why data was not used. If possible perform data transformations.
 
     **Step 3: Advanced Multi-Speaker Script Composition**
+        *   **Data Source Attribution:** Include clear and concise attribution to the **MLB Stats API** as the data source.
+        *   **Overall Attribution:** Begin the script with a general statement acknowledging the MLB Stats API.  For example: "All game data and statistics are sourced from the MLB Stats API."
+        *   **Contextual Attribution:** When introducing specific data points *for the first time*, mention the MLB Stats API.  For example: "According to the MLB Stats API, the final score was..."  After the first mention for a particular type of data (e.g., final score, player stats, play-by-play), you don't need to repeat it *every* time, but do it occasionally for clarity.
+        *   **Multiple Data Types (if applicable):** Even within the MLB Stats API, there might be different *endpoints* or *data feeds*.  If, for example, you're getting game summaries from one part of the API and detailed play-by-play from another, you *could* (optionally) differentiate: "Game summary data is from the MLB Stats API's game feed, while play-by-play details are from the MLB Stats API's play-by-play feed."  This level of detail is usually *not* necessary, but it's an option for maximum clarity.  It's more important to be consistent.
+        *   **Preferred Phrases:** Use phrases like:
+            *   "According to the MLB Stats API..."
+            *   "Data from the MLB Stats API shows..."
+            *   "The MLB Stats API reports that..."
+            *   "Our statistics, provided by the MLB Stats API..."
         *   **Speaker Profiles:** Develop unique personality profiles for each speaker role to ensure variations in voice and perspective:
              *   **Play-by-play Announcer:** Neutral, factual, and descriptive, providing real-time action updates using clear language.
             *   **Color Commentator:** Analytical, insightful, and contextual, breaking down game elements, offering explanations, and using phrases like "what's interesting here is," "the reason why," and "a key moment in the game".
-            *   **Simulated Player Quotes:** Casual, personal, and engaging, re-creating player reactions with plausible, authentic-sounding phrases. **Ensure that for each key play, a simulated player quote is present, that is *highly specific* to the play and provides a unique perspective. Include quotes reflecting both success and failure.**
+            *   **Simulated Player Quotes:** Casual, personal, and engaging, re-creating player reactions with plausible, authentic-sounding phrases. **Ensure that for each key play, a simulated player quote is present, *from a player on the team that was impacted by the play*, that is relevant to the play, and provides a unique perspective on the action.  The quotes should:**
+                    *   **Be Highly Specific:**  Refer to the *exact* situation in the game (e.g., the count, the runners on base, the type of pitch).  Don't just say "I hit it well."  Say, "With a 3-2 count and runners on first and second, I was looking for a fastball up in the zone, and that's exactly what I got."
+                    *   **Reflect Emotion:**  Show a range of emotions – excitement, frustration, determination, disappointment, etc.  Not every quote should be positive.
+                    *   **Offer Strategic Insight (where appropriate):** Have the player (simulated) explain their thinking or approach.  "I knew he was going to try to come inside with the slider, so I was ready for it."
+                    *   **React to Mistakes:** If a player made an error or gave up a key hit, have them acknowledge it.  "I left that changeup hanging, and he made me pay for it."
+                    *   **Consider Different Player Personalities (Advanced):**  If you have information about a player's personality (e.g., are they known for being cocky, humble, analytical?), try to reflect that in the quote (but avoid stereotypes). This is more advanced and might require additional data.
+                    *   **Include Opposing Perspectives:** For major turning points, include simulated quotes from players on *both* teams to capture the full impact of the event.
         *   **Event-Driven Structure:** Structure the script around the key events identified in Step 2. For each event:
              *   Involve all three speaker roles in the conversation to provide multiple perspectives.
             *   Maintain a natural conversation flow, resembling a genuine podcast format.
@@ -1485,7 +1546,7 @@ def generate_mlb_podcasts(contents: str) -> dict:
         *   **Edge Case Handling:**
             *   **Tone Alignment:** Ensure that the speaker's tone reflects the events described (e.g., use a negative tone for the color commentator if describing a poorly executed play).
             *   **Quote Realism:** Ensure simulated quotes are believable and sound authentic.
-            *   **Data Gaps:** If there's missing data or an unexpected scenario, use filler phrases (e.g., "We don't have the audio for that play," "Unfortunately, the camera wasn't on the ball").
+            *   **Data Gaps:** If there's missing data, use explicit phrases to acknowledge this. For example: "The MLB Stats API does not provide pitch count data for this game," or "Unfortunately, we don't have information on [specific missing data point]."
 
     **Step 4: Globally Accessible Language Support**
         *   **Translation Integration:** Use translation tools to translate the full output, including all generated text, data-driven content, and speaker roles.
