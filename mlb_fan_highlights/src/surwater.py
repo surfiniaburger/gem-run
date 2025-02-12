@@ -1433,8 +1433,17 @@ def generate_mlb_podcasts(contents: str) -> dict:
                      * Current date when script is generated
                      * Game date(s) being discussed
                      * Clear distinction between current date and game dates
+            *   **Statistical Emphasis:** Identify any specific stats, metrics, or data points the user wants to highlight, including, but not limited to, game dates, final scores, player specific metrics, and any other metrics that provide greater depth to the game. **Crucially, prioritize including all available statistics for mentioned players, teams, and their opponents. This should include, but is not limited to:
+                 *   **For Batters:** Hits, Runs, RBIs, Home Runs, Walks, Strikeouts, Stolen Bases, Batting Average (for the game *and* season-to-date), On-Base Percentage (game and season), Slugging Percentage (game and season), OPS (game and season), Total Bases, Left on Base.
+                 *   **For Pitchers:** Innings Pitched, Hits Allowed, Runs Allowed, Earned Runs Allowed, Walks, Strikeouts, Home Runs Allowed, ERA (for the game *and* season-to-date), WHIP (game and season-to-date). If possible, include pitch count, strikes/balls.
+                 *   **Team Stats:** Total Hits, Runs, Errors, Left on Base, Double Plays.
+                 *   **Running Score:** Include the score after each key play.
+                 *   **Head-to-Head Stats:** If available, include player performance against the specific opponent.
+                 * **Situational Stats:** When available, analyze RISP performance for batters and performance in high leverage situations for pitchers.**
+
 
     **Step 2: Strategic Data Acquisition and Intelligent Analysis**
+
         *   **Dynamic Tool Selection:** Select the most suitable tool(s) from the available resources based on the refined needs identified in Step 1.  Tools can include statistical APIs, play-by-play logs, news feeds, and social media. Use multiple tools if necessary to gather all the necessary information.
         *  **Prioritized Data Retrieval:** If past games are requested, treat these as primary sources of data and emphasize those data sets. If the user requests a future game or a game with no available data, then state that explicitly in the generated text and use available information like team projections, past performance or other pre game analysis information.
         *   **Granular Data Extraction:** Extract relevant data points, focusing on:
@@ -1458,11 +1467,19 @@ def generate_mlb_podcasts(contents: str) -> dict:
         *   **Speaker Profiles:** Develop unique personality profiles for each speaker role to ensure variations in voice and perspective:
              *   **Play-by-play Announcer:** Neutral, factual, and descriptive, providing real-time action updates using clear language.
             *   **Color Commentator:** Analytical, insightful, and contextual, breaking down game elements, offering explanations, and using phrases like "what's interesting here is," "the reason why," and "a key moment in the game".
-            *   **Simulated Player Quotes:** Casual, personal, and engaging, re-creating player reactions with plausible, authentic-sounding phrases. **Ensure that for each key play, a simulated player quote is present, that is relevant to the play and provides a unique perspective on the action.**
+            *   **Simulated Player Quotes:** Casual, personal, and engaging, re-creating player reactions with plausible, authentic-sounding phrases. **Ensure that for each key play, a simulated player quote is present, that is *highly specific* to the play and provides a unique perspective. Include quotes reflecting both success and failure.**
         *   **Event-Driven Structure:** Structure the script around the key events identified in Step 2. For each event:
              *   Involve all three speaker roles in the conversation to provide multiple perspectives.
             *   Maintain a natural conversation flow, resembling a genuine podcast format.
-            *   Incorporate all available relevant information, including player names, team names, inning details, and applicable statistics, **game dates and final scores, and player and pitcher specific stats.**.
+            *   Incorporate *all* available relevant information, including:
+                   *   Player names, team names.
+                   *   Inning details.
+                   *   **Applicable statistics (as listed above), 
+                   *   **Game dates and final scores, and player and pitcher specific stats.**.
+                   *   **The running score after the play.**
+                   *   **Comparison to season stats, if relevant.**
+                   *   **Head-to-head stats, if relevant.**
+                   *   **Detailed play description (type of pitch, location, count, if available).**
         *   **Seamless Transitions:** Use transitional phrases (e.g., "shifting to the next play," "now let's look at the defense") to ensure continuity.
         *   **Unbiased Tone:** Maintain a neutral and factual tone, avoiding any personal opinions, unless specifically instructed by the user.
         *   **Edge Case Handling:**
