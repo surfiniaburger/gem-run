@@ -164,3 +164,106 @@ Check out our [Google Colab Notebook](https://colab.research.google.com/drive/1Q
 For help understanding baseball terminology and statistics, refer to the [MLB Glossary](https://www.mlb.com/glossary). This comprehensive resource explains baseball terms, statistics, and metrics used throughout MLB's data services.
 
 More information about available datasets and hackathon themes will be provided in this repository. Stay tuned for updates! 
+
+
+
+### RAG
+
+                                      +-----------------+
+                                      |    START        |
+                                      +-----------------+
+                                              |
+                                              V
+                      +-------------------------------------------+
+                      |  Setup Streamlit UI (Title, Sidebar)       |
+                      +-------------------------------------------+
+                                              |
+                                              V
+            +------>+---------------------------------------+<------+
+            |       | Connect to MongoDB (function call)     |       |
+            |       |  - Get URI (get_secret)                |       |
+            |       |  - Create MongoClient                  |       |
+            |       |  - Test Connection & Return Client    |       |
+            |       +---------------------------------------+       |
+            |                                                       |
+            |                                                       | Dashed: Function Calls
+            V                                                       |
+    +-------------------------------+                               |
+    | User Interaction (Streamlit)  |                               |
+    | - Select Data Source          |                               |
+    | - Upload PDFs (if applicable) |                               |
+    | - Enter Podcast Request       |                               |
+    | - Click "Generate"            |                               |
+    +-------------------------------+                               |
+            |                                                       |
+            | (User clicks "Generate")                               |
+            V                                                       |
+  +-----------------------------------+                             |
+  |  generate_mlb_podcasts Function  |-----------------------------+
+  +-----------------------------------+
+  | - Determine Data Source          |
+  |                                   |
+  |--IF BigQuery (1) OR Combined (3)-->+
+  |   | - Get Team Key               |
+  |   | - Determine Collection       |
+  |   | - Init MongoDBAtlasVectorSearch|
+  |   +------------------------------+
+  |                                   |
+  |--IF PDF (2) OR Combined (3)------>+
+  |   |  process_pdf_data (fn call)   |
+  |   | +--------------------------+ |
+  |   | | - Load PDFs             | |
+  |   | | - Split Text            | |
+  |   | | - Embeddings (VertexAI) | |
+  |   | | - Insert into MongoDB   | |
+  |   | | - Create Atlas Index   | |
+  |   | | - Return VectorSearch  | |
+  |   | +--------------------------+ |
+  |   +------------------------------+
+  |                                   |
+  | --IF Combined (3)---------------->+
+  |    | - Get MongoDB Docs         |
+  |    |  combine_data (fn call)     |
+  |    | +------------------------+ |
+  |    | | - Combine BQ & PDF    | |
+  |    | | - Return Combined Docs | |
+  |    | +------------------------+ |
+  |    +----------------------------+
+  |                                   |
+  |  --IF PDF (2) ------------------->+
+  |     |  - Similarity search        |
+  |     +----------------------------+
+  |                                    |
+  |   --IF BigQuery (1)--------------->+
+  |     |   -Get MongoDB Docs         |
+  |     +-----------------------------+
+  |                                   |
+  | - setup_langchain (fn call)       |
+  |   (Sets up LLM & Prompt)          |
+  |                                   |
+  | - Build RetrievalQA Chain         |
+  |    (LLM, retriever, prompt)      |
+  |                                   |
+  | - Call RetrievalQA chain (query)  |
+  |                                   |
+  | - Process & Validate JSON         |
+  |   - Handle errors                |
+  |                                   |
+  | - Return Script or Error         |
+  +-----------------------------------+
+                  |
+                  V
+    +----------------------------+
+    | Display Results (Streamlit)|
+    |  (Script or Error Message) |
+    +----------------------------+
+                  |
+                  V
+        +-----------------------+
+        | Close MongoDB Connection|
+        +-----------------------+
+                  |
+                  V
+                +-----+
+                | END |
+                +-----+
