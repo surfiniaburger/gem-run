@@ -267,3 +267,134 @@ More information about available datasets and hackathon themes will be provided 
                 +-----+
                 | END |
                 +-----+
+
+
+
+
+
+
+
+
+
+                                                         +---------------------+
+                                         |     Start (main)    |
+                                         +---------------------+
+                                                 |
+                                                 | Solid Line: Main program flow
+                                                 V
+                                         +---------------------+
+                                         |  Setup Streamlit UI |
+                                         |  (Title, Sidebar)   |
+                                         +---------------------+
+                                                 |
+                                                 V
+                +--------------------------------------------------------------+
+                |                 Connect to MongoDB (connect_to_mongodb)          |-----> (Dotted Line: Function Call)
+                +--------------------------------------------------------------+
+                | - Get MongoDB URI (get_secret)                                |-----> (Dotted Line: Function Call)
+                | - Create MongoClient                                         |
+                | - Test Connection (ping)                                    |
+                | - Return Client                                               |
+                +--------------------------------------------------------------+
+                                                 |
+                                                 V
+     +--------------------------------------------------------------------------------------+
+     |                            User Interacts with Streamlit UI                            |
+     +--------------------------------------------------------------------------------------+
+     | - Selects Data Source (BigQuery, PDF, Combined)                                      |
+     | - (If PDF or Combined) Uploads PDF Files (streamlit file_uploader)                  |
+     | - Enters Podcast Request (user_query)                                                |
+     | - Clicks "Generate Podcast Script" Button                                           |
+     +--------------------------------------------------------------------------------------+
+                                                 |
+                                   (User clicks "Generate")
+                                                 |
+                                                 V
+          +----------------------------------------------------------------------------+
+          |                 Call generate_mlb_podcasts Function                       |-----> (Dotted Line: Function Call)
+          +----------------------------------------------------------------------------+
+          |                                                                            |
+          |   - Determine Data Source (from user input)                               |
+          |                                                                            |
+          |   ------- IF Data Source is BigQuery (1) or Combined (3) -------          |
+          |   |                                                                    |   |
+          |   |   - Get Team Key (get_team_key)                                    |---> (Dotted Line)
+          |   |   - Determine Collection Name                                       |
+          |   |   - Initialize MongoDBAtlasVectorSearch (for retrieval)             |
+          |   |                                                                    |
+          |   --------------------------------------------------------------------   |
+          |                                                                            |
+          |   ------- IF Data Source is PDF (2) or Combined (3) -------              |
+          |   |                                                                    |   |
+          |   |    - Call process_pdf_data Function                                |-----> (Dotted Line: Function Call)
+          |   |    +-------------------------------------------------------------+   |
+          |   |    | - Load PDFs (PyPDFLoader)                                    |   |
+          |   |    | - Split Text (RecursiveCharacterTextSplitter)                 |   |
+          |   |    | - Generate Embeddings (VertexAIEmbeddings)                   |   |
+          |   |    | - Insert into MongoDB (with embeddings)                       |   |
+          |   |    | - Create Atlas Vector Search Index (if not exists)           |   |
+          |   |    | - Return MongoDBAtlasVectorSearch object                     |   |
+          |   |    +-------------------------------------------------------------+   |
+          |   |                                                                    |   |
+          |   --------------------------------------------------------------------   |
+          |                                                                            |
+          |     ------- IF Data Source is Combined (3) --------                   |
+          |     |                                                               |    |
+          |     | - Get Relevant Documents from MongoDB Atlas Vector Search       |    |
+          |     |   (get_relevant_documents)                                     |    |
+          |     |                                                               |    |
+          |     | - Call combine_data function                                   |-----> (Dotted Line: Function Call)
+          |     |    +----------------------------------------------------------+ |    |
+          |     |    | - Combine BigQuery and PDF results                        | |    |
+          |     |    | - Return Combined Documents                               | |    |
+          |     |    +----------------------------------------------------------+ |    |
+          |      -----------------------------------------------------------------    |
+          |                                                                             |
+          |   ------- IF data source is PDF --------                                   |
+          |   |    -  Call similarity search function                                 |
+          |   ------------------------------------------                                  |
+          |                                                                             |
+          | ------- IF data source is BigQuery ----------                               |
+          | |  - Get Relevant Documents from MongoDB Atlas Vector Search                |
+          | |   (get_relevant_documents)                                                |
+          | ----------------------------------------------                                |
+          |                                                                            |
+          | - Call setup_langchain Function (sets up LLM and prompt)              | ----> (Dotted Line: Function Call)
+          |                                                                            |
+          | - Build the RetrievalQA (No tools used)                                    |
+          |      - LLM, retriever, and prompt                                          |
+          |                                                                            |
+          | - Call RetrievalQA chain (query the LLM) *NO TOOLS*                      |
+          |                                                                            |
+          | - Process and Validate JSON Output                                        |
+          |   - Handle JSON parsing errors                                            |
+          |                                                                            |
+          | - Return Podcast Script (JSON) or Error                                  |
+          +----------------------------------------------------------------------------+
+                                                 |
+                                                 V
+                                +-----------------------------------+
+                                |  Display Results in Streamlit UI  |
+                                |    (Podcast Script or Error)      |
+                                +-----------------------------------+
+                                                 |
+                                                 V
+                                       +-----------------------+
+                                       | Close MongoDB Connection|
+                                       +-----------------------+
+                                                 |
+                                                 V
+                                         +---------------------+
+                                         |         End         |
+                                         +---------------------+
+
+Key:
+
+*   **Solid Lines:** Represent the main program execution flow.
+*   **Dashed Lines:** Indicate function calls.
+*   **Boxes:** Represent blocks of code or major steps.
+*    Inside the `generate_mlb_podcasts` function, different data retrieval paths are shown based on the `data_source`.
+* The Langchain setup happens after the data retrieval, and is separated.
+* JSON processing is handled inside the main `generate_mlb_podcasts` function
+
+This diagram provides a high-level overview of the code's structure and the flow of data and control.
