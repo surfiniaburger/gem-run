@@ -169,6 +169,8 @@ More information about available datasets and hackathon themes will be provided 
 
 ### RAG
 
+
+```bash
                                       +-----------------+
                                       |    START        |
                                       +-----------------+
@@ -267,3 +269,6 @@ More information about available datasets and hackathon themes will be provided 
                 +-----+
                 | END |
                 +-----+
+
+
+```
