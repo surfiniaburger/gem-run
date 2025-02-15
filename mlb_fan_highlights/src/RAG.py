@@ -26,6 +26,13 @@ from langchain.prompts import ChatPromptTemplate, HumanMessagePromptTemplate, Sy
 from langchain.chains import RetrievalQA
 from langchain.schema import StrOutputParser, Document
 from langchain.tools import StructuredTool
+from langchain_core.prompts import ChatPromptTemplate
+
+from pydantic import BaseModel, Field
+from langchain_core.output_parsers import JsonOutputParser
+from typing import List, Dict, Optional, Tuple, Union, Annotated
+from langsmith import Client, traceable
+
 
 
 # --- Setup (Logging, Secret Manager, BigQuery Client) ---
@@ -53,9 +60,38 @@ def get_secret(project_id, secret_id, version_id="latest", logger=None):
             logger.error(f"Failed to retrieve secret {secret_id}: {str(e)}")
         raise
 
+# --- LangSmith Environment Variables (from Secret Manager) ---
+def load_langsmith_env():
+    """Loads LangSmith environment variables from Secret Manager."""
+    try:
+        client = secretmanager.SecretManagerServiceClient()
+
+        def get_secret_value(secret_id):
+            name = f"projects/{PROJECT_ID}/secrets/{secret_id}/versions/latest"
+            response = client.access_secret_version(request={"name": name})
+            return response.payload.data.decode("UTF-8")
+
+        os.environ["LANGSMITH_TRACING"] = get_secret_value("LANGSMITH_TRACING")
+        os.environ["LANGSMITH_ENDPOINT"] = get_secret_value("LANGSMITH_ENDPOINT")
+        os.environ["LANGSMITH_API_KEY"] = get_secret_value("LANGSMITH_API_KEY")
+        os.environ["LANGSMITH_PROJECT"] = get_secret_value("LANGSMITH_PROJECT")
+        logger.info("LangSmith environment variables loaded from Secret Manager.")
+
+    except Exception as e:
+        logger.error(f"Error loading LangSmith secrets: {e}")
+        #  Optionally re-raise the exception, or handle it as appropriate.
+        raise
+
+
 # Assuming you have your Google Cloud project ID set as an environment variable
 PROJECT_ID = "gem-rush-007"  # Replace with your actual project ID
 bq_client = bigquery.Client(project=PROJECT_ID)
+
+# --- Load Secrets *before* initializing LangSmith Client ---
+load_langsmith_env() # Load secrets first.
+client = Client() # Now the client can use the environment variables
+
+
 # Fetch secrets for consistent use
 MONGO_URI = get_secret(PROJECT_ID, "mongodb-uri", logger=logger)
 
@@ -859,7 +895,8 @@ def generate_mlb_podcasts(contents: str, data_source: int, client: MongoClient, 
             for item in podcast_script:
                 if not ("speaker" in item and "text" in item):
                     raise ValueError("Invalid JSON object format")
-            return podcast_script
+            # result['result'] = podcast_script # Store the parsed JSON
+            return podcast_script  # Return the whole dict
 
         except (json.JSONDecodeError, ValueError) as e:
             logging.error(f"JSON validation error: {e}")
@@ -868,6 +905,258 @@ def generate_mlb_podcasts(contents: str, data_source: int, client: MongoClient, 
     except Exception as e:
         logging.error(f"Error generating podcast script: {e}")
         return {"error": str(e)}
+
+
+# --- LangSmith Evaluation Setup ---
+
+@traceable()
+def generate_podcast_wrapper(input_data: dict) -> dict:
+    """Wraps generate_mlb_podcasts for LangSmith tracing."""
+    # Extract data from input_data
+    question = input_data["question"]
+    data_source = input_data["data_source"]
+    pdf_files = input_data.get("pdf_files", [])  # Default to empty list if not provided
+    client = connect_to_mongodb()
+    # Call the original function
+    try:
+        result = generate_mlb_podcasts(question, data_source, client, pdf_files)
+    finally:
+        client.close() # Close *inside* the function, in a finally block
+    return result
+
+
+
+# --- Evaluator Definitions ---
+
+class CorrectnessGrade(BaseModel):
+    explanation: str = Field(..., description="Explain your reasoning for the score")
+    correct: bool = Field(..., description="True if the answer is correct, False otherwise.")
+
+correctness_instructions = """You are a teacher grading a quiz.
+
+You will be given a QUESTION, the GROUND TRUTH (correct) ANSWER, and the STUDENT ANSWER (podcast script).
+
+Here is the grade criteria to follow:
+(1) Grade the student answers based ONLY on their factual accuracy relative to the ground truth answer.
+(2) Ensure that the student answer does not contain any conflicting statements.
+(3) The STUDENT ANSWER is a full podcast script in JSON format.  Compare the ENTIRE script to the GROUND TRUTH script.
+(4) Focus on factual accuracy: game details, player stats, dates, scores, and any other factual claims.
+(5) It's OK if the scripts have different stylistic choices, as long as the core facts are correct.
+(6) If the STUDENT ANSWER is an error message, mark it as incorrect.
+
+Correctness:
+A correctness value of True means that the student's answer meets all of the criteria.
+A correctness value of False means that the student's answer does not meet all of the criteria.
+
+Explain your reasoning in a step-by-step manner to ensure your reasoning and conclusion are correct.
+
+Avoid simply stating the correct answer at the outset."""
+
+grader_llm = ChatVertexAI(model="gemini-1.5-pro-002", temperature=0).bind_tools([CorrectnessGrade])
+
+def correctness(inputs: dict, outputs: dict, reference_outputs: dict) -> Dict:
+    """An evaluator for RAG answer accuracy."""
+    if "error" in outputs:
+        return {"correct": False, "explanation": "The generated output is an error message."}
+
+    student_answer = json.dumps(outputs['result']) # Extract and format
+    ground_truth_answer = json.dumps(reference_outputs['answer'])
+
+    answers = f"""QUESTION: {inputs['question']}
+GROUND TRUTH ANSWER: {ground_truth_answer}
+STUDENT ANSWER: {student_answer}"""
+
+    grade = grader_llm.invoke(
+        [
+            {"role": "system", "content": correctness_instructions},
+            {"role": "user", "content": answers},
+        ]
+    )
+    return grade.dict()
+
+
+class RelevanceGrade(BaseModel):
+    explanation: str = Field(..., description="Explain your reasoning for the score")
+    relevant: bool = Field(..., description="Provide the score on whether the answer addresses the question")
+
+relevance_instructions = """You are a teacher grading a quiz.
+
+You will be given a QUESTION and a STUDENT ANSWER (podcast script).
+
+Here is the grade criteria to follow:
+(1) Ensure the STUDENT ANSWER (podcast script) is relevant to the QUESTION.
+(2) The STUDENT ANSWER is a full podcast script.
+(3) If the STUDENT ANSWER is an error message, mark it as not relevant.
+
+Relevance:
+A relevance value of True means that the student's answer meets all of the criteria.
+A relevance value of False means that the student's answer does not meet all of the criteria.
+
+Explain your reasoning in a step-by-step manner to ensure your reasoning and conclusion are correct.
+
+Avoid simply stating the correct answer at the outset."""
+
+relevance_llm = ChatVertexAI(model="gemini-1.5-pro-002", temperature=0).bind_tools([RelevanceGrade])
+
+def relevance(inputs: dict, outputs: dict) -> Dict:
+    """A simple evaluator for RAG answer helpfulness."""
+    if "error" in outputs:
+        return {"relevant": False, "explanation": "The generated output is an error message."}
+
+    student_answer = json.dumps(outputs['result'])
+
+    answer = f"""QUESTION: {inputs['question']}
+STUDENT ANSWER: {student_answer}"""
+    grade = relevance_llm.invoke(
+        [
+            {"role": "system", "content": relevance_instructions},
+            {"role": "user", "content": answer},
+        ]
+    )
+    return grade.dict()
+
+
+class GroundedGrade(BaseModel):
+    explanation: str = Field(..., description="Explain your reasoning for the score")
+    grounded: bool = Field(..., description="Provide the score on if the answer hallucinates from the documents")
+
+grounded_instructions = """You are a teacher grading a quiz.
+
+You will be given FACTS and a STUDENT ANSWER (podcast script).
+
+Here is the grade criteria to follow:
+(1) Ensure the STUDENT ANSWER (podcast script) is grounded in the FACTS.
+(2) Ensure the STUDENT ANSWER does not contain "hallucinated" information outside the scope of the FACTS.
+(3) The FACTS are extracted from the 'page_content' of LangChain Document objects.
+(4) If the STUDENT ANSWER is an error message, mark it as not grounded.
+
+Grounded:
+A grounded value of True means that the student's answer meets all of the criteria.
+A grounded value of False means that the student's answer does not meet all of the criteria.
+
+Explain your reasoning in a step-by-step manner to ensure your reasoning and conclusion are correct.
+
+Avoid simply stating the correct answer at the outset."""
+
+grounded_llm = ChatVertexAI(model="gemini-1.5-pro-002", temperature=0).bind_tools([GroundedGrade])
+
+def groundedness(inputs: dict, outputs: dict) -> Dict:
+    """A simple evaluator for RAG answer groundedness."""
+    if "error" in outputs:
+        return {"grounded": False, "explanation": "The generated output is an error message."}
+    if outputs['source_documents']:
+        doc_string = "".join(doc.page_content for doc in outputs["source_documents"])
+    else:
+      return {"grounded":False, "explanation": "No documents were retrieved."}
+    student_answer = json.dumps(outputs['result'])
+    answer = f"""FACTS: {doc_string}
+STUDENT ANSWER: {student_answer}"""
+    grade = grounded_llm.invoke(
+        [
+            {"role": "system", "content": grounded_instructions},
+            {"role": "user", "content": answer},
+        ]
+    )
+    return grade.dict()
+
+
+class RetrievalRelevanceGrade(BaseModel):
+    explanation: str = Field(..., description="Explain your reasoning for the score")
+    relevant: bool = Field(..., description="True if the retrieved documents are relevant to the question, False otherwise")
+
+retrieval_relevance_instructions = """You are a teacher grading a quiz.
+
+You will be given a QUESTION and a set of FACTS provided by the student.
+
+Here is the grade criteria to follow:
+(1) You goal is to identify FACTS that are completely unrelated to the QUESTION.
+(2) If the facts contain ANY keywords or semantic meaning related to the question, consider them relevant.
+(3) It is OK if the facts have SOME information that is unrelated to the question as long as (2) is met.
+(4) The FACTS are extracted from the 'page_content' of LangChain Document objects.
+
+Relevance:
+A relevance value of True means that the FACTS contain ANY keywords or semantic meaning related to the QUESTION and are therefore relevant.
+A relevance value of False means that the FACTS are completely unrelated to the QUESTION.
+
+Explain your reasoning in a step-by-step manner to ensure your reasoning and conclusion are correct.
+
+Avoid simply stating the correct answer at the outset."""
+
+retrieval_relevance_llm = ChatVertexAI(model="gemini-1.5-pro-002", temperature=0).bind_tools([RetrievalRelevanceGrade])
+
+def retrieval_relevance(inputs: dict, outputs: dict) -> Dict:
+    """An evaluator for document relevance."""
+    if "error" in outputs:
+        return {"relevant": False, "explanation": "The generated output is an error message."} # No retrieval to evaluate
+
+    if outputs['source_documents']:
+        doc_string = "".join(doc.page_content for doc in outputs["source_documents"])
+    else:
+        return {"relevant": False, "explanation": "No documents were retrieved."}
+
+    answer = f"""FACTS: {doc_string}
+QUESTION: {inputs['question']}"""
+
+    grade = retrieval_relevance_llm.invoke(
+        [
+            {"role": "system", "content": retrieval_relevance_instructions},
+            {"role": "user", "content": answer},
+        ]
+    )
+    return grade.dict()
+
+
+# --- Example Data and Dataset Creation (Simplified Ground Truth) ---
+examples = [
+    (
+        {"question": "Tell me about the Angels game on May 10, 2024", "data_source": 1},
+        {"answer": [
+            {"speaker": "Announcer", "text": "Welcome to the podcast! Today we're discussing the Angels game on May 10, 2024."},
+            {"speaker": "Commentator", "text": "According to the MLB Stats API, the Angels played against [Opponent Team]. The final score was [Score]."},
+            {"speaker": "Player", "text": "It was a tough/great game!"}
+        ]}
+    ),
+    (
+        {"question": "Summarize the recent performance of the Rays", "data_source": 1},
+        {"answer": [
+            {"speaker": "Announcer", "text": "Let's look at the Rays' recent performance."},
+            {"speaker": "Commentator", "text": "The MLB Stats API data shows they've had a mix of wins and losses in their last few games..."},
+            {"speaker": "Player", "text": "We're working hard to improve!"}
+        ]}
+    ),
+        (
+        {"question": "Give me a podcast on the Rays", "data_source": 1},
+        {"answer": [
+            {"speaker": "Announcer", "text": "Let's look at the Rays' recent performance."},
+            {"speaker": "Commentator", "text": "The MLB Stats API data shows they've had a mix of wins and losses in their last few games..."},
+            {"speaker": "Player", "text": "We're working hard to improve!"}
+        ]}
+    ),
+]
+
+dataset_name = "MLB Podcast Evaluation Dataset"
+if not client.has_dataset(dataset_name=dataset_name):
+    dataset = client.create_dataset(dataset_name=dataset_name)
+    client.create_examples(
+        inputs=[inp for inp, _ in examples],
+        outputs=[out for _, out in examples],
+        dataset_id=dataset.id,
+    )
+else:
+    dataset = client.read_dataset(dataset_name=dataset_name) # Get dataset if it exists
+
+# --- Evaluation Execution ---
+
+def run_evaluation():
+    """Runs the evaluation using LangSmith."""
+
+    experiment_results = client.evaluate(
+        generate_podcast_wrapper,  # Use the wrapper
+        data=dataset_name,
+        evaluators=[correctness, groundedness, relevance, retrieval_relevance],
+        experiment_prefix="mlb-podcast-eval",
+    )
+    return experiment_results
 
 # --- Main Execution (Example) ---
 def get_user_data_source():
@@ -881,13 +1170,11 @@ def get_user_data_source():
         if choice in ("1", "2", "3"):
             return int(choice)
         print("Invalid choice. Please enter 1, 2, or 3.")
-
-
 if __name__ == "__main__":
     st.set_page_config(page_title="MLB Podcast Generator", page_icon=":baseball:")
     st.title("MLB Podcast Generator")
 
-    client = connect_to_mongodb()  # Connect to MongoDB *once* at the beginning
+    mongo_client = connect_to_mongodb()
 
     with st.sidebar:
         st.header("Data Source")
@@ -899,19 +1186,32 @@ if __name__ == "__main__":
                 (2, "Upload PDF Data"),
                 (3, "Combine Existing and Uploaded Data"),
             ],
-            format_func=lambda x: x[1],  # Display the label, not the number
+            format_func=lambda x: x[1],
         )
-        data_source = data_source[0]  # Get the number (1, 2, or 3)
+        data_source = data_source[0]
 
-        pdf_files = []
+        # --- Use st.session_state for PDF files ---
+        if "pdf_files" not in st.session_state:
+            st.session_state.pdf_files = []
+
         if data_source in (2, 3):
             uploaded_files = st.file_uploader("Upload PDF Files", type=["pdf"], accept_multiple_files=True)
-            # Convert UploadedFile objects to file paths (temporary files)
-            for uploaded_file in uploaded_files:
-                with open(uploaded_file.name, "wb") as f:
-                    f.write(uploaded_file.getbuffer())
-                pdf_files.append(uploaded_file.name)
+            # Initialize new_files_uploaded to False
+            new_files_uploaded = False
 
+            if uploaded_files:  # Only if files are uploaded.
+                current_filenames = {f.name for f in uploaded_files}
+                previous_filenames = set(st.session_state.pdf_files) # compare with filenames
+                if current_filenames != previous_filenames:
+                    new_files_uploaded = True
+                    # Store file paths in session_state.pdf_files
+                    st.session_state.pdf_files = [f.name for f in uploaded_files]
+
+            # Only write files if NEW files have been uploaded
+            if new_files_uploaded:
+                for uploaded_file in uploaded_files:
+                    with open(uploaded_file.name, "wb") as f:
+                        f.write(uploaded_file.getbuffer())
 
     st.header("Podcast Request")
     user_query = st.text_area("Enter your MLB podcast request:", height=150)
@@ -922,31 +1222,41 @@ if __name__ == "__main__":
         else:
             with st.spinner("Generating podcast script..."):
                 try:
-                    podcast_script = generate_mlb_podcasts(user_query, data_source, client, pdf_files)
+                    # Pass file paths, not file objects
+                    podcast_result = generate_mlb_podcasts(user_query, data_source, mongo_client,
+                                                           st.session_state.pdf_files)
 
-                    if "error" in podcast_script:
-                        st.error(f"Error: {podcast_script['error']}")
+                    if "error" in podcast_result:
+                        st.error(f"Error: {podcast_result['error']}")
                     else:
                         st.subheader("Generated Podcast Script:")
-                        # Display as formatted JSON (for now)
-                        # st.json(podcast_script)
-
-                        # Display in a more user-friendly way:
-                        for entry in podcast_script:
+                        for entry in podcast_result: # changed from ['result']
                             speaker = entry['speaker']
                             text = entry['text']
                             st.markdown(f"**{speaker}:** {text}")
 
-
                 except Exception as e:
                     st.error(f"An unexpected error occurred: {e}")
                 finally:
-                    # Clean up temporary files
-                    for file_path in pdf_files:
-                        try:
-                            os.remove(file_path)
-                        except Exception as e:
-                            logging.error(f"Error deleting temp file {file_path}: {e}")
+                    # Clean up temporary files *only* if new files were uploaded, and immediately after processing
+                    if new_files_uploaded:
+                        for file_path in st.session_state.pdf_files:
+                            try:
+                                os.remove(file_path)
+                            except Exception as e:
+                                logging.error(f"Error deleting temp file {file_path}: {e}")
 
+    if st.button("Run Evaluation"):
+        with st.spinner("Running evaluation..."):
+            try:
+                results = run_evaluation()
+                st.write(results)
+                try:
+                    df = results.to_pandas()
+                    st.dataframe(df)
+                except ImportError:
+                    st.write("Pandas not installed, cannot display as DataFrame.")
+            except Exception as e:
+                st.error(f"Evaluation error: {e}")
 
-    client.close()  # Close MongoDB connection when Streamlit app closes
+    mongo_client.close()
