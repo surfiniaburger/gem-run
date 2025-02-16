@@ -3,7 +3,7 @@ import traceback
 from google.cloud import  texttospeech
 import json
 import os
-from surwater_j import generate_mlb_podcasts
+from bumblebee import generate_mlb_podcasts
 from japanese_audio_mixer import JapaneseMLBAudioMixer
 from gcs_handler import GCSHandler
 import uuid
