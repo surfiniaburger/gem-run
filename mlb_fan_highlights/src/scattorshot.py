@@ -400,7 +400,7 @@ def display_radar_plot(eval_results, title: str, metrics=None):
     fig.show()
 
 
-REASONING_ENGINE_RESOURCE_NAME = "projects/1011675918473/locations/us-central1/reasoningEngines/2601796355038904320"
+REASONING_ENGINE_RESOURCE_NAME = "projects/1011675918473/locations/us-central1/reasoningEngines/6357798444265897984"
 remote_agent = reasoning_engines.ReasoningEngine(REASONING_ENGINE_RESOURCE_NAME)
 
 def run_evaluation(agent, eval_df, metrics, experiment_name, experiment_run_name_prefix):
