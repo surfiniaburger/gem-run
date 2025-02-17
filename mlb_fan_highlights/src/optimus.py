@@ -18,7 +18,7 @@ vertexai.init(project=PROJECT_ID, location=LOCATION, staging_bucket=STAGING_BUCK
 
 
 # --- Define Model ---
-model = "gemini-2.0-pro-exp-02-05"  # Start with 1.5-pro for reliability
+model = "gemini-1.5-pro-002"  # Start with 1.5-pro for reliability
 
 # --- Define Tools (adapted functions from mlb_data_functions.py) ---
 # IMPORTANT:  These are the *adapted* versions, as described above.
