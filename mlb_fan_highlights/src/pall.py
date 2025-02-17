@@ -8,6 +8,7 @@ import uuid
 from gcs_handler import GCSHandler
 import logging
 from google.cloud import logging as cloud_logging
+from vid_mix import CloudVideoGenerator, MLBVideoGenerator
 
 # Configure cloud logging at the top of the script, before other imports
 logging.basicConfig(level=logging.INFO)
@@ -189,6 +190,16 @@ def generate_spanish_audio(contents: str, language: str, output_filename: str = 
         # Upload using the new GCS handler
         logging.info("Uploading audio to GCS")
         gcs_handler = GCSHandler(secret_id=secret_name)
+        video_generator = CloudVideoGenerator(gcs_handler)  # Initialize GCS handler
+        mlb_video_generator = MLBVideoGenerator(mixer, video_generator)
+
+        video_bytes = mlb_video_generator.generate_video(script_json)
+
+        # Save the video to a file:
+        with open("final_mlb_video.mp4", "wb") as f:
+         f.write(video_bytes)
+
+        print("Video generated and saved as final_mlb_video.mp4")
 
         
         url = gcs_handler.upload_audio(audio_bytes, f"podcast-{uuid.uuid4()}.mp3")
