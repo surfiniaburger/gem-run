@@ -333,7 +333,7 @@ class CloudVideoGenerator:
                 "accent": "#hex"
             },
             "graphics_style": "dynamic/animated/static",
-            "audio_intensity": 0-100
+            "audio_intensity": "0-100"
         }"""
         try:
             logging.info("Sending analysis request to Gemini 1.5 model.")
