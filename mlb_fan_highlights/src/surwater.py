@@ -32,9 +32,6 @@ bq_client = bigquery.Client(project=PROJECT_ID)
 #client = genai.Client(vertexai=True, project="gem-rush-007", location="us-central1")
 #MODEL_ID = "gemini-2.0-pro-exp-02-05"  # @param {type: "string"}
 
-
-
-
 # --- Setup (Logging, Secret Manager, BigQuery Client) ---
 
 def setup_logging():
