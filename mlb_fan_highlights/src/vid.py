@@ -111,6 +111,34 @@ class CloudVideoGenerator:
             logging.error(f"Unexpected parsing error: {str(e)}")
             raise
 
+    def _enhance_prompt(self, prompt: str) -> str:
+      """
+    Enhance the input prompt for an MLB podcast by adding vivid commentary flair.
+    
+    Parameters:
+        prompt (str): The original prompt text describing a game moment.
+    
+    Returns:
+        str: An enhanced prompt with additional narrative elements.
+    """
+     # Remove extra whitespace from the original prompt.
+      base_prompt = prompt.strip()
+    
+    # Ensure the prompt explicitly references MLB context.
+      if "MLB" not in base_prompt.upper():
+        base_prompt = f"MLB: {base_prompt}"
+    
+    # Append additional dramatic and descriptive commentary.
+      enhanced_prompt = (
+        f"{base_prompt} – In a game that defies expectations, witness heart-stopping plays, "
+        f"thunderous home runs, and strategic brilliance unfolding on the diamond. "
+        f"Feel the roar of the crowd, the crack of the bat, and the adrenaline-pumping tension "
+        f"of every inning. Get ready for an immersive, play-by-play narrative that brings America's pastime to life!"
+     )
+    
+      return enhanced_prompt
+
+
     def _generate_images(self, analysis: Dict[str, Any]) -> List[bytes]:
         logging.info("Starting image generation for key moments.")
         images = []

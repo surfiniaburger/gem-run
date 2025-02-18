@@ -7,14 +7,15 @@ from google.cloud import logging as cloud_logging
 from google.cloud import secretmanager_v1
 from google.cloud import storage
 from google.oauth2 import service_account
-import google.generativeai as genai
 import json
 from vertexai.preview.vision_models import ImageGenerationModel
+from google.genai.types import Tool, GoogleSearch, SafetySetting, GenerateContentConfig
 import json
 import uuid
 import time
 import logging
 from typing import List, Dict, Any
+from google import genai
 import enum
 from moviepy import (
     ImageClip,
@@ -25,42 +26,18 @@ from moviepy import (
 )
 import io
 import logging
-from google.cloud import secretmanager
-import google.cloud.logging
-from google.cloud.logging.handlers import CloudLoggingHandler
+import vertexai
 
-def setup_logging():
-    """Sets up Google Cloud Logging."""
-    client = google.cloud.logging.Client()
-    handler = CloudLoggingHandler(client)
-    logger = logging.getLogger('mongodb_vector_search')
-    logger.setLevel(logging.INFO)
-    logger.addHandler(handler)
-    return logger
+PROJECT_ID = "gem-rush-007"
+LOCATION = "us-central1"
+vertexai.init(project=PROJECT_ID, location=LOCATION)
 
-logger = setup_logging()
 
-def get_secret(project_id, secret_id, version_id="latest", logger=None):
-    """Retrieves a secret from Google Cloud Secret Manager."""
-    try:
-        client = secretmanager.SecretManagerServiceClient()
-        name = f"projects/{project_id}/secrets/{secret_id}/versions/{version_id}"
-        response = client.access_secret_version(request={"name": name})
-        return response.payload.data.decode("UTF-8")
-    except Exception as e:
-        if logger:
-            logger.error(f"Failed to retrieve secret {secret_id}: {str(e)}")
-        raise
+# Configure cloud logging at the top of the script, before other imports
+logging.basicConfig(level=logging.INFO)
+log_client = cloud_logging.Client()
+log_client.setup_logging()
 
-# Assuming you have your Google Cloud project ID set as an environment variable
-PROJECT_ID = "gem-rush-007"  # Replace with your actual project ID
-secret_id = "GEM-RUN-API-KEY"
-apiKey = get_secret(PROJECT_ID, secret_id, logger=logger)
-
-if apiKey:
-  GOOGLE_API_KEY = apiKey
-  genai.configure(api_key=GOOGLE_API_KEY)
-  
 
 class MLBAudioMixer:
     def __init__(self, project_id, secret_name):
@@ -310,9 +287,28 @@ class CloudVideoGenerator:
         
         # Initialize AI models with latest configurations
         logging.info("Initializing Vertex AI client and Imagen model")
+        self.genai_client = genai.Client(vertexai=True, project="gem-rush-007", location="us-central1")
         self.imagen_model = ImageGenerationModel.from_pretrained("imagen-3.0-fast-generate-001")
         
-
+        # Configure safety settings
+        self.safety_config = [
+            SafetySetting(
+                category="HARM_CATEGORY_DANGEROUS_CONTENT",
+                threshold="BLOCK_LOW_AND_ABOVE",
+            ),
+            SafetySetting(
+                category="HARM_CATEGORY_HARASSMENT",
+                threshold="BLOCK_LOW_AND_ABOVE",
+            ),
+            SafetySetting(
+                category="HARM_CATEGORY_HATE_SPEECH",
+                threshold="BLOCK_LOW_AND_ABOVE",
+            ),
+            SafetySetting(
+                category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                threshold="BLOCK_LOW_AND_ABOVE",
+            ),
+        ]
         logging.info("CloudVideoGenerator initialized successfully.")
 
     def _analyze_script(self, script_data: list) -> Dict[str, Any]:
@@ -339,21 +335,23 @@ class CloudVideoGenerator:
             "graphics_style": "dynamic/animated/static",
             "audio_intensity": 0-100
         }"""
-        
-        logging.info("Sending analysis request to Gemini 2.0 model.")
-        MODEL_ID = "gemini-2.0-pro-exp-02-05"
-        model = genai.GenerativeModel(
-        model_name=MODEL_ID,
-      
-        system_instruction=analysis_prompt
-         )
-        chat = model.start_chat(enable_automatic_function_calling=False) 
         try:
-           response = chat.send_message()
-           logging.info("Received response from Gemini 2.0.")
-           parsed_response = self._parse_gemini_response(response.text)
-           logging.info("Script analysis completed successfully.")
-           return parsed_response
+            logging.info("Sending analysis request to Gemini 1.5 model.")
+            response = self.genai_client.models.generate_content(
+                model="gemini-1.5-flash-002",
+                contents=[{"role": "user", "parts": [{"text": analysis_prompt + full_text}]}],
+                config=GenerateContentConfig(
+                    temperature=0.3,
+                    top_p=0.95,
+                    top_k=40,
+                    max_output_tokens=2048,
+                    safety_settings=self.safety_config
+                ),
+            )
+            logging.info("Received response from Gemini 2.0.")
+            parsed_response = self._parse_gemini_response(response.text)
+            logging.info("Script analysis completed successfully.")
+            return parsed_response
         
         except Exception as e:
             logging.error(f"Script analysis failed: {str(e)}")
@@ -374,6 +372,34 @@ class CloudVideoGenerator:
             logging.error(f"Unexpected parsing error: {str(e)}")
             raise
 
+    def _enhance_prompt(self, prompt: str) -> str:
+      """
+    Enhance the input prompt for an MLB podcast by adding vivid commentary flair.
+    
+    Parameters:
+        prompt (str): The original prompt text describing a game moment.
+    
+    Returns:
+        str: An enhanced prompt with additional narrative elements.
+    """
+     # Remove extra whitespace from the original prompt.
+      base_prompt = prompt.strip()
+    
+    # Ensure the prompt explicitly references MLB context.
+      if "MLB" not in base_prompt.upper():
+        base_prompt = f"MLB: {base_prompt}"
+    
+    # Append additional dramatic and descriptive commentary.
+      enhanced_prompt = (
+        f"{base_prompt} – In a game that defies expectations, witness heart-stopping plays, "
+        f"thunderous home runs, and strategic brilliance unfolding on the diamond. "
+        f"Feel the roar of the crowd, the crack of the bat, and the adrenaline-pumping tension "
+        f"of every inning. Get ready for an immersive, play-by-play narrative that brings America's pastime to life!"
+     )
+    
+      return enhanced_prompt
+
+
     def _generate_images(self, analysis: Dict[str, Any]) -> List[bytes]:
         logging.info("Starting image generation for key moments.")
         images = []
@@ -389,6 +415,8 @@ class CloudVideoGenerator:
                     lambda: self.imagen_model.generate_images(
                         prompt=enhanced_prompt,
                         aspect_ratio="16:9",
+                        number_of_images=1,
+                        safety_filter_level="block_some",
                     )
                 )
                 
@@ -405,7 +433,20 @@ class CloudVideoGenerator:
         logging.info("Completed image generation for all key moments.")
         return images
 
-    def _retry_with_backoff(self, operation, max_retries=3, initial_delay=1):
+    def _create_default_image(self) -> bytes:
+        """Creates a white default image with proper RGB format"""
+        logging.info("Creating a default image as fallback.")
+        from PIL import Image
+        from io import BytesIO
+
+        # Create RGB image instead of RGBA to avoid alpha channel issues
+        image = Image.new('RGB', (1920, 1080), (255, 255, 255))
+        img_byte_arr = BytesIO()
+        image.save(img_byte_arr, format='JPEG', quality=85)
+        logging.info("Default image created successfully.")
+        return img_byte_arr.getvalue()
+    
+    def _retry_with_backoff(self, operation, max_retries=6, initial_delay=5):
         """Execute operation with exponential backoff retry logic.
     
         Args:
@@ -528,3 +569,4 @@ class MLBVideoGenerator:
         logging.info("Video generation completed successfully.")
 
         return video_bytes
+    
