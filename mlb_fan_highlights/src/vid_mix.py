@@ -9,7 +9,17 @@ from google.cloud import storage
 from google.oauth2 import service_account
 import json
 from vertexai.preview.vision_models import ImageGenerationModel
-from google.genai.types import Tool, GoogleSearch, SafetySetting, GenerateContentConfig
+from google.genai.types import (
+    FunctionDeclaration,
+    GenerateContentConfig,
+    GoogleSearch,
+    Part,
+    Retrieval,
+    SafetySetting,
+    Tool,
+    ToolCodeExecution,
+    VertexAISearch,
+)
 import json
 import uuid
 import time
@@ -17,6 +27,7 @@ import logging
 from typing import List, Dict, Any
 from google import genai
 import enum
+import asyncio
 from moviepy import (
     ImageClip,
     CompositeVideoClip,
@@ -27,6 +38,9 @@ from moviepy import (
 import io
 import logging
 import vertexai
+import random
+import re
+import json5
 
 PROJECT_ID = "gem-rush-007"
 LOCATION = "us-central1"
@@ -278,20 +292,19 @@ class MLBAudioMixer:
         
         return audio_bytes
 
-
-
 class CloudVideoGenerator:
     def __init__(self, gcs_handler):
         self.gcs_handler = gcs_handler
         self.parent = f"projects/{gcs_handler.project_id}/locations/us-central1"
-        
+
         # Initialize AI models with latest configurations
         logging.info("Initializing Vertex AI client and Imagen model")
         self.genai_client = genai.Client(vertexai=True, project="gem-rush-007", location="us-central1")
         self.imagen_model = ImageGenerationModel.from_pretrained("imagen-3.0-fast-generate-001")
-        
+        self.MODEL_ID = "gemini-2.0-pro-exp-02-05"  # Use Gemini 2.0
+
         # Configure safety settings
-        self.safety_config = [
+        self.safety_config = [  # Use self.safety_config for consistency
             SafetySetting(
                 category="HARM_CATEGORY_DANGEROUS_CONTENT",
                 threshold="BLOCK_LOW_AND_ABOVE",
@@ -315,44 +328,87 @@ class CloudVideoGenerator:
         """Analyze podcast script using Gemini 2.0 with enhanced configurations."""
         logging.info("Starting script analysis.")
         full_text = " ".join([segment['text'] for segment in script_data])
-        logging.debug(f"Full script text: {full_text[:100]}...")  # Log first 100 characters
+        logging.debug(f"Full script text: {full_text[:100]}...")
 
-        analysis_prompt = """Analyze this baseball podcast script and generate:
+        # Use the system instruction and prompt directly (more efficient)
+        system_instruction = """
+You are a video editor assistant. Analyze the provided baseball podcast script and produce a JSON output containing video editing suggestions. The podcast summarizes a baseball game. All game data is typically sourced from a stats API (like the MLB Stats API, as mentioned in the example, but adapt to any source). The podcast starts at 00:00:00.
+
+Follow this chain of thought:
+
+1. **Identify Key Moments:** Read the podcast script and identify the most important events (e.g., hits, runs, home runs, errors, pitching changes, game start, game end, key player stats, mentions of specific innings). These will be the basis of your video segments. Prioritize moments that significantly impact the game's score or momentum.
+
+2. **Process Each Key Moment:** For each key moment identified in step 1, create a dictionary with the following keys and values:
+    *  `"timestamp"`: Estimate the time the event is discussed in the podcast script. The podcast begins at 00:00:00. Express the timestamp in "HH:MM:SS" format (Hours:Minutes:Seconds). Increment the time logically based on the flow of the conversation. Assume each speaker's turn takes approximately 10-20 seconds, but adjust based on the length of their dialogue.
+    *  `"description"`: Briefly describe the key moment (e.g., "Player X hits a single", "Team Y scores a run", "Pitcher Z is replaced"). Use the names provided in the script.
+    *  `"visual_prompt"`: Provide a concise prompt suitable for an image generation model (like Imagen) to create a visual representing this key moment. Be specific about the players (using their names), the action, the team uniforms (if identifiable), and the setting (e.g., "Close-up of Player X hitting a baseball, Team Y uniform, daytime game, baseball stadium in background"). If a player's name isn't given, use a generic term like "batter" or "pitcher". Focus on the *action* and key visual elements.  If the team is mentioned, include it in the prompt.
+    *  `"duration"`: Suggest a duration, in seconds, for this video segment. Keep all durations at 5 seconds, as requested.
+    * `"transition"`: Suggest a transition effect to the *next* segment. Choose from "fade", "cut", or "zoom". Use "cut" for abrupt changes, "fade" for smoother transitions, and "zoom" to emphasize a particular detail.
+
+3. **Determine Overall Theme:** Based on the entire podcast script, suggest an overall theme for the video. Choose *one* of the following:
+    *  `"modern"`: A clean, contemporary style.
+    *  `"retro"`: A vintage, old-school look.
+    *  `"dramatic"`: An intense, high-energy style. Consider using "dramatic" if the game was close or had significant turning points.
+
+4. **Define Color Palette:** Based on the chosen `theme`, suggest a color palette.  If team colors are clearly identifiable from the podcast, try to incorporate them subtly. Otherwise, choose colors appropriate to the theme. Provide hex color codes (e.g., "#RRGGBB") for:
+    *  `"primary"`: The main color.
+    *  `"secondary"`: A complementary color.
+    *  `"accent"`: A color used for highlights and emphasis.
+
+5. **Choose Graphics Style:** Based on the `theme` and the content, select a graphics style. Choose *one* of the following:
+    *  `"dynamic"`: Fast-paced, with moving elements. Suitable for exciting games.
+    *  `"animated"`: Uses animations to illustrate events. Good for explaining complex plays.
+    *  `"static"`: Uses still images and text. Best for slower-paced analysis or games with less action.
+
+6. **Suggest Audio Intensity:** On a scale of 0-100 (0 being silent, 100 being very loud), suggest an overall audio intensity level for the video. Consider the excitement level of the game and the commentary. Higher intensity for exciting games, lower for more analytical discussions.
+
+Finally, output your suggestions in the following JSON format:
+
+```json
+{
+    "key_moments": [
         {
-            "key_moments": [{
-                "timestamp": "HH:MM:SS",
-                "description": "text",
-                "visual_prompt": "Imagen prompt",
-                "duration": 5,
-                "transition": "fade/cut/zoom"
-            }],
-            "theme": "modern/retro/dramatic",
-            "color_palette": {
-                "primary": "#hex",
-                "secondary": "#hex",
-                "accent": "#hex"
-            },
-            "graphics_style": "dynamic/animated/static",
-            "audio_intensity": "0-100"
-        }"""
+            "timestamp": "HH:MM:SS",
+            "description": "text",
+            "visual_prompt": "Imagen prompt",
+            "duration": 5,
+            "transition": "fade/cut/zoom"
+        },
+        ...
+    ],
+    "theme": "modern/retro/dramatic",
+    "color_palette": {
+        "primary": "#hex",
+        "secondary": "#hex",
+        "accent": "#hex"
+    },
+    "graphics_style": "dynamic/animated/static",
+    "audio_intensity": "0-100"
+}
+"""
+
+
         try:
-            logging.info("Sending analysis request to Gemini 1.5 model.")
+            logging.info("Sending analysis request to Gemini 2.0 model.")
             response = self.genai_client.models.generate_content(
-                model="gemini-1.5-flash-002",
-                contents=[{"role": "user", "parts": [{"text": analysis_prompt + full_text}]}],
+                model=self.MODEL_ID,
+                contents=[{"role": "user", "parts": [{"text": full_text}]}],
                 config=GenerateContentConfig(
+                    system_instruction=system_instruction,
                     temperature=0.3,
                     top_p=0.95,
-                    top_k=40,
+                    top_k=20,
                     max_output_tokens=2048,
-                    safety_settings=self.safety_config
+                    safety_settings=self.safety_config,
+                    candidate_count=1,
+                    seed=5,
                 ),
             )
             logging.info("Received response from Gemini 2.0.")
             parsed_response = self._parse_gemini_response(response.text)
             logging.info("Script analysis completed successfully.")
             return parsed_response
-        
+
         except Exception as e:
             logging.error(f"Script analysis failed: {str(e)}")
             raise
@@ -361,77 +417,92 @@ class CloudVideoGenerator:
         """Parse and validate Gemini response with error handling."""
         logging.info("Parsing Gemini response.")
         try:
-            clean_text = raw_response.strip().replace("```json", "").replace("```", "")
-            parsed = json.loads(clean_text)
+            # Use a regular expression to find the JSON content
+            match = re.search(r"```(json)?(.*)```", raw_response, re.DOTALL)
+            if match:
+                json_str = match.group(2).strip()
+            else:
+                logging.warning("No JSON block found in response.")
+                print("Raw response:", raw_response)  # Debug: Print raw response
+                raise ValueError("No JSON block found in response.")
+
+            # Check if JSON is incomplete
+            if not json_str.endswith("}"):
+                logging.warning("Incomplete JSON detected.  Generation might have been cut off.")
+                print("Raw response:", raw_response)
+                # You could try re-prompting here, or handle the partial JSON
+                raise ValueError("Incomplete JSON detected.")
+
+            parsed = json.loads(json_str)
             logging.info("Successfully parsed Gemini response.")
             return parsed
         except json.JSONDecodeError as e:
             logging.error(f"JSON parsing error: {str(e)}")
+            print("Raw response:", raw_response)  # Debug: Print raw response
+            print("Extracted JSON string:", json_str)  # Print Extracted string
             raise ValueError("Failed to parse AI response")
-        except Exception as e:
-            logging.error(f"Unexpected parsing error: {str(e)}")
-            raise
+        except ValueError as ve:
+            raise ve  # Re-Raise ValueErrors
 
     def _enhance_prompt(self, prompt: str) -> str:
-      """
-    Enhance the input prompt for an MLB podcast by adding vivid commentary flair.
-    
-    Parameters:
-        prompt (str): The original prompt text describing a game moment.
-    
-    Returns:
-        str: An enhanced prompt with additional narrative elements.
-    """
-     # Remove extra whitespace from the original prompt.
-      base_prompt = prompt.strip()
-    
-    # Ensure the prompt explicitly references MLB context.
-      if "MLB" not in base_prompt.upper():
-        base_prompt = f"MLB: {base_prompt}"
-    
-    # Append additional dramatic and descriptive commentary.
-      enhanced_prompt = (
-        f"{base_prompt} – In a game that defies expectations, witness heart-stopping plays, "
-        f"thunderous home runs, and strategic brilliance unfolding on the diamond. "
-        f"Feel the roar of the crowd, the crack of the bat, and the adrenaline-pumping tension "
-        f"of every inning. Get ready for an immersive, play-by-play narrative that brings America's pastime to life!"
-     )
-    
-      return enhanced_prompt
+        """
+        Enhance the input prompt for an MLB podcast by adding vivid commentary flair.
 
+        Parameters:
+            prompt (str): The original prompt text describing a game moment.
 
-    def _generate_images(self, analysis: Dict[str, Any]) -> List[bytes]:
+        Returns:
+            str: An enhanced prompt with additional narrative elements.
+        """
+        # Remove extra whitespace from the original prompt.
+        base_prompt = prompt.strip()
+
+        # Ensure the prompt explicitly references MLB context.
+        if "MLB" not in base_prompt.upper():
+            base_prompt = f"MLB: {base_prompt}"
+
+        # Append additional dramatic and descriptive commentary.
+        enhanced_prompt = (
+            f"{base_prompt} – In a game that defies expectations, witness heart-stopping plays, "
+            f"thunderous home runs, and strategic brilliance unfolding on the diamond. "
+            f"Feel the roar of the crowd, the crack of the bat, and the adrenaline-pumping tension "
+            f"of every inning. Get ready for an immersive, play-by-play narrative that brings America's pastime to life!"
+        )
+
+        return enhanced_prompt
+
+    def _generate_images(self, analysis: Dict[str, Any], delay_seconds=20) -> List[bytes]:
+        """Generates images for each key moment with a delay."""
         logging.info("Starting image generation for key moments.")
         images = []
         for idx, moment in enumerate(analysis['key_moments']):
             logging.info(f"Generating image for key moment {idx + 1}: {moment.get('description', 'No description')}")
             try:
-                # Add prompt engineering/enhancement
                 enhanced_prompt = self._enhance_prompt(moment['visual_prompt'])
                 logging.debug(f"Enhanced prompt: {enhanced_prompt}")
-                
-                # Add better retry strategy
-                response = self._retry_with_backoff(
-                    lambda: self.imagen_model.generate_images(
-                        prompt=enhanced_prompt,
-                        aspect_ratio="16:9",
-                        number_of_images=1,
-                        safety_filter_level="block_some",
-                    )
+
+                response = self.imagen_model.generate_images(
+                    prompt=enhanced_prompt,
+                    aspect_ratio="16:9",
+                    number_of_images=1,
+                    safety_filter_level="block_some",
                 )
-                
+
                 if not response.images:
-                    raise ValueError("Empty image response")
-                    
-                logging.info(f"Image generation successful for moment {idx + 1}.")
+                   raise ValueError("Empty image response")
+
                 images.append(response.images[0]._image_bytes)
-                
+                logging.info(f"Image generation successful for moment {idx+1}. Waiting {delay_seconds} seconds.")
+                time.sleep(delay_seconds) #Wait between image generations.
+
             except Exception as e:
                 logging.warning(f"Image generation failed for moment {idx + 1}: {str(e)}. Using default image.")
                 default_image = self._create_default_image()
                 images.append(default_image)
+
         logging.info("Completed image generation for all key moments.")
         return images
+
 
     def _create_default_image(self) -> bytes:
         """Creates a white default image with proper RGB format"""
@@ -445,33 +516,6 @@ class CloudVideoGenerator:
         image.save(img_byte_arr, format='JPEG', quality=85)
         logging.info("Default image created successfully.")
         return img_byte_arr.getvalue()
-    
-    def _retry_with_backoff(self, operation, max_retries=6, initial_delay=5):
-        """Execute operation with exponential backoff retry logic.
-    
-        Args:
-            operation: Callable to execute
-            max_retries: Maximum number of retry attempts
-            initial_delay: Initial delay in seconds
-        """
-        logging.info("Starting retry with exponential backoff.")
-        last_exception = None
-        delay = initial_delay
-
-        for attempt in range(max_retries):
-            try:
-                result = operation()
-                logging.info(f"Operation succeeded on attempt {attempt + 1}.")
-                return result
-            except Exception as e:
-                last_exception = e
-                logging.warning(f"Attempt {attempt + 1}/{max_retries} failed: {str(e)}")
-                if attempt < max_retries - 1:
-                    logging.info(f"Waiting for {delay} seconds before retrying.")
-                    time.sleep(delay)
-                    delay *= 2  # Exponential backoff
-        logging.error("Maximum retry attempts reached. Operation failed.")
-        raise last_exception
 
 class MLBVideoGenerator:
     def __init__(self, audio_mixer: MLBAudioMixer, video_generator: CloudVideoGenerator):
@@ -507,7 +551,7 @@ class MLBVideoGenerator:
         logging.info("Creating image clips from generated images.")
         image_clips = []
         for i, (image_bytes, moment) in enumerate(zip(images, analysis['key_moments'])):
-            duration = moment.get('duration', 5)  # Default to 5 seconds if not specified
+            duration = moment.get('duration', 25)  # Default to 5 seconds if not specified
             logging.info(f"Creating ImageClip for moment {i+1} with duration {duration}s.")
             try:
                 img_clip = ImageClip(io.BytesIO(image_bytes), duration=duration)
