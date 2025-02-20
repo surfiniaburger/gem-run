@@ -16,6 +16,7 @@ import logging
 from typing import List, Dict, Any
 from google.cloud import logging as cloud_logging
 import re  # Import the regular expression module
+from image import process_prompts_and_generate_images
 
 # Configure cloud logging at the top of the script, before other imports
 logging.basicConfig(level=logging.INFO)
@@ -167,3 +168,140 @@ def _parse_gemini_response(raw_response: str) -> Dict[str, Any]:
         raise ve  # Re-Raise ValueErrors
 
 print(_parse_gemini_response(response.text))
+
+parsed_json = _parse_gemini_response(response.text)
+
+prompts_to_enhance = [item["visual_prompt"] for item in parsed_json["key_moments"]]
+
+enhancement_prompt = """
+You are a creative prompt engineer for a visual generation model.  I will give you a list of prompts that describe scenes from a baseball game.  Your task is to enhance each prompt, making it more vivid, descriptive, and suitable for generating high-quality, engaging images. Add details about the stadium environment, the weather, the time of day, the camera angle, and the overall atmosphere.  Focus on capturing the energy and excitement of a Major League Baseball game. Output the enhanced prompts as a numbered list, where each enhanced prompt is on a new line and prepended by number in the format "1. ".
+
+Original Prompts:
+""" + "\n".join(prompts_to_enhance)
+
+print(enhancement_prompt)
+
+#Using the initialized client from above
+enhanced_response = client.models.generate_content(
+    model=MODEL_ID,
+    contents=enhancement_prompt,
+    config=GenerateContentConfig(
+        temperature=0.7,  # Slightly higher temperature for more creativity
+        top_p=0.95,
+        top_k=40,
+        candidate_count=1,
+        max_output_tokens=4096, #increase max output tokens
+        safety_settings=safety_settings
+    ),
+)
+
+print(enhanced_response.text)
+
+
+def _parse_enhanced_prompts(raw_response: str) -> List[str]:
+    """Extracts a list of enhanced prompts from the Gemini response."""
+    try:
+        # Regular expression to find numbered list items.
+        # This regex handles leading/trailing whitespace and different numbering styles.
+        matches = re.findall(r"^\s*(\d+)\.\s*(.*)", raw_response, re.MULTILINE)
+
+        # Check for incomplete list.
+        if not matches:
+            if "1." in raw_response: # Check if the numbering just didn't complete
+                logging.warning("Incomplete numbered list detected. Generation may have been cut off.")
+                print("Raw Response", raw_response)
+            else:
+                logging.warning("No numbered list found in the response")
+                print("Raw Response", raw_response)
+            raise ValueError("No numbered list found in the response.")
+
+        # Sort the matches by number (important in case of out-of-order generation)
+        # and extract just the prompt text.
+        enhanced_prompts = [prompt for _, prompt in sorted(matches, key=lambda x: int(x[0]))]
+
+        return enhanced_prompts
+
+    except Exception as e:
+        logging.error(f"Error parsing enhanced prompts: {e}")
+        print("Raw Response:", raw_response) #Print raw response.
+        raise ValueError(f"Failed to parse enhanced prompts: {e}")
+
+enhanced_prompts = _parse_enhanced_prompts(enhanced_response.text)
+print(enhanced_prompts)
+def decompose_and_vary_prompts(prompts: List[str]) -> List[str]:
+    """Decomposes complex prompts and generates variations, focusing on static scenes."""
+    new_prompts = []
+    for prompt in prompts:
+        parts = re.split(r"(?i)\s+Then,\s+|\s+and\s+", prompt)
+
+        for part in parts:
+            part = part.strip()
+
+            # --- Action Prompts (e.g., hitting, homering) ---
+            if "hitting" in part.lower() or "homering" in part.lower():
+                # Variation 1: Batter in a batting stance (very generic)
+                new_prompts.append("Baseball player in batting stance, daytime game, baseball stadium.")
+
+                # Variation 2: Focus on the uniform and stadium (if team is mentioned)
+                match = re.search(r"(\w+(?:\s+\w+)?)\s+uniform", part)  # Find team name
+                if match:
+                    team_name = match.group(1)
+                    new_prompts.append(f"{team_name} baseball uniform, daytime game, baseball stadium.")
+
+                #Variation 3: A posed baseball shot of batter
+                if "hitting a home run" in part.lower():
+                    new_prompts.append("Baseball player, after hitting a home run, with bat, baseball stadium in background, daytime")
+
+            # --- Scoreboard Prompts ---
+            elif "scoreboard" in part.lower():
+                new_prompts.append(part)  # Keep the original (it works!)
+                new_prompts.append("Baseball scoreboard, daytime game, baseball stadium.")  # More general version
+                # Extract teams and scores of original prompt and add it to variation
+                match = re.search(r"showing final score:\s*([\w\s]+)\s*(\d+),\s*([\w\s]+)\s*(\d+)", part)
+                if match:
+                    team1, score1, team2, score2 = match.groups()
+                    new_prompts.append(f"Scoreboard showing {team1} {score1}, {team2} {score2}")
+
+
+            # --- Player Stats Prompts ---
+            elif "Graphic displaying" in part.lower():
+                # Variation 1:  "Statistics card"
+                new_prompts.append("Baseball player statistics card, close-up.")
+
+                # Variation 2: "Scoreboard with player stats" (more specific)
+                match = re.search(r"Graphic displaying\s+([\w\s']+)'s statistics:\s*(.*)", part) #get player and stats
+                if match:
+                    player_name, stats = match.groups()
+                    new_prompts.append(f"Scoreboard showing {player_name}'s statistics: {stats}")
+
+
+            # --- Other Prompts ---
+            else:
+                new_prompts.append(part)  # Keep any other prompts as-is (for now)
+
+    return new_prompts
+
+# Extract original prompts *before* generating enhanced ones
+original_prompts = [item["visual_prompt"] for item in parsed_json["key_moments"]]
+
+if len(enhanced_prompts) == len(parsed_json["key_moments"]):
+    for i, moment in enumerate(parsed_json["key_moments"]):
+        moment["visual_prompt"] = enhanced_prompts[i]
+else:
+    print("Error: Number of enhanced prompts does not match number of key moments.")
+    # Handle the error - either use original prompts, skip enhancement, or re-prompt.
+
+print(json.dumps(parsed_json, indent=4)) #pretty print
+
+if len(enhanced_prompts) == len(parsed_json["key_moments"]):
+    prompts_for_image_gen = enhanced_prompts
+else:
+    print("Using original prompts due to enhanced prompt mismatch.")
+    prompts_for_image_gen = original_prompts
+
+
+decomposed_prompts = decompose_and_vary_prompts(prompts_for_image_gen)
+print(f"Original prompts: {len(prompts_for_image_gen)}")
+print(f"Decomposed and varied prompts: {len(decomposed_prompts)}") # See how many we have now
+clips = process_prompts_and_generate_images(decomposed_prompts)
+clips
