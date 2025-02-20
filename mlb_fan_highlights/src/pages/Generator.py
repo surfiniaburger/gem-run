@@ -1,7 +1,7 @@
 import streamlit as st
 from surfire2 import generate_mlb_analysis
 from pod import generate_mlb_podcast_with_audio
-from taser import generate_spanish_audio
+from pall import generate_spanish_audio
 from jap import generate_japanese_audio
 from firebase_config import get_auth, get_firestore
 from datetime import datetime
