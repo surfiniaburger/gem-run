@@ -40,7 +40,18 @@ import logging
 import vertexai
 import random
 import re
-import json5
+
+
+import tempfile
+import os
+from PIL import Image
+from io import BytesIO
+import time
+import logging
+import re
+
+
+
 
 PROJECT_ID = "gem-rush-007"
 LOCATION = "us-central1"
@@ -292,6 +303,8 @@ class MLBAudioMixer:
         
         return audio_bytes
 
+
+
 class CloudVideoGenerator:
     def __init__(self, gcs_handler):
         self.gcs_handler = gcs_handler
@@ -300,7 +313,7 @@ class CloudVideoGenerator:
         # Initialize AI models with latest configurations
         logging.info("Initializing Vertex AI client and Imagen model")
         self.genai_client = genai.Client(vertexai=True, project="gem-rush-007", location="us-central1")
-        self.imagen_model = ImageGenerationModel.from_pretrained("imagen-3.0-fast-generate-001")
+        self.imagen_model = ImageGenerationModel.from_pretrained("imagen-3.0-fast-generate-001")  # Use fast model
         self.MODEL_ID = "gemini-2.0-pro-exp-02-05"  # Use Gemini 2.0
 
         # Configure safety settings
@@ -406,7 +419,6 @@ Finally, output your suggestions in the following JSON format:
             )
             logging.info("Received response from Gemini 2.0.")
             parsed_response = self._parse_gemini_response(response.text)
-            logging.info("Script analysis completed successfully.")
             return parsed_response
 
         except Exception as e:
@@ -444,128 +456,79 @@ Finally, output your suggestions in the following JSON format:
         except ValueError as ve:
             raise ve  # Re-Raise ValueErrors
 
-    def _enhance_prompt(self, prompt: str) -> str:
-        """
-        Enhance the input prompt for an MLB podcast by adding vivid commentary flair.
-
-        Parameters:
-            prompt (str): The original prompt text describing a game moment.
-
-        Returns:
-            str: An enhanced prompt with additional narrative elements.
-        """
-        # Remove extra whitespace from the original prompt.
-        base_prompt = prompt.strip()
-
-        # Ensure the prompt explicitly references MLB context.
-        if "MLB" not in base_prompt.upper():
-            base_prompt = f"MLB: {base_prompt}"
-
-        # Append additional dramatic and descriptive commentary.
-        enhanced_prompt = (
-            f"{base_prompt} – In a game that defies expectations, witness heart-stopping plays, "
-            f"thunderous home runs, and strategic brilliance unfolding on the diamond. "
-            f"Feel the roar of the crowd, the crack of the bat, and the adrenaline-pumping tension "
-            f"of every inning. Get ready for an immersive, play-by-play narrative that brings America's pastime to life!"
-        )
-
-        return enhanced_prompt
-
-    def _generate_images(self, analysis: Dict[str, Any], delay_seconds=20) -> List[bytes]:
-        """Generates images for each key moment with a delay."""
+   
+    def _generate_images(self, analysis: Dict[str, Any], delay_seconds=30) -> List[bytes]:
+        """Generates images for each key moment using the external function."""
         logging.info("Starting image generation for key moments.")
-        images = []
+        images_data = []
+
         for idx, moment in enumerate(analysis['key_moments']):
             logging.info(f"Generating image for key moment {idx + 1}: {moment.get('description', 'No description')}")
             try:
                 enhanced_prompt = self._enhance_prompt(moment['visual_prompt'])
                 logging.debug(f"Enhanced prompt: {enhanced_prompt}")
-
-                response = self.imagen_model.generate_images(
-                    prompt=enhanced_prompt,
-                    aspect_ratio="16:9",
-                    number_of_images=1,
-                    safety_filter_level="block_some",
-                )
-
-                if not response.images:
-                   raise ValueError("Empty image response")
-
-                images.append(response.images[0]._image_bytes)
-                logging.info(f"Image generation successful for moment {idx+1}. Waiting {delay_seconds} seconds.")
-                time.sleep(delay_seconds) #Wait between image generations.
+                image_data = generate_and_save_image(enhanced_prompt, self.imagen_model, delay_seconds)
+                if image_data:
+                    images_data.append(image_data)
+                else:
+                    logging.warning(f"Image generation failed for moment {idx + 1}. Using default image.")
+                    images_data.append(self._create_default_image())
 
             except Exception as e:
-                logging.warning(f"Image generation failed for moment {idx + 1}: {str(e)}. Using default image.")
-                default_image = self._create_default_image()
-                images.append(default_image)
+                logging.warning(f"An unexpected error occurred for moment {idx + 1}: {e}. Using default image.")
+                images_data.append(self._create_default_image())
 
-        logging.info("Completed image generation for all key moments.")
-        return images
-
+        return images_data
 
     def _create_default_image(self) -> bytes:
         """Creates a white default image with proper RGB format"""
         logging.info("Creating a default image as fallback.")
-        from PIL import Image
-        from io import BytesIO
-
         # Create RGB image instead of RGBA to avoid alpha channel issues
         image = Image.new('RGB', (1920, 1080), (255, 255, 255))
         img_byte_arr = BytesIO()
         image.save(img_byte_arr, format='JPEG', quality=85)
-        logging.info("Default image created successfully.")
         return img_byte_arr.getvalue()
 
 class MLBVideoGenerator:
-    def __init__(self, audio_mixer: MLBAudioMixer, video_generator: CloudVideoGenerator):
+    def __init__(self, audio_mixer, video_generator: CloudVideoGenerator):  # Removed type hint for audio_mixer
         self.audio_mixer = audio_mixer
         self.video_generator = video_generator
         logging.info("MLBVideoGenerator initialized.")
 
     def generate_video(self, script_data: List[Dict[str, Any]], include_background: bool = True) -> bytes:
         """
-        Generates a video from a script, using Imagen for images and MoviePy for video editing.
-
-        Args:
-            script_data: List of dictionaries, each containing 'text', 'speaker', and 'audio' (as bytes).
-            include_background: Whether to include background audio/music.
-
-        Returns:
-            Bytes representing the final video file (MP4).
+        Generates a video from a script.
         """
         logging.info("Starting video generation process.")
 
-        logging.info("Analyzing script for key moments and visual prompts.")
         analysis = self.video_generator._analyze_script(script_data)
         if not analysis or 'key_moments' not in analysis:
             logging.error("Script analysis failed or returned incomplete data.")
             raise ValueError("Script analysis failed.")
 
-        logging.info("Generating images based on analysis.")
-        images = self.video_generator._generate_images(analysis)
-        if not images:
+        images_data = self.video_generator._generate_images(analysis)
+        if not images_data:
             logging.error("Image generation failed.")
             raise ValueError("Image generation failed.")
 
-        logging.info("Creating image clips from generated images.")
         image_clips = []
-        for i, (image_bytes, moment) in enumerate(zip(images, analysis['key_moments'])):
-            duration = moment.get('duration', 25)  # Default to 5 seconds if not specified
-            logging.info(f"Creating ImageClip for moment {i+1} with duration {duration}s.")
-            try:
-                img_clip = ImageClip(io.BytesIO(image_bytes), duration=duration)
-                image_clips.append(img_clip)
-            except Exception as e:
-                logging.error(f"Failed to create ImageClip for moment {i+1}: {e}")
-                #  Fallback:  Create a 5-second black clip.  Important for error handling.
+        for i, (image_bytes, moment) in enumerate(zip(images_data, analysis['key_moments'])):
+            duration = moment.get('duration', 5)
+            if image_bytes:
+                try:
+                    img_clip = ImageClip(image_bytes, duration=duration)  # Directly use bytes
+                    image_clips.append(img_clip)
+                except Exception as e:
+                    logging.error(f"Failed to create ImageClip for moment {i+1}: {e}")
+                    image_clips.append(ImageClip("black", duration=duration, color=(0, 0, 0)))
+            else:  # Handle potential None (though _generate_images should use default)
+                logging.warning(f"No image data for moment {i+1}. Using black clip.")
                 image_clips.append(ImageClip("black", duration=duration, color=(0, 0, 0)))
 
-        logging.info("Concatenating image clips to create video sequence.")
 
         if not image_clips:
            logging.warning("No image clips available. Returning an empty video.")
-           return b"" # Return empty bytes to indicate no video generated
+           return b"" # Return empty bytes
 
         video_clip = concatenate_videoclips(image_clips, method="compose")
         logging.info(f"Video clip created with total duration: {video_clip.duration}s")
@@ -581,7 +544,7 @@ class MLBVideoGenerator:
         audio_buffer = io.BytesIO(mixed_audio_bytes)
         audio_clip = AudioFileClip(audio_buffer)
 
-        # Ensure video and audio durations match. VERY IMPORTANT.
+        # Ensure video and audio durations match.
         if video_clip.duration > audio_clip.duration:
             logging.warning("Video is longer than audio. Trimming video.")
             video_clip = video_clip.subclip(0, audio_clip.duration)
@@ -589,28 +552,47 @@ class MLBVideoGenerator:
             logging.warning("Audio is longer than video.  Trimming audio.")
             audio_clip = audio_clip.subclip(0, video_clip.duration)
 
-        logging.info("Setting audio to video clip.")
         video_clip = video_clip.set_audio(audio_clip)
 
         logging.info("Writing final video to file.")
         video_buffer = io.BytesIO()
         try:
-            video_clip.write_videofile("output.mp4", fps=24, codec="libx264", audio_codec="aac", temp_audiofile="temp-audio.m4a", remove_temp=True) #Added temporary audiofile
-            with open("output.mp4", "rb") as f:
-               video_bytes = f.read()
+            # Write to buffer and get bytes
+            video_clip.write_videofile(video_buffer, fps=24, codec="libx264", audio_codec="aac", temp_audiofile="temp-audio2.m4a", remove_temp=True, verbose=False, logger=None)
+            video_bytes = video_buffer.getvalue()
 
         except Exception as e:
               logging.error(f"Error writing video file: {str(e)}")
               raise
         finally:
-            # Clean Up: Close all clips to release resources
+            # Clean Up.
             video_clip.close()
             if 'audio_clip' in locals():
                audio_clip.close()
             for clip in image_clips:
                clip.close()
-               
-        logging.info("Video generation completed successfully.")
-
         return video_bytes
-    
+
+# ---  Standalone generate_and_save_image function (for completeness) ---
+def generate_and_save_image(prompt, model, delay_seconds=30):
+    try:
+        response = model.generate_images(prompt=prompt)
+        image = response.images[0]
+
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+             temp_filename = f.name
+             image.save(temp_filename)
+             # the image is now saved into the temporary file.
+             logging.info(f"Image for prompt '{prompt}' saved to temporary file: {temp_filename}")
+             f.seek(0) #important
+             image_data = f.read()
+        os.remove(temp_filename)
+        logging.info(f"Temporary file {temp_filename} removed.")
+
+        logging.info(f"Waiting {delay_seconds} seconds before next prompt...")
+        time.sleep(delay_seconds)
+        return image_data
+
+    except Exception as e:
+        logging.error(f"Error generating or saving image for prompt '{prompt}': {e}")
+        return None
