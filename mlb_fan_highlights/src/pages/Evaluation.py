@@ -13,6 +13,11 @@ from vertexai.preview.evaluation.metrics import (
 import time
 from google.api_core.exceptions import ResourceExhausted
 import streamlit as st  # Import streamlit
+from genseng import MetricsStorage
+
+# Add BigQuery Configuration
+BQ_PROJECT_ID = "gem-rush-007"
+BQ_DATASET_ID = "mlb_agent_evaluation"
 
 
 # --- Streamlit Page Configuration ---
@@ -23,6 +28,15 @@ PROJECT_ID = "gem-rush-007"  # YOUR PROJECT ID
 LOCATION = "us-central1"
 STAGING_BUCKET = "gs://gem-rush-007-reasoning-engine"
 vertexai.init(project=PROJECT_ID, location=LOCATION, staging_bucket=STAGING_BUCKET)
+
+# Initialize BigQuery metrics storage
+@st.cache_resource
+def get_metrics_storage():
+    """Create or get the MetricsStorage instance."""
+    return MetricsStorage(BQ_PROJECT_ID, BQ_DATASET_ID, max_retries=5)
+
+metrics_storage = get_metrics_storage()
+
 
 # --- Prepare Evaluation Datasets ---
 single_tool_eval_data = {
@@ -351,6 +365,49 @@ def run_evaluation(agent, eval_df, metrics, experiment_name, experiment_run_name
         )
     return eval_result
 
+
+def modify_run_evaluation(agent, eval_df, metrics, experiment_name, 
+                         experiment_run_name_prefix, evaluation_type: str,
+                         metrics_storage: MetricsStorage):
+    """Modified run_evaluation function that includes BigQuery storage."""
+    experiment_run_name = f"{experiment_run_name_prefix}-{uuid.uuid4()}"
+    eval_task = EvalTask(
+        dataset=eval_df,
+        metrics=metrics,
+        experiment=experiment_name,
+    )
+
+    def call_evaluate():
+        return eval_task.evaluate(runnable=agent, experiment_run_name=experiment_run_name)
+
+    eval_result = retry_with_backoff(call_evaluate)
+
+    # Save metrics to BigQuery with streaming inserts
+    save_success = metrics_storage.save_evaluation_results(
+        eval_result=eval_result,
+        experiment_name=experiment_name,
+        evaluation_type=evaluation_type,
+        experiment_run_name=experiment_run_name 
+    )
+
+    if not save_success:
+        st.warning("Some metrics may not have been saved to BigQuery. Check the logs for details.")
+
+    # Original visualization code
+    st.markdown("## Evaluation Report")
+    display_eval_report(eval_result)
+    st.markdown("## Detailed Metrics")
+    display_dataframe_rows(eval_result.metrics_table, num_rows=5, drilldown=True)
+    
+    if any("trajectory" in str(metric).lower() for metric in metrics):
+        plot_bar_plot(
+            eval_result,
+            title="Trajectory Metrics",
+            metrics=[f"{metric}/mean" for metric in trajectory_metrics],
+        )
+    
+    return eval_result
+
 # --- Run Evaluations ---
 EXPERIMENT_NAME = "mlb-agent-evaluation"
 
@@ -360,16 +417,56 @@ option = st.sidebar.selectbox("Choose Evaluation Type",
 
 if option == "Single Tool":
     st.header("Single Tool Evaluation")
-    eval_result = run_evaluation(remote_agent, single_tool_eval_df, single_tool_usage_metrics, EXPERIMENT_NAME, "single-tool")
+    eval_result = modify_run_evaluation(
+        remote_agent, 
+        single_tool_eval_df, 
+        single_tool_usage_metrics, 
+        EXPERIMENT_NAME, 
+        "single-tool",
+        "Single Tool",
+        metrics_storage
+    )
 elif option == "Trajectory":
     st.header("Trajectory Evaluation")
-    eval_result = run_evaluation(remote_agent, trajectory_eval_df, trajectory_metrics, EXPERIMENT_NAME, "trajectory")
+    eval_result = modify_run_evaluation(
+        remote_agent, 
+        trajectory_eval_df, 
+        trajectory_metrics, 
+        EXPERIMENT_NAME, 
+        "trajectory",
+        "Trajectory",
+        metrics_storage
+    )
 elif option == "Response (General)":
     st.header("Response Evaluation (General)")
-    eval_result = run_evaluation(remote_agent, response_eval_df, response_metrics, EXPERIMENT_NAME, "response-general")
+    eval_result = modify_run_evaluation(
+        remote_agent, 
+        response_eval_df, 
+        response_metrics, 
+        EXPERIMENT_NAME, 
+        "response-general",
+        "Response General",
+        metrics_storage
+    )
 elif option == "Response (Custom)":
     st.header("Response Evaluation (with Custom Metrics)")
-    eval_result = run_evaluation(remote_agent, response_eval_df, response_metrics_with_custom, EXPERIMENT_NAME, "response-custom")
+    eval_result = modify_run_evaluation(
+        remote_agent, 
+        response_eval_df, 
+        response_metrics_with_custom, 
+        EXPERIMENT_NAME, 
+        "response-custom",
+        "Response Custom",
+        metrics_storage
+    )
 elif option == "BYOD":
     st.header("BYOD Evaluation")
-    eval_result = run_evaluation(remote_agent, byod_eval_df, response_metrics_with_custom, EXPERIMENT_NAME, "byod")
+    eval_result = modify_run_evaluation(
+        remote_agent, 
+        byod_eval_df, 
+        response_metrics_with_custom, 
+        EXPERIMENT_NAME, 
+        "byod",
+        "BYOD",
+        metrics_storage
+    )
