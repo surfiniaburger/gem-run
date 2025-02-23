@@ -14,6 +14,7 @@ import time
 from google.api_core.exceptions import ResourceExhausted
 import streamlit as st  # Import streamlit
 from genseng import MetricsStorage
+import streamlit.components.v1 as components
 
 # Add BigQuery Configuration
 BQ_PROJECT_ID = "gem-rush-007"
@@ -470,3 +471,9 @@ elif option == "BYOD":
         "BYOD",
         metrics_storage
     )
+
+
+LOOKER_STUDIO_REPORT_URL="https://lookerstudio.google.com/embed/reporting/ef4aa403-8f18-4cd9-a3e9-44f1f67f394a/page/X9KyE"
+# Embed Looker Studio report (AFTER evaluation runs)
+st.subheader("Looker Studio Report")
+components.iframe(LOOKER_STUDIO_REPORT_URL, height=600)
