@@ -14,6 +14,7 @@ import time
 from google.api_core.exceptions import ResourceExhausted
 import streamlit as st  # Import streamlit
 from genseng import MetricsStorage
+import streamlit.components.v1 as components
 
 # Add BigQuery Configuration
 BQ_PROJECT_ID = "gem-rush-007"
@@ -67,6 +68,14 @@ trajectory_eval_data = {
         "Give me the stats for Rangers players against the Astros on 2024-09-15",
         "Did Adolis Garcia have more than 2 hits against the Angels this season?",
         "What was the final score of the rangers game against the dodgers on 2024-09-24?",
+
+        # New, more challenging prompts:
+        "Which Rangers pitcher had the most strikeouts in the last 5 games?  Also, show me the scores of those games.",  # Combines pitcher stats and game results
+        "Compare the batting averages of Aaron Judge and Giancarlo Stanton over the last month.  Were there any games where they both homered?", # Comparative stats + combined event
+        "Find all games where a Dodgers player hit a grand slam in the 2024 season.",  # Specific play type
+        "What's the longest winning streak for the Astros this year, and which teams did they beat during that streak?", # Streak + opponent info
+        "Summarize the performance of the Yankees' bullpen in their last series against the Red Sox. Include ERA, WHIP, and saves.",  # Bullpen stats, multiple metrics
+        "How many times did Mookie Betts steal a base against the Giants in the 2024 season? Show the dates of those games." #Specific player, specific action, and game context.
     ],
     "reference_trajectory": [
         [{"tool_name": "fetch_team_games", "tool_input": {"team_name": "rangers", "limit": 2}}],
@@ -78,6 +87,26 @@ trajectory_eval_data = {
         }],
         [{"tool_name": "fetch_player_plays_by_opponent", "tool_input": {"player_name": "Adolis Garcia", "team_name": "rangers", "opponent_team": "angels"}}],
         [{"tool_name": "fetch_team_games_by_opponent", "tool_input": {"team_name": "rangers", "opponent_team": "dodgers", "specific_date": "2024-09-24"}}],
+        # Hypothetical trajectories for the new prompts (you'll need to adapt these based on your tool capabilities)
+        [
+            {"tool_name": "fetch_team_player_stats", "tool_input": {"team_name": "rangers", "limit": 5, "stat_type": "pitching"}},
+            {"tool_name": "fetch_team_games", "tool_input": {"team_name": "rangers", "limit": 5}}
+        ],
+        [
+            {"tool_name": "fetch_team_player_stats", "tool_input": {"team_name": "yankees", "player_name": "Aaron Judge", "limit": 30}}, # Assuming 30 games in a month
+            {"tool_name": "fetch_team_player_stats", "tool_input": {"team_name": "yankees", "player_name": "Giancarlo Stanton", "limit": 30}},
+            {"tool_name": "fetch_team_plays_by_opponent", "tool_input": {"team_name": "yankees", "opponent_team": "any"}} # "any" is a placeholder
+        ],
+        [{"tool_name": "fetch_player_plays", "tool_input": {"team_name": "dodgers", "play_type": "grand slam"}}],
+        [
+            {"tool_name": "fetch_team_games", "tool_input": {"team_name": "astros"}},  # Potentially requires date range filtering
+            # You might need a separate tool/logic to determine the winning streak.
+        ],
+        [{"tool_name": "fetch_team_player_stats_by_opponent", "tool_input": {"team_name": "yankees", "opponent_team": "red sox", "stat_type": "pitching"}}], # Potentially filtering relievers only
+        [
+            {"tool_name": "fetch_player_plays_by_opponent", "tool_input": {"player_name": "Mookie Betts", "team_name": "dodgers", "opponent_team": "giants", "play_type": "stolen base"}},
+            {"tool_name": "fetch_team_games_by_opponent", "tool_input": {"team_name": "dodgers", "opponent_team":"giants"}}
+        ]
     ],
 }
 trajectory_eval_df = pd.DataFrame(trajectory_eval_data)
@@ -88,7 +117,14 @@ response_eval_data = {
         "How did Shohei Ohtani perform in his last 3 games?",
         "What is the yankees record against the red sox?",
         "What is the rangers record against the red sox on 2024-07-14?",
-        "Give me the results for all games played by the rangers?"
+        "Give me the results for all games played by the rangers?",
+
+        # New, more challenging prompts
+        "Give me a concise summary of the last Yankees game, highlighting key plays and the final score.",  # Focus on key plays
+        "Compare the performance of Shohei Ohtani and Mike Trout over the past week.",  # Comparative summary
+        "Provide a detailed analysis of the Rangers' pitching performance over the last 5 games.",  # In-depth analysis
+        "Summarize the key moments and outcome of the Dodgers' most recent series.", # Series summary
+        "Give me a recap of Adolis Garcia's best game this season, including his stats and the opponent." # Player-focused, best game
     ],
     "reference_response": [
         "The Rangers played the [Opponent] on [Date]. The final score was [Score]. [Key Play Summary].",
@@ -96,6 +132,12 @@ response_eval_data = {
         "The results of games between the yankees and the red sox are: ...",
         "The results of games between the rangers and the red sox on 2024-07-14 are: ...",
         "The results of all games played by the rangers are: ..."
+        ,
+        "The Yankees played the [Opponent] on [Date].  [Key Play 1]. [Key Play 2]. Final Score: [Score].",
+        "Over the past week, Shohei Ohtani had [Stats] while Mike Trout had [Stats]. [Comparative statement].",
+        "Over the last 5 games, the Rangers' pitchers have a combined ERA of [ERA] and WHIP of [WHIP]. [Key Pitcher Performances].",
+        "The Dodgers [won/lost] their most recent series against the [Opponent] [Series Score]. [Key Moments Summary].",
+        "Adolis Garcia's best game this season was against the [Opponent] on [Date]. He had [Stats] including [Highlight Play]."
     ],
     "reference_trajectory": [
         [{"tool_name": "fetch_team_games", "tool_input": {"team_name": "rangers", "limit": 1}}],
@@ -103,6 +145,15 @@ response_eval_data = {
         [{"tool_name": "fetch_team_games_by_opponent", "tool_input": {"team_name": "yankees", "opponent_team": "red sox"}}],
         [{"tool_name": "fetch_team_games_by_opponent", "tool_input": {"team_name": "rangers", "opponent_team": "red sox", "specific_date":"2024-07-14"}}],
         [{"tool_name": "fetch_team_games", "tool_input": {"team_name": "rangers"}}],
+        # Hypothetical reference trajectories for the new prompts (you'll need to define these)
+        [{"tool_name": "fetch_team_games", "tool_input": {"team_name": "yankees", "limit": 1}}],
+        [
+            {"tool_name": "fetch_player_plays", "tool_input": {"player_name": "Shohei Ohtani", "team_name": "angels", "limit": 7}},
+            {"tool_name": "fetch_player_plays", "tool_input": {"player_name": "Mike Trout", "team_name": "angels", "limit": 7}}
+        ],
+        [{"tool_name": "fetch_team_player_stats", "tool_input": {"team_name": "rangers", "stat_type": "pitching", "limit": 5}}],
+        [{"tool_name": "fetch_team_games", "tool_input": {"team_name": "dodgers", "limit": 3}}], # Assuming a 3-game series
+        [{"tool_name": "fetch_player_plays", "tool_input": {"player_name": "Adolis Garcia", "team_name": "rangers"}}] # Potentially needs date range        
     ],
 
 }
@@ -470,3 +521,9 @@ elif option == "BYOD":
         "BYOD",
         metrics_storage
     )
+
+
+LOOKER_STUDIO_REPORT_URL="https://lookerstudio.google.com/embed/reporting/ef4aa403-8f18-4cd9-a3e9-44f1f67f394a/page/X9KyE"
+# Embed Looker Studio report (AFTER evaluation runs)
+st.subheader("Looker Studio Report")
+components.iframe(LOOKER_STUDIO_REPORT_URL, height=600)

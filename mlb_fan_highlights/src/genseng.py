@@ -2,6 +2,7 @@ from google.cloud import bigquery
 from google.api_core import retry
 import datetime
 import pandas as pd
+import numpy as np
 import streamlit as st
 from typing import Dict, Any, List
 import time
@@ -85,6 +86,16 @@ class MetricsStorage:
         results = self.client.query(query, job_config=job_config).result()
         return next(results).count > 0
 
+    def _is_valid_numeric(self, value: Any) -> bool:
+        """Check if a value is a valid numeric value for BigQuery."""
+        try:
+            if pd.isna(value) or np.isnan(value):
+                return False
+            float_val = float(value)
+            return not np.isinf(float_val)
+        except (ValueError, TypeError):
+            return False
+        
     @retry.Retry(predicate=retry.if_exception_type(ServerError))
     def _stream_insert_with_retry(self, table_id: str, rows: List[Dict]) -> List[Dict]:
         """Perform streaming insert with retry logic."""
@@ -155,6 +166,9 @@ class MetricsStorage:
             for metric_name in eval_result.metrics_table.columns:
                 if metric_name not in ['prompt', 'response']:
                     metric_value = row[metric_name]
+                    # For detailed metrics, convert everything to string but handle NaN
+                    if pd.isna(metric_value) or np.isnan(metric_value) if isinstance(metric_value, (float, np.floating)) else False:
+                        metric_value = "N/A"
                     detailed_rows.append({
                         "experiment_run_name": experiment_run_name,
                         "experiment_name": experiment_name,
@@ -170,8 +184,13 @@ class MetricsStorage:
                     })
 
         # Insert rows with batching and error handling
-        summary_success = self._batch_streaming_insert(self.summary_table_id, summary_rows)
-        detailed_success = self._batch_streaming_insert(self.detailed_table_id, detailed_rows)
+        summary_success = True
+        if summary_rows:
+            summary_success = self._batch_streaming_insert(self.summary_table_id, summary_rows)
+        
+        detailed_success = True
+        if detailed_rows:
+            detailed_success = self._batch_streaming_insert(self.detailed_table_id, detailed_rows)
 
         if summary_success and detailed_success:
             st.success("Successfully saved new metrics to BigQuery")
