@@ -282,5 +282,5 @@ def generate_mlb_podcasts_remote(contents: str) -> dict:
 def generate_mlb_podcasts(contents: str) -> dict:
      return generate_mlb_podcasts_remote(contents)
 
-result = generate_mlb_podcasts("Dodgers last game in Japanese")
+result = generate_mlb_podcasts("Dodgers last game English")
 print(result)
