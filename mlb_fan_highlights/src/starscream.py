@@ -9,14 +9,17 @@ from google.cloud import secretmanager  # You might not need this if not using s
 import pandas as pd
 from google.cloud import bigquery
 from typing import Dict, List, Tuple
-# from vertexai.language_models import TextEmbeddingModel  # Use Vertex AI SDK instead
+from vertexai.language_models import TextEmbeddingModel  
 from google.cloud import aiplatform  # Use the Vertex AI SDK
 import numpy as np
 # from pymongo.operations import SearchIndexModel # No MongoDB
 import requests
 from ratelimit import limits, sleep_and_retry
 from sklearn.feature_extraction.text import TfidfVectorizer # For sparse embeddings
-
+import sys
+import os
+from google.cloud import storage
+import pickle  # For saving/loading the vectorizer
 
 # --- Setup (Logging, BigQuery Client, Rate Limiting) ---
 
@@ -102,10 +105,11 @@ LOCATION = "us-central1"  # Or your preferred region
 DATASET_ID = "mlb_data_2024"
 TABLE_ID = "game_events_hybrid"  # Modified table name for clarity
 BUCKET_URI = f"gs://{PROJECT_ID}-vs-hybridsearch-mlb" # Example bucket URI.  Create this bucket!
+VECTORIZER_FILE = "tfidf_vectorizer.pkl"  # File to store the fitted vectorizer
 # Initialize Vertex AI and BigQuery
 aiplatform.init(project=PROJECT_ID, location=LOCATION)
 bq_client = bigquery.Client(project=PROJECT_ID)
-embedding_model = aiplatform.TextEmbeddingModel.from_pretrained("textembedding-gecko")
+embedding_model = TextEmbeddingModel.from_pretrained("text-embedding-005")
 
 # BigQuery client setup
 client = bigquery.Client()
@@ -146,6 +150,42 @@ GAME_EVENTS_SCHEMA = [
     bigquery.SchemaField("last_updated", "TIMESTAMP")
 ]
 
+
+
+def create_dataset(dataset_id=DATASET_ID):
+    """Creates a BigQuery dataset if it doesn't exist."""
+    try:
+        dataset = bigquery.Dataset(f"{PROJECT_ID}.{dataset_id}")
+        dataset.location = "US"  # Specify the location matching your project
+        client.create_dataset(dataset, exists_ok=True)
+        logger.info(f"Dataset {dataset_id} created or already exists")
+    except Exception as e:
+        logger.error(f"Error creating dataset: {str(e)}")
+        raise
+
+def create_storage_bucket(bucket_name=None):
+    """Creates a Cloud Storage bucket programmatically."""
+    if bucket_name is None:
+        # Extract bucket name from the bucket URI
+        bucket_name = BUCKET_URI.replace("gs://", "")
+    
+    try:
+        # Initialize the storage client
+        storage_client = storage.Client(project=PROJECT_ID)
+        
+        # Check if bucket already exists
+        if storage_client.lookup_bucket(bucket_name):
+            logger.info(f"Bucket {bucket_name} already exists")
+            return True
+            
+        # Create a new bucket
+        bucket = storage_client.create_bucket(bucket_name, location="us-central1")  # You can change the location
+        logger.info(f"Bucket {bucket.name} created successfully")
+        return True
+    except Exception as e:
+        logger.error(f"Error creating bucket {bucket_name}: {str(e)}")
+        return False
+    
 def create_game_events_table(dataset_id: str = DATASET_ID, table_id: str = TABLE_ID):
     """Creates the unified BigQuery table."""
     dataset_ref = client.dataset(dataset_id)
@@ -263,8 +303,10 @@ def generate_embeddings_and_upload(game_events: List[Dict], vectorizer):
     if not game_events:
         return
 
+    # Convert 'official_date' from string to pandas datetime type
+    # This ensures proper conversion to BigQuery DATE type
     df = pd.DataFrame(game_events)
-    df['official_date'] = df['official_date'].astype(str)
+    df['official_date'] = df['official_date'].dt.date
 
     # Generate dense embeddings
     df['embedding'] = df["rich_text"].apply(get_dense_embedding)
@@ -276,13 +318,25 @@ def generate_embeddings_and_upload(game_events: List[Dict], vectorizer):
 
     # Upload to BigQuery
     job_config = bigquery.LoadJobConfig(schema=GAME_EVENTS_SCHEMA, write_disposition="WRITE_APPEND")
+    
+    # Convert datetime.date objects to strings in the format BigQuery expects
     job = bq_client.load_table_from_dataframe(df, f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}", job_config=job_config)
-    job.result()
-    logger.info(f"Uploaded {len(df)} rows to BigQuery")
+    try:
+        job.result()  # Wait for the job to complete
+        logger.info(f"Uploaded {len(df)} rows to BigQuery")
+    except Exception as e:
+        logger.error(f"Error uploading to BigQuery: {str(e)}")
+        # Print more detailed error information if available
+        if job.errors:
+            for error in job.errors:
+                logger.error(f"Detailed error: {error}")
 
 def update_mlb_data():
     """Fetches new game data, processes, generates embeddings, and updates BigQuery."""
     logger.info("Starting MLB data update process...")
+    # Create dataset first
+    create_dataset()
+
     create_game_events_table()
 
     # Train TF-IDF vectorizer ONCE, using ALL existing data
@@ -299,18 +353,34 @@ def update_mlb_data():
         except Exception as e:
             logger.error(f"Error getting existing texts for team ID {team_id}: {e}")
             continue
-
-    #Fit the Vectorizer
+    # Fit the Vectorizer - Make sure it's always fitted even with no data
     vectorizer = TfidfVectorizer()
-    try:
-        if all_rich_texts:  # Only fit if there's existing data
+    
+    if all_rich_texts:
+        # If we have existing data, fit with that
+        try:
             vectorizer.fit(all_rich_texts)
-            logger.info("Vectorizer Fit with data.")
-        else:
-          logger.info("No rich_text to use. Vectorizer not Fited.")
-    except Exception as e:
-            logger.error(f"Vectorizer Fitting Failed: {e}")
-            return
+            logger.info(f"Vectorizer fitted with {len(all_rich_texts)} existing text samples.")
+        except Exception as e:
+            logger.error(f"Vectorizer fitting failed with existing data: {e}")
+            # Still need to fit with something, so we'll use dummy data below
+            all_rich_texts = []
+    
+    # If no existing data or fitting failed, fit with dummy data
+    if not all_rich_texts:
+        dummy_texts = [
+            "baseball game home run", 
+            "pitcher strikeout inning", 
+            "batter hit double", 
+            "team win stadium",
+            "MLB baseball player"
+        ]
+        try:
+            vectorizer.fit(dummy_texts)
+            logger.info("Vectorizer fitted with dummy data as no existing rich_text was available.")
+        except Exception as e:
+            logger.error(f"Vectorizer fitting with dummy data failed: {e}")
+            return  # Cannot proceed without a fitted vectorizer
 
 
     for team_id in TEAMS.values():
@@ -335,7 +405,29 @@ def update_mlb_data():
             continue
 
     logger.info("MLB data update process completed.")
+
+def upload_file_to_bucket(source_file_path, bucket_name, destination_blob_name=None):
+    """Uploads a file to a Google Cloud Storage bucket."""
+    if destination_blob_name is None:
+        destination_blob_name = os.path.basename(source_file_path)
     
+    if bucket_name.startswith("gs://"):
+        bucket_name = bucket_name.replace("gs://", "")
+        
+    try:
+        # Initialize the storage client
+        storage_client = storage.Client(project=PROJECT_ID)
+        bucket = storage_client.bucket(bucket_name)
+        blob = bucket.blob(destination_blob_name)
+        
+        # Upload the file
+        blob.upload_from_filename(source_file_path)
+        logger.info(f"File {source_file_path} uploaded to {bucket_name}/{destination_blob_name}")
+        return True
+    except Exception as e:
+        logger.error(f"Error uploading file to bucket: {str(e)}")
+        return False
+
 # --- Vertex AI Vector Search Index Creation and Querying ---
 
 def create_vector_search_index(bucket_uri: str = BUCKET_URI):
@@ -366,14 +458,14 @@ def create_vector_search_index(bucket_uri: str = BUCKET_URI):
         for item in jsonl_data:
             f.write(f"{item}\n")
 
-    # Upload to Cloud Storage
-    import subprocess
-    process = subprocess.run(['gsutil', 'cp', jsonl_file_path, bucket_uri], capture_output=True, text=True)
-    if process.returncode != 0:
-      logger.error(f"Error uploading to Cloud Storage: {process.stderr}")
-      return None
-    else:
-      logger.info(f"Successfully uploaded to Cloud Storage: {process.stdout}")
+
+
+    # Replace the gsutil command with:
+    bucket_name = BUCKET_URI.replace("gs://", "")
+    upload_success = upload_file_to_bucket(jsonl_file_path, bucket_name)
+    if not upload_success:
+       logger.error("Failed to upload JSONL file to Cloud Storage")
+       return None
 
     # Create the index
     try:
@@ -390,6 +482,55 @@ def create_vector_search_index(bucket_uri: str = BUCKET_URI):
         logger.error(f"Error creating index: {e}")
         return None
 
+
+def save_vectorizer(vectorizer, bucket_name, filename=VECTORIZER_FILE):
+    """Saves the fitted vectorizer to a GCS bucket."""
+    try:
+        # Save locally first
+        with open(filename, 'wb') as f:
+            pickle.dump(vectorizer, f)
+        
+        # Upload to GCS
+        if bucket_name.startswith("gs://"):
+            bucket_name = bucket_name.replace("gs://", "")
+        
+        upload_success = upload_file_to_bucket(filename, bucket_name, filename)
+        if upload_success:
+            logger.info(f"Vectorizer saved to {bucket_name}/{filename}")
+            return True
+        else:
+            logger.error(f"Failed to upload vectorizer to {bucket_name}/{filename}")
+            return False
+    except Exception as e:
+        logger.error(f"Error saving vectorizer: {e}")
+        return False
+
+def load_vectorizer(bucket_name, filename=VECTORIZER_FILE):
+    """Loads the fitted vectorizer from a GCS bucket."""
+    try:
+        if bucket_name.startswith("gs://"):
+            bucket_name = bucket_name.replace("gs://", "")
+        
+        # Download from GCS to local file
+        storage_client = storage.Client(project=PROJECT_ID)
+        bucket = storage_client.bucket(bucket_name)
+        blob = bucket.blob(filename)
+        
+        if not blob.exists():
+            logger.info(f"No saved vectorizer found at {bucket_name}/{filename}")
+            return None
+        
+        blob.download_to_filename(filename)
+        
+        # Load the vectorizer
+        with open(filename, 'rb') as f:
+            vectorizer = pickle.load(f)
+        
+        logger.info(f"Vectorizer loaded from {bucket_name}/{filename}")
+        return vectorizer
+    except Exception as e:
+        logger.error(f"Error loading vectorizer: {e}")
+        return None
 
 def deploy_index(my_index):
       """Deploys the Vector Search index to an endpoint."""
@@ -476,6 +617,29 @@ def query_vector_search(
       logger.error(f"Error querying Vector Search: {e}")
       return []
 
+def delete_bucket(bucket_name):
+    """Deletes a Google Cloud Storage bucket and all its contents."""
+    if bucket_name.startswith("gs://"):
+        bucket_name = bucket_name.replace("gs://", "")
+        
+    try:
+        storage_client = storage.Client(project=PROJECT_ID)
+        bucket = storage_client.bucket(bucket_name)
+        
+        # Delete all blobs in the bucket
+        blobs = list(bucket.list_blobs())
+        for blob in blobs:
+            blob.delete()
+            
+        # Delete the bucket
+        bucket.delete()
+        logger.info(f"Bucket {bucket_name} deleted successfully")
+        return True
+    except Exception as e:
+        logger.error(f"Error deleting bucket {bucket_name}: {str(e)}")
+        return False
+
+
 def clean_up(index_endpoint, my_index, bucket_uri):
 
   # delete Index Endpoint
@@ -488,52 +652,70 @@ def clean_up(index_endpoint, my_index, bucket_uri):
     my_index.delete()
 
   # delete Cloud Storage bucket
-    import subprocess
-    process = subprocess.run(['gsutil', 'rm', '-r', bucket_uri], capture_output=True, text=True)
-    if process.returncode != 0:
-        logger.error(f"Error deleting Cloud Storage bucket: {process.stderr}")
-    else:
-        logger.info(f"Successfully deleted Cloud Storage bucket: {process.stdout}")
+  bucket_name = bucket_uri.replace("gs://", "")
+  delete_success = delete_bucket(bucket_name)
+  if not delete_success:
+    logger.error(f"Error deleting Cloud Storage bucket: {bucket_name}")
+  else:
+    logger.info(f"Successfully deleted Cloud Storage bucket: {bucket_name}")
 
 if __name__ == "__main__":
+        # Create dataset first
+    create_dataset()
+        
+    # Create bucket
+    bucket_name = BUCKET_URI.replace("gs://", "")    
+    bucket_created = create_storage_bucket()
+    if not bucket_created:
+        logger.error("Failed to create bucket, exiting")
+        sys.exit(1)        # Create storage bucket
+    #create_storage_bucket()    
     # --- Initial setup (Run once) ---
     update_mlb_data()  # Fetch initial data and create tables
-    import subprocess
-    process = subprocess.run(['gsutil', 'mb', '-l', LOCATION, BUCKET_URI], capture_output=True, text=True)
-    if process.returncode != 0:
-        print(f"Error creating Cloud Storage bucket: {process.stderr}")
-    else:
-      print(f"Successfully created Cloud Storage bucket: {process.stdout}")
-
-    # --- Create and deploy Vector Search index (Run once, or after significant data updates) ---
+   
+    # --- Create and deploy Vector Search index ---
     my_index = create_vector_search_index()
-    #Wait for the index to be created
+    
     if my_index:  # Proceed only if index creation was successful
-        index_endpoint, deployed_index_id = deploy_index(my_index) #Wait for index to deploy
-
-    # --- Example Queries ---
-    #   #After updating the database, creating, and deploying index you should uncomment these queries to test functionality
-
-        #First get the vectorizer
-        all_rich_texts = []
-        for team_id in TEAMS.values():
-          try:
-              recent_games = get_team_games(team_id)
-              for game_info in recent_games:
-                  game_pk = game_info['game_id']
-                  query = f"SELECT rich_text FROM `{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}` WHERE game_id = {game_pk}"
-                  query_job = bq_client.query(query)
-                  results = list(query_job.result())
-                  all_rich_texts.extend([row.rich_text for row in results]) #getting all the rich_texts
-          except Exception as e:
-              logger.error(f"Error getting existing texts for team ID {team_id}: {e}")
-              continue
-
-        #Fit the Vectorizer
-        vectorizer = TfidfVectorizer()
-        if all_rich_texts:  # Only fit if there's existing data
-            vectorizer.fit(all_rich_texts)
-            logger.info("Vectorizer Fit with data.")
+        index_endpoint, deployed_index_id = deploy_index(my_index)
+        
+        # Try to load previously saved vectorizer
+        vectorizer = load_vectorizer(bucket_name)
+        
+        # If no saved vectorizer, create and fit a new one
+        if vectorizer is None:
+            all_rich_texts = []
+            for team_id in TEAMS.values():
+                try:
+                    recent_games = get_team_games(team_id)
+                    for game_info in recent_games:
+                        game_pk = game_info['game_id']
+                        query = f"SELECT rich_text FROM `{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}` WHERE game_id = {game_pk}"
+                        query_job = bq_client.query(query)
+                        results = list(query_job.result())
+                        all_rich_texts.extend([row.rich_text for row in results])
+                except Exception as e:
+                    logger.error(f"Error getting existing texts for team ID {team_id}: {e}")
+                    continue
+            
+            vectorizer = TfidfVectorizer()
+            if all_rich_texts:
+                vectorizer.fit(all_rich_texts)
+                logger.info(f"Vectorizer fitted with {len(all_rich_texts)} text samples")
+            else:
+                # Fallback to dummy data if no real data available
+                dummy_texts = [
+                    "baseball game home run", 
+                    "pitcher strikeout inning", 
+                    "batter hit double", 
+                    "team win stadium",
+                    "MLB baseball player"
+                ]
+                vectorizer.fit(dummy_texts)
+                logger.info("Vectorizer fitted with dummy data")
+            
+            # Save the fitted vectorizer for future use
+            save_vectorizer(vectorizer, bucket_name)
 
         query1 = "home runs by the Rangers against the Astros in the 9th inning"
         results1 = query_vector_search(index_endpoint, deployed_index_id, query1, vectorizer)
