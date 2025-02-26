@@ -39,9 +39,9 @@ prompts = [
 ]
 
 # Function to generate and save image with a delay.  Includes error handling.
-def generate_and_save_image(prompt, delay_seconds=20):
+def generate_and_save_image(prompt, delay_seconds=120):
     try:
-        response = fast_imagen_model.generate_images(prompt=prompt)
+        response = imagen_model.generate_images(prompt=prompt)
 
         # *** IMPORTANT CHECK ***
         if not response.images:  # Check if the list is empty
@@ -111,10 +111,9 @@ def process_prompts_and_generate_images(prompts: List[str]) -> None: #Removed ge
 if __name__ == '__main__':
     #Example prompts
     my_prompts = [
-        "A beautiful sunset over the ocean",
-        "Minnesota Twins uniform",
-        "baseball stadium background",
-        "a baseball leaving the stadium",
+        "Close-up on the pitcher, face contorted with effort, in the middle of his wind-up. His muscles are tense, and sweat is visible on his brow. Slight motion blur on the arm and ball. Dramatic lighting, focusing on the pitcher's intensity. Painting.",
+        "A wide shot from space, the baseball burning as it reenters atmosphere, the curve of the earth on the bottom and the endless black space in front. Cinematic, painting",
+        
         
     ]
     process_prompts_and_generate_images(my_prompts) #Removed generate_and_save_image

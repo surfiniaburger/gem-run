@@ -322,7 +322,7 @@ def get_last_x_games(team: str, num_games: int) -> dict:
             text = text.split("```")[1].strip()
         if text.startswith("json"):
             text = text[4:].strip()
-        
+        print(json.loads(text))
         return json.loads(text)
         
     except Exception as e:
@@ -330,3 +330,6 @@ def get_last_x_games(team: str, num_games: int) -> dict:
         return {
             "error": f"An error occurred while fetching game details: {e}"
         }
+
+
+anchor("Twins")
