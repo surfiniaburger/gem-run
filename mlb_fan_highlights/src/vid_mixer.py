@@ -55,10 +55,10 @@ class MLBVideoPodcastGenerator:
             # Try to load from GCS
             bucket = self.storage_client.bucket(self.image_bucket_name)
             background_paths = {
-                "default": "templates/default_bg.png",
-                "stats": "templates/stats_bg.png",
-                "player": "templates/player_bg.png",
-                "highlight": "templates/highlight_bg.png"
+                "default": "templates/default_bg.jpg",
+                "stats": "templates/stats_bg.jpg",
+                "player": "templates/player_bg.jpg",
+                "highlight": "templates/highlight_bg.jpg"
             }
             
             for name, path in background_paths.items():
