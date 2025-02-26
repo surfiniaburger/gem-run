@@ -282,5 +282,7 @@ def generate_mlb_podcasts_remote(contents: str) -> dict:
 def generate_mlb_podcasts(contents: str) -> dict:
      return generate_mlb_podcasts_remote(contents)
 
-result = generate_mlb_podcasts("Dodgers last game English")
+result = generate_mlb_podcasts("Twins last game English")
 print(result)
+
+# projects/1011675918473/locations/us-central1/reasoningEngines/5591482820171137024 

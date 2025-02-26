@@ -318,7 +318,7 @@ def generate_embeddings_and_upload(game_events: List[Dict], vectorizer):
 
     # Upload to BigQuery
     job_config = bigquery.LoadJobConfig(schema=GAME_EVENTS_SCHEMA, write_disposition="WRITE_APPEND")
-    
+
     # Convert datetime.date objects to strings in the format BigQuery expects
     job = bq_client.load_table_from_dataframe(df, f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}", job_config=job_config)
     try:
@@ -742,3 +742,5 @@ if __name__ == "__main__":
           print(result)
     #Clean Up
     # clean_up(index_endpoint, my_index, BUCKET_URI)
+
+# projects/1011675918473/locations/us-central1/indexEndpoints/9219215882901782528
