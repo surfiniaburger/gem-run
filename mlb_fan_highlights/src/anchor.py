@@ -198,7 +198,7 @@ def anchor(team: str, query_type: str = "last_game_date", force_refresh: bool = 
     
     # Prepare the query prompt
     query_prompt = f"""
-    Please provide the most recent game date for the {team} MLB team.
+    Please provide the most recent game date for the {team} MLB team in 2024.
     
     Requirements:
     - Confirm the exact date of the last game played
@@ -280,7 +280,7 @@ def get_last_x_games(team: str, num_games: int) -> dict:
     client = genai.Client(vertexai=True, project="gem-rush-007", location="us-central1")
     
     query_prompt = f"""
-    Please provide information about the last {num_games} games played by the {team} MLB team.
+    Please provide information about the last {num_games} games played by the {team} MLB team in 2024.
     
     Requirements:
     - List the {num_games} most recent games
