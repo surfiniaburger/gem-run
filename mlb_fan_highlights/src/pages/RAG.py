@@ -131,7 +131,6 @@ with st.sidebar:
 
 
 
-
 # App title and description
 st.title("📚 Document Q&A with Google AI")
 st.markdown("""
@@ -196,6 +195,7 @@ with tab1:
         progress_bar.progress(1.0)
         status_text.text("All documents processed successfully!")
         st.success("Your documents have been uploaded and processed. You can now ask questions in the 'Ask Questions' tab.")
+        st.session_state.documents_processed = True
 
 # Tab 2: Ask Questions
 with tab2:
@@ -258,9 +258,10 @@ with tab2:
         st.markdown("---")
     
     # Clear conversation button
-    if st.session_state.chat_history and st.button("Clear Conversation"):
-        st.session_state.chat_history = []
-        st.experimental_rerun()
+    if st.button("Clear Conversation"):
+     for key in st.session_state.keys():
+        del st.session_state[key]
+     st.rerun()
     
     # Show sources expander (only if there's a response)
     if st.session_state.chat_history and any(msg["role"] == "assistant" for msg in st.session_state.chat_history):
@@ -280,7 +281,7 @@ with tab2:
                         
                         if hasattr(contexts, 'contexts') and hasattr(contexts.contexts, 'contexts'):
                             for i, context in enumerate(contexts.contexts.contexts):
-                                with st.expander(f"Source {i+1}"):
+                                    st.markdown(f"**Source {i+1}:**")
                                     st.markdown(context.text)
                                     if hasattr(context, 'metadata') and context.metadata:
                                         st.caption(f"From: {context.metadata.get('source', 'Unknown')}")
