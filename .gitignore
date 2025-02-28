@@ -73,4 +73,6 @@ gem-rush-007-firebase-adminsdk-pzp02-b7a2022e8b.json
 
 games_cache_2024.json
 mlb_game_events.json
+*/tfidf_vectorizer.json.pkl
+*/mlb_game_events.json
 tfidf_vectorizer.json.pkl

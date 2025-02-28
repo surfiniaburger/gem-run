@@ -431,10 +431,11 @@ def create_vector_search_index(bucket_uri: str = BUCKET_URI):
     if not upload_success:
        logger.error("Failed to upload JSONL file to Cloud Storage")
        return None
+    index_data_uri = f"{BUCKET_URI}/{json_file_path}"  # Point to the *specific* file
     try:
         my_index = aiplatform.MatchingEngineIndex.create_tree_ah_index(
             display_name=f"mlb-hybrid-index-{datetime.now().strftime('%m%d%H%M')}",
-            contents_delta_uri=bucket_uri,
+            contents_delta_uri=index_data_uri,
             dimensions=768,
             approximate_neighbors_count=10,
         )
