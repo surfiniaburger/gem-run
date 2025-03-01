@@ -3,11 +3,11 @@ from google.api_core.client_options import ClientOptions
 import os
 import json
 from typing import List, Dict
-from bumblebee import generate_mlb_podcasts
+from .bumblebee import generate_mlb_podcasts
 import logging
-from audio_mixer import MLBAudioMixer
+from .audio_mixer import MLBAudioMixer
 logging.basicConfig(level=logging.DEBUG)
-from gcs_handler import GCSHandler
+from .gcs_handler import GCSHandler
 import uuid
 from google.cloud import logging as cloud_logging
 
