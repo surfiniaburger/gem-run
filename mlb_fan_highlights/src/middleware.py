@@ -1,7 +1,7 @@
 # mlb_fan_highlights/src/middleware.py
 from werkzeug.middleware.dispatcher import DispatcherMiddleware
 from werkzeug.serving import run_simple
-from main import app as flask_app
+from .main import app as flask_app
 
 
 # Combine both apps
