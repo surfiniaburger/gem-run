@@ -1,5 +1,4 @@
 # mlb_fan_highlights/src/middleware.py
-# middleware.py
 from werkzeug.middleware.dispatcher import DispatcherMiddleware
 from werkzeug.serving import run_simple
 from main import app as flask_app

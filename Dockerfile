@@ -14,4 +14,4 @@ COPY . ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Change the entrypoint for Flask
-CMD gunicorn middleware:application --bind 0.0.0.0:$PORT
+CMD gunicorn mlb_fan_highlights.src.middleware:application --bind 0.0.0.0:$PORT
