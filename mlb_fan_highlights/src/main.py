@@ -268,6 +268,12 @@ def construct_prompt(selected_team, selected_players, selected_timeframe,
 
  return " ".join(prompt_parts)
 
+
+@app.route('/health', methods=['GET'])
+@error_handler
+def health_check():
+    return jsonify({"status": "healthy", "version": app_version})
+
 @app.route('/api/v1/teams', methods=['GET'])
 @error_handler
 def get_teams():
