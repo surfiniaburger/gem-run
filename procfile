@@ -1,1 +1,1 @@
-web: gunicorn mlb_fan_highlights.src.middleware:application
+web: gunicorn mlb_fan_highlights.src.main:app --bind :$PORT --workers 1 --threads 8 --timeout 0
