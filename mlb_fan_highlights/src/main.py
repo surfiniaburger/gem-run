@@ -12,8 +12,10 @@ from .jap import generate_japanese_audio
 from .anchor import anchor, game_info_cache, get_last_x_games
 import re
 import os
+from flask_cors import CORS
 
 app = Flask(__name__)
+CORS(app) 
 
 app_version = "0.0.0"
 
