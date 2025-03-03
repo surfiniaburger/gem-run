@@ -2,13 +2,13 @@
 from google.cloud import texttospeech_v1beta1 as texttospeech
 import json
 import os
-from bumblebee import generate_mlb_podcasts
-from spanish_audio_mixer import SpanishMLBAudioMixer
+from .bumblebee import generate_mlb_podcasts
+from .spanish_audio_mixer import SpanishMLBAudioMixer
 import uuid
-from gcs_handler import GCSHandler
+from .gcs_handler import GCSHandler
 import logging
 from google.cloud import logging as cloud_logging
-from vid_mix import CloudVideoGenerator, MLBVideoGenerator
+#from vid_mix import CloudVideoGenerator, MLBVideoGenerator
 
 # Configure cloud logging at the top of the script, before other imports
 logging.basicConfig(level=logging.INFO)

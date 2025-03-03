@@ -5,7 +5,7 @@ git pull
 GCP_REGION='us-central1'
 GCP_PROJECT='gem-rush-007'
 AR_REPO='gem-run-007'
-SERVICE_NAME='mlb'
+SERVICE_NAME='mlb-strings'
 
 gcloud builds submit \
     --tag "$GCP_REGION-docker.pkg.dev/$GCP_PROJECT/$AR_REPO/$SERVICE_NAME"

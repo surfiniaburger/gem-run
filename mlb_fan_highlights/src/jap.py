@@ -3,13 +3,13 @@ import traceback
 from google.cloud import  texttospeech
 import json
 import os
-from bumblebee import generate_mlb_podcasts
-from japanese_audio_mixer import JapaneseMLBAudioMixer
-from gcs_handler import GCSHandler
+from .bumblebee import generate_mlb_podcasts
+from .japanese_audio_mixer import JapaneseMLBAudioMixer
+from .gcs_handler import GCSHandler
 import uuid
 import logging
 from google.cloud import logging as cloud_logging
-from vid import CloudVideoGenerator
+#from vid import CloudVideoGenerator
 
 
 project_id = "gem-rush-007"

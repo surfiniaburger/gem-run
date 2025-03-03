@@ -5,15 +5,17 @@ import uuid
 import logging
 from google.cloud.logging.handlers import CloudLoggingHandler
 from google.cloud import logging as cloud_logging
-from surfire2 import generate_mlb_analysis
-from pod import generate_mlb_podcast_with_audio
-from pall import generate_spanish_audio
-from jap import generate_japanese_audio
-from anchor import anchor, game_info_cache, get_last_x_games
+from .surfire2 import generate_mlb_analysis
+from .pod import generate_mlb_podcast_with_audio
+from .pall import generate_spanish_audio
+from .jap import generate_japanese_audio
+from .anchor import anchor, game_info_cache, get_last_x_games
 import re
 import os
+from flask_cors import CORS
 
 app = Flask(__name__)
+CORS(app) 
 
 app_version = "0.0.0"
 
@@ -28,6 +30,8 @@ logger.addHandler(handler)
 formatter = logging.Formatter('%(name)s - %(levelname)s - %(message)s')
 handler.setFormatter(formatter)
 
+logging.basicConfig(level=logging.DEBUG)
+logger.info("Starting application...")
 
 #GET /api/v1/teams
 #GET /api/v1/teams/<team_name>/players
@@ -221,53 +225,51 @@ def get_podcast_timestamp() -> dict:
 def construct_prompt(selected_team, selected_players, selected_timeframe, 
                  timeframe_value, selected_game_type, selected_opponent, 
                  selected_language):
-# Get current timestamp
- timestamp = get_podcast_timestamp()
+    # Get current timestamp
+    timestamp = get_podcast_timestamp()
 
     # If last game is selected, get the exact date
- if selected_timeframe == "Last game":
+    if selected_timeframe == "Last game":
         last_game_info = anchor(selected_team)
         if 'last_game_date' in last_game_info:
             timeframe_value = last_game_info['last_game_date']
     
-
- prompt_parts = [
+    prompt_parts = [
                  f"Generate a podcast about the {selected_team}.",
                  f"Podcast generated on {timestamp['full_timestamp']}."
                 ]
 
- # Players
- if selected_players:
-     prompt_parts.append(f"Include highlights for players: {', '.join(selected_players)}.")
+    # Players
+    if selected_players:
+        prompt_parts.append(f"Include highlights for players: {', '.join(selected_players)}.")
 
- # Timeframe
- if selected_timeframe == "Last game":
+    # Timeframe
+    if selected_timeframe == "Last game":
         prompt_parts.append(f"Cover the last game played by the {selected_team} on {timeframe_value}.")
- elif selected_timeframe == "Last X games":
-     games_info = get_last_x_games(selected_team, timeframe_value)
-     if 'games' in games_info:
+    elif selected_timeframe == "Last X games":
+        games_info = get_last_x_games(selected_team, timeframe_value)
+        if 'games' in games_info:
             game_dates = [game['date'] for game in games_info['games']]     
             prompt_parts.append(f"Cover the last {timeframe_value} games played by the {selected_team} from {game_dates[-1]} to {game_dates[0]}.")
- elif selected_timeframe == "Specific date":
-     prompt_parts.append(f"Cover the {selected_team} game on {timeframe_value}.")
- elif selected_timeframe == "Date Range":
-     prompt_parts.append(
-         f"Cover the {selected_team} games between {timeframe_value[0]} and {timeframe_value[1]}."
-     )
+    elif selected_timeframe == "Specific date":
+        prompt_parts.append(f"Cover the {selected_team} game on {timeframe_value}.")
+    elif selected_timeframe == "Date Range":
+        prompt_parts.append(
+            f"Cover the {selected_team} games between {timeframe_value[0]} and {timeframe_value[1]}."
+        )
 
- # Game Type
- if selected_game_type != "Any":
-     prompt_parts.append(f"Focus on {selected_game_type.lower()} games.")
+    # Game Type
+    if selected_game_type != "Any":
+        prompt_parts.append(f"Focus on {selected_game_type.lower()} games.")
 
- # Opponent Team
- if selected_opponent != "Any":
-     prompt_parts.append(f"Specifically include games against {selected_opponent}.")
+    # Opponent Team
+    if selected_opponent != "Any":
+        prompt_parts.append(f"Specifically include games against {selected_opponent}.")
 
- # Language
- prompt_parts.append(f"Generate the podcast script in {selected_language}.")
+    # Language
+    prompt_parts.append(f"Generate the podcast script in {selected_language}.")
 
- return " ".join(prompt_parts)
-
+    return " ".join(prompt_parts)
 
 @app.route('/health', methods=['GET'])
 @error_handler
