@@ -24,6 +24,16 @@ BQ_DATASET_ID = "mlb_agent_evaluation"
 # --- Streamlit Page Configuration ---
 st.set_page_config(page_title="MLB Agent Evaluation", layout="wide")
 
+import sys
+import types
+
+# Create mock module for IPython.core.display if needed
+if 'IPython.core.display' not in sys.modules:
+    mock_module = types.ModuleType('IPython.core.display')
+    mock_module.display = lambda x: None  # No-op function
+    sys.modules['IPython.core.display'] = mock_module
+    
+
 # --- Initialize Vertex AI (replace placeholders) ---
 PROJECT_ID = "gem-rush-007"  # YOUR PROJECT ID
 LOCATION = "us-central1"
