@@ -289,3 +289,158 @@ class UserProfile:
         except Exception as e:
             logging.error(f"Error saving feedback for {self.uid}: {str(e)}")
             return False
+    
+
+    def add_document(self, document_id: str, document_name: str) -> bool:
+        """
+        Adds a document reference to the user's profile.
+        
+        Args:
+            document_id: Unique identifier for the document
+            document_name: Display name of the document
+            
+        Returns:
+            bool: True if document was added successfully, False otherwise
+        """
+        try:
+            document_entry = {
+                'id': document_id,
+                'name': document_name,
+                'uploaded_at': datetime.now()
+            }
+            
+            # Get current documents from profile
+            profile = self.get_profile()
+            if profile and 'documents' in profile:
+                current_documents = profile['documents']
+            else:
+                current_documents = []
+            
+            # Add new document entry
+            current_documents.append(document_entry)
+            
+            # Update document
+            self._user_ref.update({
+                'documents': current_documents
+            })
+            
+            logging.info(f"Document {document_name} added for user {self.uid}")
+            return True
+            
+        except Exception as e:
+            logging.error(f"Error adding document for {self.uid}: {str(e)}")
+            return False
+
+    def get_documents(self) -> List[Dict[str, Any]]:
+        """
+        Retrieves the user's uploaded documents.
+        
+        Returns:
+            List[Dict[str, Any]]: List of document entries with IDs, names, and timestamps
+        """
+        try:
+            profile = self.get_profile()
+            if profile and 'documents' in profile:
+                return profile['documents']
+            return []
+            
+        except Exception as e:
+            logging.error(f"Error fetching documents for {self.uid}: {str(e)}")
+            return []
+
+    def delete_document(self, document_id: str) -> bool:
+        """
+        Deletes a document reference from the user's profile.
+        
+        Args:
+            document_id: Unique identifier of the document to delete
+            
+        Returns:
+            bool: True if document was deleted successfully, False otherwise
+        """
+        try:
+            # Get current documents from profile
+            profile = self.get_profile()
+            if not profile or 'documents' not in profile:
+                return False
+            
+            current_documents = profile['documents']
+            
+            # Filter out the document to delete
+            updated_documents = [doc for doc in current_documents if doc.get('id') != document_id]
+            
+            # If no documents were removed, return False
+            if len(updated_documents) == len(current_documents):
+                logging.warning(f"Document {document_id} not found for user {self.uid}")
+                return False
+            
+            # Update document list
+            self._user_ref.update({
+                'documents': updated_documents
+            })
+            
+            logging.info(f"Document {document_id} deleted for user {self.uid}")
+            return True
+            
+        except Exception as e:
+            logging.error(f"Error deleting document for {self.uid}: {str(e)}")
+            return False
+
+    def log_query(self, query: str, response: str) -> bool:
+        """
+        Logs a query and its response to the user's profile.
+        
+        Args:
+            query: The question asked by the user
+            response: The response from the AI
+            
+        Returns:
+            bool: True if query was logged successfully, False otherwise
+        """
+        try:
+            query_entry = {
+                'query': query,
+                'response': response,
+                'timestamp': datetime.now()
+            }
+            
+            # Get current query history from profile
+            profile = self.get_profile()
+            if profile and 'query_history' in profile:
+                current_queries = profile['query_history']
+            else:
+                current_queries = []
+            
+            # Add new query entry (limit to 50 most recent)
+            current_queries.append(query_entry)
+            if len(current_queries) > 50:
+                current_queries = current_queries[-50:]
+            
+            # Update document
+            self._user_ref.update({
+                'query_history': current_queries
+            })
+            
+            logging.info(f"Query logged for user {self.uid}")
+            return True
+            
+        except Exception as e:
+            logging.error(f"Error logging query for {self.uid}: {str(e)}")
+            return False
+
+def check_waitlist_status(self) -> Dict[str, Any]:
+    """
+    Checks the user's waitlist status for expanded document access.
+    
+    Returns:
+        Dict[str, Any]: Dictionary containing waitlist status information
+    """
+    try:
+        profile = self.get_profile()
+        if profile and 'waitlist_request' in profile:
+            return profile['waitlist_request']
+        return None
+        
+    except Exception as e:
+        logging.error(f"Error checking waitlist status for {self.uid}: {str(e)}")
+        return None

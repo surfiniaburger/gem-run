@@ -7,6 +7,9 @@ from google.cloud import secretmanager_v1
 import vertexai
 from vertexai import rag
 from google import genai
+from user_profile import UserProfile
+from auth import sign_in_or_sign_up
+import datetime
 
 # Page configuration
 st.set_page_config(
@@ -21,17 +24,64 @@ PROJECT_ID = "gem-rush-007"
 SECRET_NAME = "cloud-run-invoker"
 LOCATION = "us-central1"
 DEFAULT_CORPUS_NAME = "user-documents-corpus"
-MODEL_ID = "gemini-2.0-flash-001"
+MODEL_ID = "gemini-2.0-pro-exp-02-05"
 
-# Initialize session state variables if they don't exist
-if 'is_initialized' not in st.session_state:
-    st.session_state.is_initialized = False
-if 'rag_corpus' not in st.session_state:
-    st.session_state.rag_corpus = None
-if 'client' not in st.session_state:
-    st.session_state.client = None
-if 'chat_history' not in st.session_state:
-    st.session_state.chat_history = []
+def main():
+    # Check if user is authenticated
+    if 'user' not in st.session_state:
+        st.warning("Please log in to access the Document Q&A feature.")
+        sign_in_or_sign_up()
+        return
+    
+    # Get user profile
+    user_profile = UserProfile(st.session_state['user'].uid, st.session_state['user'].email)
+    
+    # Initialize session state variables if they don't exist
+    if 'is_initialized' not in st.session_state:
+        st.session_state.is_initialized = False
+    if 'rag_corpus' not in st.session_state:
+        st.session_state.rag_corpus = None
+    if 'client' not in st.session_state:
+        st.session_state.client = None
+    if 'chat_history' not in st.session_state:
+        st.session_state.chat_history = []
+    
+    # App title and description
+    st.title("📚 Document Q&A with Google AI")
+    
+    # Get user tier information
+    profile = user_profile.get_profile()
+    user_tier = profile.get('account_type', 'free')
+    
+    # Display different welcome message based on tier
+    if user_tier == 'free':
+        st.markdown(f"""
+        Welcome, {user_profile.email}! Free tier allows 1 document with unlimited questions.
+        """)
+    else:
+        st.markdown(f"""
+        Welcome, {user_profile.email}! Premium tier allows multiple documents with priority processing.
+        """)
+    
+    # Initialize the system if not already done
+    if not st.session_state.is_initialized:
+        if not initialize_rag_system():
+            st.stop()
+    
+    # Main app interface
+    tab1, tab2 = st.tabs(["Upload Documents", "Ask Questions"])
+    
+    # Tab 1: Document Upload
+    with tab1:
+        document_upload_tab(user_profile)
+    
+    # Tab 2: Ask Questions
+    with tab2:
+        question_answering_tab(user_profile)
+    
+    # Footer
+    st.markdown("---")
+    st.caption("Powered by Google Vertex AI RAG Engine")
 
 # Function to get secret from Secret Manager
 @st.cache_resource
@@ -96,65 +146,48 @@ def initialize_rag_system():
         st.error(f"Error initializing: {str(e)}")
         return False
 
-# Sidebar for instructions and information
-with st.sidebar:
-    st.title("How to Use This Feature")
-    st.markdown("""
-        This feature allows you to upload documents and ask questions about their content.  It uses Google's Vertex AI Retrieval Augmented Generation (RAG) to provide accurate and context-aware answers.
-        
-        **1. Upload Documents:**
-        
-        * Go to the "Upload Documents" tab.
-        * Drag and drop your files (PDF, TXT, MD, DOCX) or click to browse.
-        * (Optional) Adjust "Chunk Size" and "Chunk Overlap" in "Advanced Settings".  Larger chunk sizes preserve more context. Chunk overlap helps maintain context between adjacent chunks.
-        * Click "Process Documents". This uploads your files, splits them into smaller chunks, and creates embeddings for efficient searching.
-        
-        **2. Ask Questions:**
-        
-        * Go to the "Ask Questions" tab.
-        * Type your question in the input box.
-        * Click "Ask".  The AI will search your uploaded documents and provide an answer.
-        
-        **3. View Sources:**
-        
-        * After getting an answer, click "View Document Sources" to see the specific parts of your documents that were used to generate the response.  This helps you understand the AI's reasoning and verify the information.
-        
-        **4. Clear Conversation**
-        * Click the "Clear Conversation" button to begin a fresh discussion.
-    
-        **Tips:**
-        
-        * Be specific with your questions for better results.
-        * The AI understands natural language, so you can ask questions as you would to a person.
-        * This app is powered by a large language model, so it might occasionally generate incorrect or misleading information.  Always double-check critical information.
-        """)
-
-
-
-# App title and description
-st.title("📚 Document Q&A with Google AI")
-st.markdown("""
-Upload your documents and ask questions to get AI-powered answers based on your content.
-""")
-
-# Initialize the system if not already done
-if not st.session_state.is_initialized:
-    if not initialize_rag_system():
-        st.stop()
-
-# Main app interface
-tab1, tab2 = st.tabs(["Upload Documents", "Ask Questions"])
-
-# Tab 1: Document Upload
-with tab1:
+def document_upload_tab(user_profile):
     st.header("Upload Your Documents")
-    st.markdown("Upload PDF, text, or markdown files to create your knowledge base.")
     
-    # File uploader
-    uploaded_files = st.file_uploader(
-        "Drag and drop files here",
+    # Get user's existing documents
+    user_documents = user_profile.get_documents()
+    document_count = len(user_documents)
+    
+    # Check if user has already uploaded a document
+    if document_count >= 1:
+        st.warning("Free tier limited to 1 document. Join our waitlist for expanded access.")
+        
+        # Display current document
+        st.subheader("Your Current Document")
+        if len(user_documents) > 0:
+            st.info(f"**{user_documents[0]['name']}** (uploaded on {user_documents[0]['uploaded_at'].strftime('%Y-%m-%d')})")
+        
+        # Waitlist form
+        with st.form("waitlist_form"):
+            st.write("Join our waitlist for access to multiple documents")
+            email = st.text_input("Email", value=user_profile.email, disabled=True)
+            reason = st.text_area("How would you use multiple documents?")
+            submitted = st.form_submit_button("Join Waitlist")
+            
+            if submitted and reason:
+                # Store waitlist request in user profile
+                waitlist_data = {
+                    "reason": reason,
+                    "timestamp": datetime.now(),
+                    "status": "pending"
+                }
+                if user_profile.create_or_update({"waitlist_request": waitlist_data}):
+                    st.success("Thank you! We'll notify you when expanded access is available.")
+        
+        return
+    
+    # Normal upload UI for users with no documents
+    st.markdown("Upload a PDF, text, or markdown file to create your knowledge base.")
+    
+    # File uploader - modified to only allow single file
+    uploaded_file = st.file_uploader(
+        "Drag and drop a file here",
         type=["pdf", "txt", "md", "docx"],
-        accept_multiple_files=True,
         help="Supported formats: PDF, Text, Markdown, Word"
     )
     
@@ -166,52 +199,56 @@ with tab1:
                                  help="Overlap helps maintain context between chunks")
     
     # Upload button
-    if uploaded_files and st.button("Process Documents", type="primary"):
+    if uploaded_file and st.button("Process Document", type="primary"):
         progress_bar = st.progress(0)
         status_text = st.empty()
         
-        for i, uploaded_file in enumerate(uploaded_files):
-            progress = (i / len(uploaded_files))
-            progress_bar.progress(progress)
-            status_text.text(f"Processing {uploaded_file.name}... ({i+1}/{len(uploaded_files)})")
-            
-            with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{uploaded_file.name.split(".")[-1]}') as temp_file:
-                temp_file.write(uploaded_file.getvalue())
-                temp_path = temp_file.name
-            
-            try:
-                rag_file = rag.upload_file(
-                    corpus_name=st.session_state.rag_corpus.name,
-                    path=temp_path,
-                    display_name=uploaded_file.name,
-                    description="Uploaded from Q&A app"
-                )
-                # Clean up temp file
-                os.unlink(temp_path)
-            except Exception as e:
-                st.error(f"Error uploading {uploaded_file.name}: {str(e)}")
-                os.unlink(temp_path)
+        status_text.text(f"Processing {uploaded_file.name}...")
         
-        progress_bar.progress(1.0)
-        status_text.text("All documents processed successfully!")
-        st.success("Your documents have been uploaded and processed. You can now ask questions in the 'Ask Questions' tab.")
-        st.session_state.documents_processed = True
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{uploaded_file.name.split(".")[-1]}') as temp_file:
+            temp_file.write(uploaded_file.getvalue())
+            temp_path = temp_file.name
+        
+        try:
+            # Save document reference to user profile
+            document_id = f"{user_profile.uid}_{uploaded_file.name}"
+            
+            rag_file = rag.upload_file(
+                corpus_name=st.session_state.rag_corpus.name,
+                path=temp_path,
+                display_name=document_id,
+                description=f"Uploaded by {user_profile.email}"
+            )
+            
+            # Store document reference in user profile
+            user_profile.add_document(document_id, uploaded_file.name)
+            
+            # Clean up temp file
+            os.unlink(temp_path)
+            
+            progress_bar.progress(1.0)
+            status_text.text("Document processed successfully!")
+            st.success("Your document has been uploaded and processed. You can now ask questions in the 'Ask Questions' tab.")
+            st.session_state.documents_processed = True
+            
+        except Exception as e:
+            st.error(f"Error uploading {uploaded_file.name}: {str(e)}")
+            os.unlink(temp_path)
 
-# Tab 2: Ask Questions
-with tab2:
+def question_answering_tab(user_profile):
     st.header("Ask Questions About Your Documents")
     
     # Show warning if no documents uploaded
     file_count = 0
     try:
-        files = rag.list_files(corpus_name=st.session_state.rag_corpus.name)
-        file_count = len(files)
+        # Get documents for this user from user profile
+        user_documents = user_profile.get_documents()
+        file_count = len(user_documents)
     except:
         pass
     
     if file_count == 0:
-        #st.warning("No documents found in your knowledge base. Please upload documents in the 'Upload Documents' tab first.")
-        print("Let's go")
+        st.warning("No documents found in your knowledge base. Please upload documents in the 'Upload Documents' tab first.")
     else:
         st.markdown(f"Your knowledge base contains {file_count} document(s). Ask any question about their content.")
     
@@ -244,6 +281,10 @@ with tab2:
                 )
                 
                 st.session_state.chat_history.append({"role": "assistant", "content": response.text})
+                
+                # Log the interaction with user profile
+                user_profile.log_query(user_question, response.text)
+                
         except Exception as e:
             st.error(f"Error generating response: {str(e)}")
             st.session_state.chat_history.append({"role": "assistant", "content": f"Sorry, I encountered an error: {str(e)}"})
@@ -259,9 +300,24 @@ with tab2:
     
     # Clear conversation button
     if st.button("Clear Conversation"):
-     for key in st.session_state.keys():
-        del st.session_state[key]
-     st.rerun()
+        # Preserve user authentication while clearing conversation
+        user = st.session_state.get('user', None)
+        is_initialized = st.session_state.get('is_initialized', False)
+        rag_corpus = st.session_state.get('rag_corpus', None)
+        client = st.session_state.get('client', None)
+        
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+        
+        # Restore authentication and system state
+        if user:
+            st.session_state.user = user
+        st.session_state.is_initialized = is_initialized
+        st.session_state.rag_corpus = rag_corpus
+        st.session_state.client = client
+        st.session_state.chat_history = []
+        
+        st.rerun()
     
     # Show sources expander (only if there's a response)
     if st.session_state.chat_history and any(msg["role"] == "assistant" for msg in st.session_state.chat_history):
@@ -281,13 +337,44 @@ with tab2:
                         
                         if hasattr(contexts, 'contexts') and hasattr(contexts.contexts, 'contexts'):
                             for i, context in enumerate(contexts.contexts.contexts):
-                                    st.markdown(f"**Source {i+1}:**")
-                                    st.markdown(context.text)
-                                    if hasattr(context, 'metadata') and context.metadata:
-                                        st.caption(f"From: {context.metadata.get('source', 'Unknown')}")
+                                st.markdown(f"**Source {i+1}:**")
+                                st.markdown(context.text)
+                                if hasattr(context, 'metadata') and context.metadata:
+                                    doc_name = context.metadata.get('source', 'Unknown')
+                                    # Extract just the filename without user ID prefix
+                                    if '_' in doc_name:
+                                        doc_name = doc_name.split('_', 1)[1]
+                                    st.caption(f"From: {doc_name}")
             except Exception as e:
                 st.warning(f"Couldn't retrieve source information: {str(e)}")
 
-# Footer
-st.markdown("---")
-st.caption("Powered by Google Vertex AI RAG Engine")
+# For the sidebar with instructions
+def show_sidebar():
+    with st.sidebar:
+        st.title("How to Use This Feature")
+        st.markdown("""
+            This feature allows you to upload documents and ask questions about their content. It uses Google's Vertex AI Retrieval Augmented Generation (RAG) to provide accurate and context-aware answers.
+            
+            **1. Upload Documents:**
+            
+            * Go to the "Upload Documents" tab.
+            * Drag and drop your files (PDF, TXT, MD, DOCX) or click to browse.
+            * (Optional) Adjust "Chunk Size" and "Chunk Overlap" in "Advanced Settings".
+            * Click "Process Documents".
+            
+            **2. Ask Questions:**
+            
+            * Go to the "Ask Questions" tab.
+            * Type your question in the input box.
+            * Click "Ask".
+            
+            **3. View Sources:**
+            
+            * After getting an answer, click "View Document Sources" to see the specific parts of your documents used for the response.
+            
+            **4. Clear Conversation**
+            * Click the "Clear Conversation" button to begin a fresh discussion.
+        """)
+
+if __name__ == "__main__":
+    main()
