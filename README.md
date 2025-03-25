@@ -2,6 +2,12 @@
 
 Welcome to the [Google Cloud x MLB™ Hackathon](https://next2025challenge.devpost.com/)! 
 
+
+[Pitch Deck](https://www.canva.com/design/DAGiwdwz-ig/s6rmJ_5W-hATKJP4CY_b7Q/edit?utm_content=DAGiwdwz-ig&utm_campaign=designshare&utm_medium=link2&utm_source=sharebutton)!
+
+
+
+
 Calling all Devs: Step up to the plate and knock it out of the park! Use Google Cloud's heavy-hitting data and AI lineup (Gemini, Imagen, Vertex AI... the whole roster!) and real data from Major League Baseball™ to build the future of fan engagement. Showcase your AI skills, craft impactful applications, and revolutionize how baseball fans experience the game.
 
 Ready to hit a grand slam? Build a project using Google Cloud AI that revolutionizes MLB™ fan experience.
