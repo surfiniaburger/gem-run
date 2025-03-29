@@ -52,6 +52,8 @@ moviepy = "^2.1.2"
 scikit-learn = "^1.6.1"
 json5 = "^0.10.0"
 flask-cors = "^5.0.1"
+fitz = "^0.0.1.dev2"
+pymupdf = "^1.25.4"
 
 
 [tool.poetry.group.dev.dependencies]
