@@ -54,6 +54,7 @@ json5 = "^0.10.0"
 flask-cors = "^5.0.1"
 fitz = "^0.0.1.dev2"
 pymupdf = "^1.25.4"
+langgraph = "^0.3.21"
 
 
 [tool.poetry.group.dev.dependencies]
