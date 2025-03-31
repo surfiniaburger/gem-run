@@ -5,6 +5,8 @@ from datetime import datetime, UTC, timedelta
 import logging
 import time
 from typing import Dict, List, Tuple, Any, Optional
+import os # Need os for file operations
+import tempfile # For creating temporary files safely
 
 from ratelimit import limits, sleep_and_retry
 from google.cloud import bigquery
@@ -17,7 +19,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # --- Configuration ---
-GCP_PROJECT_ID = "[your-gcp-project-id]"  # <-- REPLACE THIS
+GCP_PROJECT_ID = "silver-455021"  # <-- REPLACE THIS
 GCP_LOCATION = "us-central1"         # Region for Vertex AI and BQ connection
 BQ_LOCATION = "US"                   # Location for BigQuery dataset
 BQ_DATASET_ID = "mlb_rag_data_2024"  # Dataset to store RAG documents
@@ -25,7 +27,7 @@ BQ_RAG_TABLE_ID = "rag_documents"    # Table for documents, embeddings, metadata
 BQ_INDEX_NAME = "rag_docs_embedding_idx" # Name for the BQ vector index
 
 # Vertex AI Models
-VERTEX_LLM_MODEL = "gemini-1.5-flash-001" # Or gemini-1.0-pro, etc.
+VERTEX_LLM_MODEL = "gemini-2.0-flash-lite" # Or gemini-1.0-pro, etc.
 VERTEX_EMB_MODEL = "text-embedding-005"
 EMBEDDING_TASK_TYPE = "RETRIEVAL_DOCUMENT" # Task type for embeddings
 EMBEDDING_DIMENSIONALITY = 768 # Dimension for text-embedding-005
@@ -40,12 +42,39 @@ VERTEX_LLM_RPM = 180 # Requests per minute (example for gemini-1.5-flash)
 VERTEX_EMB_RPM = 1400 # Requests per minute (example for text-embedding-005)
 
 # How many recent games to process per team
-NUM_GAMES_PER_TEAM = 1 # Set low for testing, increase for production
+NUM_GAMES_PER_TEAM = 10 # Set low for testing, increase for production
 
 # Team configurations (shortened for brevity)
 TEAMS = {
     'rangers': 140,
-    # Add all other teams...
+    'angels': 108,
+    'astros': 117,
+    'rays': 139,
+    'blue_jays': 141,
+    'yankees': 147,
+    'orioles': 110,
+    'red_sox': 111,
+    'twins': 142,
+    'white_sox': 145,
+    'guardians': 114,
+    'tigers': 116,
+    'royals': 118,
+    'padres': 135,
+    'giants': 137,
+    'diamondbacks': 109,
+    'rockies': 115,
+    'phillies': 143,
+    'braves': 144,
+    'marlins': 146,
+    'nationals': 120,
+    'mets': 121,
+    'pirates': 134,
+    'cardinals': 138,
+    'brewers': 158,
+    'cubs': 112,
+    'reds': 113,
+    'athletics': 133,
+    'mariners': 136,
     'dodgers': 119,
 }
 
@@ -185,46 +214,85 @@ def call_vertex_embedding(text_inputs: List[str]) -> List[Optional[List[float]]]
         return [None] * len(text_inputs)
 
 
+
+
 def upload_to_bigquery(df: pd.DataFrame, table_id: str, schema: List[bigquery.SchemaField]):
-    """Upload DataFrame to BigQuery table, handling common errors."""
+    """Upload DataFrame to BigQuery table via a temporary NDJSON file."""
     if df.empty:
         logger.info(f"DataFrame is empty, skipping upload to {table_id}.")
         return
 
-    # Ensure data types match schema, especially JSON
+    # 1. Prepare data: Ensure metadata is dict/list for json.dumps, timestamp is correct
     if 'metadata' in df.columns:
-         # Ensure it's a string representation of JSON for BQ JSON type
-        df['metadata'] = df['metadata'].apply(lambda x: json.dumps(x) if x and not isinstance(x, str) else x)
+        # Ensure it's serializable - apply dumps only during file write
+        pass # No need to pre-convert to string here for to_json
 
-    # Ensure timestamp is correct type
     if 'last_updated' in df.columns:
          df['last_updated'] = pd.to_datetime(df['last_updated'], utc=True)
+         # Convert Timestamp to ISO format string suitable for BQ TIMESTAMP
+         # BQ Load job handles ISO format string -> TIMESTAMP conversion
+         df['last_updated'] = df['last_updated'].dt.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
 
+    # 2. Use a temporary file
+    # Use NamedTemporaryFile to ensure it gets cleaned up even on error
+    with tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix='.ndjson') as temp_f:
+        temp_file_path = temp_f.name
+        logger.info(f"Writing DataFrame to temporary NDJSON file: {temp_file_path}")
+
+        # 3. Write DataFrame to newline-delimited JSON format
+        # orient='records' gives one JSON object per line
+        # lines=True ensures newline delimited
+        # date_format='iso' handles timestamp serialization correctly
+        df.to_json(
+            temp_f,
+            orient='records',
+            lines=True,
+            date_format='iso', # Important for timestamps
+            force_ascii=False # Handle potential non-ASCII chars in summaries
+        )
+        # Ensure data is written before BQ reads it
+        temp_f.flush()
+
+    logger.info(f"Finished writing to temporary file. Starting BigQuery load from file.")
+
+    # 4. Configure and run the BigQuery load job from the file
     job_config = bigquery.LoadJobConfig(
-        write_disposition="WRITE_APPEND", # Append new documents
+        write_disposition="WRITE_APPEND",
         schema=schema,
-        # Specify source format if needed, default is CSV for DataFrames but PARQUET might be better for nested data if converting first
-        # source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON, # If metadata causes issues
+        source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON, # Specify NDJSON format
+        # BQ can auto-detect schema usually, but specifying ensures consistency
+        # autodetect=False # Explicitly use provided schema
     )
 
     try:
-        job = bq_client.load_table_from_dataframe(df, table_id, job_config=job_config)
+        with open(temp_file_path, "rb") as source_file: # Open in binary mode for upload
+            job = bq_client.load_table_from_file(source_file, table_id, job_config=job_config)
+
         job.result()  # Wait for the job to complete
-        logger.info(f"Loaded {len(df)} rows to {table_id}. Job ID: {job.job_id}")
+        table = bq_client.get_table(table_id) # Refresh table info
+        logger.info(
+            f"Loaded {job.output_rows} rows to {table_id}. Total rows: {table.num_rows}. Job ID: {job.job_id}"
+        )
 
     except BadRequest as e:
-        logger.error(f"BigQuery BadRequest loading to {table_id}: {e}")
-        # Log detailed errors
+        logger.error(f"BigQuery BadRequest loading from file {temp_file_path} to {table_id}: {e}")
         if hasattr(e, 'errors'):
             for error in e.errors:
                 logger.error(f"  Reason: {error.get('reason', 'N/A')}, Location: {error.get('location', 'N/A')}, Message: {error.get('message', 'N/A')}")
-        # Consider saving the failed DataFrame for inspection
-        # df.to_csv(f"failed_upload_{table_id.split('.')[-1]}_{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}.csv", index=False)
-        # raise # Optionally re-raise to stop processing
+        # Keep the temp file for debugging if needed, otherwise it gets deleted below
+        # raise
 
     except Exception as e:
-        logger.error(f"Generic error loading data to {table_id}: {e}")
-        # raise # Optionally re-raise
+        logger.error(f"Generic error loading data from file {temp_file_path} to {table_id}: {e}")
+        # Keep the temp file for debugging if needed, otherwise it gets deleted below
+        # raise
+    finally:
+         # 5. Clean up the temporary file
+        try:
+            os.remove(temp_file_path)
+            logger.info(f"Removed temporary file: {temp_file_path}")
+        except OSError as e:
+            logger.error(f"Error removing temporary file {temp_file_path}: {e}")
 
 # --- Core Processing Functions ---
 
@@ -262,63 +330,77 @@ def get_full_game_data(game_pk: int) -> Dict:
     if not data:
         logger.error(f"Failed to fetch or received empty data for game {game_pk}")
     return data
-
-def generate_game_summary_and_metadata(game_data: Dict) -> Optional[Tuple[str, Dict]]:
+def generate_game_summary_and_metadata(game_pk: int, game_data: Dict) -> Optional[Tuple[str, Dict]]:
     """Generates a natural language summary and structured metadata for a game using an LLM."""
+    # Initial check for essential top-level keys
     if not game_data or 'gameData' not in game_data or 'liveData' not in game_data:
-        logger.warning("generate_game_summary_and_metadata: Invalid or incomplete game_data provided.")
+        logger.warning(f"generate_game_summary_and_metadata: Invalid or incomplete game_data for game {game_pk}.")
         return None
 
     try:
-        game_info = game_data['gameData']
-        live_info = game_data['liveData']
-        game_pk = game_info['pk']
-        status = game_info['status']['detailedState']
+        # --- Corrected Key Access ---
+        game_info = game_data.get('gameData', {})
+        live_info = game_data.get('liveData', {})
+
+        # Extract gamePk safely (using the passed-in game_pk as fallback if needed)
+        actual_game_pk = game_info.get('game', {}).get('pk', game_pk)
+        if actual_game_pk != game_pk:
+             logger.warning(f"Mismatch between passed game_pk ({game_pk}) and pk in data ({actual_game_pk}). Using pk from data.")
+             game_pk = actual_game_pk # Use the one from the data if available
+
+        status = game_info.get('status', {}).get('detailedState')
 
         if status != 'Final':
             logger.info(f"Game {game_pk} is not Final ({status}), skipping summary generation.")
             return None
 
-        home_team = game_info['teams']['home']['name']
-        away_team = game_info['teams']['away']['name']
-        home_id = game_info['teams']['home']['id']
-        away_id = game_info['teams']['away']['id']
-        date = game_info['datetime']['officialDate']
-        venue = game_info['venue']['name']
+        # --- Use .get() for safer access throughout ---
+        home_team_data = game_info.get('teams', {}).get('home', {})
+        away_team_data = game_info.get('teams', {}).get('away', {})
+        home_team = home_team_data.get('name', 'Unknown Home Team')
+        away_team = away_team_data.get('name', 'Unknown Away Team')
+        home_id = home_team_data.get('id')
+        away_id = away_team_data.get('id')
+        date = game_info.get('datetime', {}).get('officialDate')
+        venue = game_info.get('venue', {}).get('name', 'Unknown Venue')
 
-        # Extract scores (handle potential missing keys)
         linescore = live_info.get('linescore', {})
         home_score = linescore.get('teams', {}).get('home', {}).get('runs', 0)
         away_score = linescore.get('teams', {}).get('away', {}).get('runs', 0)
         innings_data = linescore.get('innings', [])
 
-        # Basic play info extraction (can be made more detailed)
+        # Basic play info extraction
         key_plays_info = []
         all_plays = live_info.get('plays', {}).get('allPlays', [])
-        scoring_plays_indices = live_info.get('plays', {}).get('scoringPlays', [])
-        scoring_plays = [all_plays[i] for i in scoring_plays_indices if i < len(all_plays)]
+        # scoring_plays_indices = live_info.get('plays', {}).get('scoringPlays', []) # API v1.1 doesn't seem to have this index directly
+        
+        # Find scoring plays manually
+        scoring_plays = [play for play in all_plays if play.get('about', {}).get('isScoringPlay', False)]
 
-        for play in scoring_plays: # Focus on scoring plays for brevity
+        for play in scoring_plays:
              play_result = play.get('result', {})
              play_about = play.get('about', {})
              if play_result and play_about:
                  key_plays_info.append(f"Inning {play_about.get('inning', '?')} ({play_about.get('halfInning', '')}): {play_result.get('description', 'N/A')}")
         key_plays_str = "\n".join(key_plays_info) if key_plays_info else "No specific scoring plays highlighted."
 
-        # Construct metadata
+        # Construct metadata (ensure values are serializable, handle potential None for IDs)
         metadata = {
             "date": date,
             "season": int(date[:4]) if date else None,
-            "home_team_id": home_id,
+            "home_team_id": int(home_id) if home_id else None,
             "home_team_name": home_team,
-            "away_team_id": away_id,
+            "away_team_id": int(away_id) if away_id else None,
             "away_team_name": away_team,
-            "home_score": home_score,
-            "away_score": away_score,
+            "home_score": int(home_score),
+            "away_score": int(away_score),
             "venue_name": venue,
             "status": status,
             "innings": len(innings_data),
-            # Add more metadata: winning/losing pitcher (requires parsing decisions), key player stats (requires boxscore parsing)
+            # Add more metadata as needed (e.g., from boxscore if fetched)
+            # "winning_pitcher_id": ...,
+            # "losing_pitcher_id": ...,
+            # "key_player_stats": [...]
         }
 
         # Construct Prompt
@@ -349,10 +431,12 @@ def generate_game_summary_and_metadata(game_data: Dict) -> Optional[Tuple[str, D
             return None
 
     except KeyError as e:
-         logger.error(f"KeyError processing game data for summary generation (game {game_data.get('gameData',{}).get('pk','?')}). Missing key: {e}")
+         # Log with the game_pk that was passed in
+         logger.error(f"KeyError processing game data for summary generation (game {game_pk}). Missing key: {e}", exc_info=True)
          return None
     except Exception as e:
-        logger.error(f"Unexpected error generating summary for game {game_data.get('gameData',{}).get('pk','?')}: {e}")
+        # Log with the game_pk that was passed in
+        logger.error(f"Unexpected error generating summary for game {game_pk}: {e}", exc_info=True)
         return None
 
 def create_bq_vector_index(client: bigquery.Client, dataset_id: str, table_id: str, index_name: str):
@@ -392,19 +476,23 @@ def process_game_for_rag(game_pk: int, full_table_id: str):
     """Fetches, summarizes, embeds, and uploads data for a single game."""
     game_data = get_full_game_data(game_pk)
     if not game_data:
+        logger.warning(f"Skipping game {game_pk} due to fetch failure or empty data.")
         return # Skip if data fetching failed
 
-    summary_result = generate_game_summary_and_metadata(game_data)
+    # --- Pass game_pk to the summary function ---
+    summary_result = generate_game_summary_and_metadata(game_pk, game_data)
+    # -----------------------------------------
+
     if not summary_result:
+        logger.warning(f"Skipping game {game_pk} because summary/metadata generation failed.")
         return # Skip if summary generation failed
 
     summary_text, metadata = summary_result
 
     # Generate embedding for the summary
-    # Note: Batching is more efficient. If processing many games, gather summaries first.
     embedding_list = call_vertex_embedding([summary_text])
     if not embedding_list or embedding_list[0] is None:
-        logger.error(f"Failed to generate embedding for game {game_pk}")
+        logger.error(f"Failed to generate embedding for game {game_pk}. Skipping upload for this game.")
         return
 
     embedding = embedding_list[0]
@@ -423,6 +511,7 @@ def process_game_for_rag(game_pk: int, full_table_id: str):
     rag_df = pd.DataFrame(rag_data)
 
     # Upload to BigQuery
+    logger.info(f"Attempting to upload summary for game {game_pk} to {full_table_id}")
     upload_to_bigquery(rag_df, full_table_id, RAG_SCHEMA)
 
 def main():
@@ -490,3 +579,19 @@ if __name__ == "__main__":
     # 5. Review and adjust rate limits and model names if needed.
     # --- --- --- --- --- ---
     main()
+
+
+
+#This script provides a solid foundation. You can enhance it further by:
+
+#Adding more detailed parsing for player stats to include in metadata.
+
+#Generating embeddings for individual key plays (creating more documents per game).
+
+#Implementing more robust error handling and retries.
+
+#Using asynchronous processing or threading for faster API calls (like Tutorial 1).
+
+#Adding a mechanism to track already processed games to avoid redundant work on subsequent runs.
+
+#Improving prompt engineering for better summaries.
