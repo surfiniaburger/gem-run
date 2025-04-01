@@ -10,6 +10,7 @@ from typing import Dict, List, Tuple, Any, Optional, TypedDict
 import os
 import re 
 from ratelimit import limits, sleep_and_retry
+from pydantic.v1 import BaseModel, Field
 
 # LangGraph and LangChain specific
 from langgraph.graph import StateGraph, END
@@ -36,7 +37,7 @@ BQ_FULL_RAG_TABLE_ID = f"{GCP_PROJECT_ID}.{BQ_DATASET_ID}.{BQ_RAG_TABLE_ID}"
 BQ_FULL_PLAYS_TABLE_ID = f"{GCP_PROJECT_ID}.{BQ_DATASET_ID}.{BQ_PLAYS_TABLE_ID}"
 BQ_INDEX_NAME = "rag_docs_embedding_idx"
 
-VERTEX_LLM_MODEL = "gemini-1.5-flash-001"
+VERTEX_LLM_MODEL = "gemini-2.0-flash"
 VERTEX_EMB_MODEL = "text-embedding-004"
 EMBEDDING_TASK_TYPE = "RETRIEVAL_QUERY" # Use RETRIEVAL_QUERY for search queries
 EMBEDDING_DIMENSIONALITY = 768
@@ -48,20 +49,34 @@ MLB_API_RATE_LIMIT = 60
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# mlb_agent_graph_refined.py or mlb_agent.py
+
 try:
-    if not vertexai.global_config.project:
-         vertexai.init(project=GCP_PROJECT_ID, location=GCP_LOCATION)
+    # Simply call init(). If already initialized, it typically handles it gracefully.
+    # If not initialized, this will set it up.
+    vertexai.init(project=GCP_PROJECT_ID, location=GCP_LOCATION)
+    logger.info(f"Ensured Vertex AI SDK is initialized for project {GCP_PROJECT_ID}, location {GCP_LOCATION}")
+
+    # Initialize BQ Client
     bq_client = bigquery.Client(project=GCP_PROJECT_ID)
-    # Use ChatVertexAI for LangChain compatibility
+    logger.info(f"Initialized BigQuery client for project {GCP_PROJECT_ID}")
+
+    # Initialize LangChain Model using ChatVertexAI
     model = ChatVertexAI(model_name=VERTEX_LLM_MODEL, project=GCP_PROJECT_ID, location=GCP_LOCATION, temperature=0.2)
-    # Separate model instance maybe for structured output/tool use if needed
+    logger.info(f"Initialized LangChain ChatVertexAI model: {VERTEX_LLM_MODEL}")
+
+    # Initialize model for structured output (optional, can use the same instance)
     structured_output_model = ChatVertexAI(model_name=VERTEX_LLM_MODEL, project=GCP_PROJECT_ID, location=GCP_LOCATION, temperature=0.0)
-    # Embedding model instance (LangChain wrapper isn't strictly needed here, but could be used)
+    logger.info(f"Initialized LangChain ChatVertexAI model for structured output: {VERTEX_LLM_MODEL}")
+
+    # Initialize Embedding Model (direct SDK usage is fine here)
     emb_model = TextEmbeddingModel.from_pretrained(VERTEX_EMB_MODEL)
-    logger.info(f"Initialized Google Cloud clients and LangChain Model for project {GCP_PROJECT_ID}")
+    logger.info(f"Initialized Vertex AI Embedding model: {VERTEX_EMB_MODEL}")
+
 except Exception as e:
-    logger.critical(f"Failed to initialize Google Cloud clients: {e}", exc_info=True)
+    logger.critical(f"Failed to initialize Google Cloud clients or LangChain Model: {e}", exc_info=True)
     raise RuntimeError("Critical initialization failed.") from e
+
 
 # --- Agent State Definition (Added critique, revision tracking) ---
 class AgentState(TypedDict):
@@ -157,44 +172,86 @@ def call_vertex_embedding_agent(text_inputs: List[str]) -> List[Optional[List[fl
         logger.error(f"Error calling Vertex AI Embedding API: {e}", exc_info=True)
         return [None] * len(text_inputs)
 
+# mlb_agent.py
 
+# --- Keep all imports, config, clients, other functions ---
+# ...
+
+# --- Update the get_narrative_context_vector_search function ---
 def get_narrative_context_vector_search(query_text: str, game_pk: Optional[int] = None, top_n: int = 5) -> List[str]:
-    """Performs vector search on the BQ RAG table."""
-    # (Similar to ingestion, but use call_vertex_embedding_agent with RETRIEVAL_QUERY)
-    if not query_text: return []
+    """Performs vector search on the BQ RAG table using a CTE and JOIN."""
+    if not query_text:
+        logger.warning("Vector search query text is empty.")
+        return []
     try:
+        # 1. Get embedding for the query text
+        logger.info(f"Generating embedding for vector search query: '{query_text[:50]}...'")
         query_embedding_response = call_vertex_embedding_agent([query_text])
-        if not query_embedding_response or not query_embedding_response[0]: return []
+        if not query_embedding_response or not query_embedding_response[0]:
+            logger.error("Failed to get embedding for vector search query.")
+            return []
         query_embedding = query_embedding_response[0]
+        # Ensure the embedding is formatted as a string list '[val1, val2,...]' for SQL
+        query_embedding_str = f"[{', '.join(map(str, query_embedding))}]"
 
-        filter_clause = f"AND game_id = {game_pk}" if game_pk else ""
-        # Ensure the table name includes project and dataset
+
+        # 2. Construct the VECTOR_SEARCH query using a CTE
+        # Retrieve slightly more in the vector search phase for better filtering results
+        initial_top_k = top_n + 15
+
         query = f"""
-        SELECT base.content, distance
-        FROM VECTOR_SEARCH(
-            TABLE `{BQ_FULL_RAG_TABLE_ID}`,
-            'embedding',
-            (SELECT {query_embedding} AS embedding),
-            top_k => {top_n},
-            distance_type => 'COSINE'
-        ) AS base
-        WHERE TRUE {filter_clause}
-        ORDER BY distance ASC
-        """ # Note: Added alias 'base' which might be needed by BQ
+        WITH VectorSearchResults AS (
+          -- Perform vector search and explicitly select doc_id and distance
+          SELECT
+              base.doc_id,
+              distance
+          FROM
+              VECTOR_SEARCH(
+                  TABLE `{BQ_FULL_RAG_TABLE_ID}`,
+                  'embedding',
+                  (SELECT {query_embedding_str} AS embedding), -- Use the formatted embedding string
+                  top_k => {initial_top_k},
+                  distance_type => 'COSINE'
+              ) AS base
+        )
+        -- Join the vector search results back to the original table
+        SELECT
+            t.content,
+            vsr.distance
+        FROM
+            VectorSearchResults AS vsr
+        JOIN
+            `{BQ_FULL_RAG_TABLE_ID}` AS t ON vsr.doc_id = t.doc_id
+        """
 
-        logger.info(f"Performing vector search: '{query_text[:50]}...' (Game PK: {game_pk})")
-        df = execute_bq_query(query)
+        # Add WHERE clause AFTER the join if game_pk is specified
+        if game_pk:
+            query += f"\nWHERE t.game_id = {game_pk}"
+
+        query += f"""
+        ORDER BY
+            vsr.distance ASC
+        LIMIT {top_n}
+        """
+
+        logger.info(f"Performing vector search w/ CTE JOIN: '{query_text[:50]}...' (Game PK: {game_pk})")
+        df = execute_bq_query(query) # Execute the JOIN query
+
         if df is not None and not df.empty:
             results = df['content'].tolist()
             logger.info(f"Vector search returned {len(results)} snippets.")
             return results
-        logger.warning(f"Vector search returned no results.")
-        return []
+        else:
+            logger.warning(f"Vector search returned no results for query: '{query_text[:50]}...' (Game PK: {game_pk})")
+            return [] # Return empty list explicitly
+
     except Exception as e:
         logger.error(f"Error during vector search: {e}", exc_info=True)
-        return []
+        # Consider specific error handling if needed, e.g., for embedding failures
+        return [] # Return empty list on error
 
-
+# --- Rest of the mlb_agent.py code (Nodes, Graph, main, etc.) ---
+# ...
 # --- Refined Retriever Logic ---
 # Define Pydantic models for structured LLM output for planning retrieval
 class BQQuery(BaseModel):
@@ -241,24 +298,66 @@ def retrieve_data_node_refined(state: AgentState) -> Dict[str, Any]:
 
     if not plan: return {"error": "Plan is missing for retrieval."}
 
-    # Use LLM to determine retrieval strategy
-    prompt = RETRIEVER_PLANNER_PROMPT.format(
-        task=task,
-        plan=plan,
-        game_pk=game_pk if game_pk else "Not Specified",
-        rag_table=BQ_FULL_RAG_TABLE_ID,
-        plays_table=BQ_FULL_PLAYS_TABLE_ID
-    )
+    # ** MODIFIED RETRIEVAL PLANNING **
+    # Ask LLM to generate JSON string based on Pydantic descriptions
+    retrieval_planner_prompt_json = f"""
+    You are a data retrieval expert for an MLB analysis system. Your goal is to decide HOW to fetch the data needed based on the user's task and the overall plan.
+
+    Available Data Sources:
+    1.  BQ Structured Metadata (`{BQ_FULL_RAG_TABLE_ID}`): Game-level metadata (teams, score, date). SQL: `WHERE game_id = <pk> AND doc_type = 'game_summary'`
+    2.  BQ Structured Plays (`{BQ_FULL_PLAYS_TABLE_ID}`): Detailed play-by-play. SQL: `WHERE game_pk = <pk>`. Can filter further.
+    3.  BQ Vector Search (`{BQ_FULL_RAG_TABLE_ID}` embedding column): Narrative summaries/snippets. Use for context/similarity. Filterable by game_pk.
+
+    User Request: {task}
+    Overall Plan: {plan}
+    Game ID (if applicable): {game_pk}
+
+    Based on the request and plan, determine the retrieval actions. Output ONLY a JSON object string adhering to the following structure:
+    {{
+      "structured_queries": [ {{ "query": "SELECT ... FROM `{BQ_FULL_PLAYS_TABLE_ID}` WHERE game_pk = {game_pk} AND ..." }} ],
+      "vector_searches": [ {{ "query_text": "Relevant semantic query text", "filter_by_game": true }} ]
+    }}
+    - Include specific, runnable SQL queries for 'structured_queries'. Use full table IDs. Filter by game_pk where appropriate.
+    - Include concise text queries for 'vector_searches'.
+    - If no queries of a type are needed, provide an empty list for that key (e.g., "vector_searches": []).
+    - Ensure the output is a single, valid JSON string.
+    """
+
     retrieved_structured_data = []
     retrieved_narrative_context = []
+    retrieval_actions = None # Initialize
 
     try:
-        logger.info("Generating retrieval action plan...")
-        retrieval_actions = structured_output_model.with_structured_output(RetrievalPlan).invoke(prompt)
-        logger.info(f"Retrieval Actions: {retrieval_actions}")
+        logger.info("Generating retrieval action plan as JSON string...")
+        # Use the standard model, not structured_output_model here
+        response = model.invoke(retrieval_planner_prompt_json)
+        json_string = response.content.strip()
+        # Clean potential markdown backticks
+        if json_string.startswith("```json"):
+            json_string = json_string[7:]
+        if json_string.endswith("```"):
+            json_string = json_string[:-3]
+        json_string = json_string.strip()
+
+        logger.info(f"Attempting to parse JSON: {json_string}")
+        parsed_json = json.loads(json_string)
+
+        # Validate the parsed JSON using Pydantic *after* loading
+        retrieval_actions = RetrievalPlan(**parsed_json)
+        logger.info(f"Successfully parsed and validated RetrievalPlan: {retrieval_actions}")
+
+    except json.JSONDecodeError as json_err:
+         logger.error(f"Failed to parse LLM JSON output: {json_err}. Raw output:\n{json_string}", exc_info=True)
+         return {"error": f"Failed to parse retrieval plan JSON: {json_err}"}
+    except Exception as e: # Catch Pydantic validation errors or other issues
+        logger.error(f"Error generating or validating retrieval plan: {e}", exc_info=True)
+        # Fallback or error state
+        return {"error": f"Error generating/validating retrieval plan: {e}"}
+
+    try:
 
         # Execute Structured Queries
-        if retrieval_actions.structured_queries:
+        if retrieval_actions and retrieval_actions.structured_queries:
             for bq_query in retrieval_actions.structured_queries:
                 # Simple safety check: ensure game_pk filter if game_pk provided
                 query_to_run = bq_query.query
@@ -376,28 +475,29 @@ def research_critique_node(state: AgentState) -> Dict[str, Any]:
     # A more advanced system might parse the critique to generate specific BQ queries too
     new_narrative_context = []
     try:
-        # Optionally, generate specific queries from critique using LLM
-        # queries = structured_output_model.with_structured_output(Queries).invoke(prompt)
-        # For now, just search based on the critique text itself
+        # ... (generate/execute research queries) ...
         logger.info("Performing vector search based on critique...")
         new_narrative_context = get_narrative_context_vector_search(state['critique'], state.get('game_pk'))
 
     except Exception as e:
          logger.error(f"Error generating/executing research queries from critique: {e}", exc_info=True)
+         new_narrative_context = [] # Ensure it's a list even on error
 
-    # Combine new context with previous context (optional, can replace)
-    # For now, let's add it, generate node needs to handle potential redundancy
-    combined_narrative = state.get('narrative_context', []) + new_narrative_context
+    # ***** FIX TypeError *****
+    # Explicitly handle if the existing context is None
+    previous_narrative_context = state.get('narrative_context') or []
+    combined_narrative = previous_narrative_context + new_narrative_context
+    # *************************
+
     unique_combined_narrative = list(dict.fromkeys(combined_narrative)) # Deduplicate
 
-    logger.info(f"Added {len(new_narrative_context)} new snippets based on critique.")
+    logger.info(f"Added {len(new_narrative_context)} new snippets based on critique. Total unique: {len(unique_combined_narrative)}")
 
     # Keep structured data from previous retrieval
     return {
         "narrative_context": unique_combined_narrative,
         "structured_data": state.get("structured_data") # Carry over structured data
-        }
-
+    }
 # --- Add this function definition with the other nodes ---
 
 PLANNER_PROMPT_TEMPLATE = """
@@ -659,7 +759,7 @@ if __name__ == "__main__":
 
     # --- Dynamic Game PK ---
     # Choose a default team ID to find the latest game for (e.g., Rangers = 140)
-    default_team_id_for_latest = 140
+    default_team_id_for_latest = 108
     latest_game_pk = get_latest_final_game_pk(default_team_id_for_latest)
 
     if not latest_game_pk:
@@ -699,8 +799,13 @@ if __name__ == "__main__":
              logger.warning("Re-compiling graph 'app'...")
              app = workflow.compile()
 
-        final_state = app.invoke(initial_state, {"recursion_limit": max_loops * 2 + 5})
+        # ***** INCREASED RECURSION LIMIT *****
+        # Set a higher, fixed limit or a more generous calculation
+        # recursion_limit = max_loops * 4 + 5 # Generous calculation
+        recursion_limit = 15 # Or just a fixed higher number
+        # *************************************
 
+        final_state = app.invoke(initial_state, {"recursion_limit": recursion_limit})
         if final_state.get("error"):
              print("\n--- Execution Failed ---")
              print(f"Error: {final_state['error']}")
