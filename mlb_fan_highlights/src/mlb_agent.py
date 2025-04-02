@@ -10,7 +10,7 @@ from typing import Dict, List, Tuple, Any, Optional, TypedDict
 import os
 import re 
 from ratelimit import limits, sleep_and_retry
-from pydantic.v1 import BaseModel, Field
+from pydantic import BaseModel, Field
 
 # LangGraph and LangChain specific
 from langgraph.graph import StateGraph, END
@@ -172,86 +172,177 @@ def call_vertex_embedding_agent(text_inputs: List[str]) -> List[Optional[List[fl
         logger.error(f"Error calling Vertex AI Embedding API: {e}", exc_info=True)
         return [None] * len(text_inputs)
 
+
+
+# General query execution with type checking
+def execute_filtered_query(table_name, column_name, filter_value, select_columns="*"):
+    """
+    Execute a query with type-safe filtering.
+    """
+    try:
+        # Check if filter_value is a string with quotes
+        if isinstance(filter_value, str) and (filter_value.startswith("'") or filter_value.startswith('"')):
+            # Try to convert to integer by removing quotes
+            try:
+                filter_value_clean = int(filter_value.strip("'\""))
+                # Use integer without quotes
+                filter_clause = f"{column_name} = {filter_value_clean}"
+            except ValueError:
+                # Keep as string with quotes
+                filter_clause = f"{column_name} = {filter_value}"
+        else:
+            # Assume it's already an integer or properly formatted
+            filter_clause = f"{column_name} = {filter_value}"
+        
+        query = f"""
+        SELECT {select_columns}
+        FROM `{table_name}`
+        WHERE {filter_clause}
+        """
+        
+        logger.info(f"Executing filtered query on {table_name}")
+        return execute_bq_query(query)
+    except Exception as e:
+        logger.error(f"Error executing filtered query: {e}", exc_info=True)
+        return None
+
+
+# --- Update the get_narrative_context_vector_search function ---
+# mlb_agent.py
+
+# --- Keep all imports, config, clients, other functions ---
+# ... (including execute_bq_query, call_vertex_embedding_agent) ...
+
+# --- Final version of get_narrative_context_vector_search (Two-Step) ---
 # mlb_agent.py
 
 # --- Keep all imports, config, clients, other functions ---
 # ...
+# mlb_agent.py
 
+# --- Keep all imports, config, clients, other functions ---
+# ...s
 # --- Update the get_narrative_context_vector_search function ---
 def get_narrative_context_vector_search(query_text: str, game_pk: Optional[int] = None, top_n: int = 5) -> List[str]:
-    """Performs vector search on the BQ RAG table using a CTE and JOIN."""
+    """
+    Performs vector search, selecting the base row as a struct, and filters/sorts in Python.
+    """
     if not query_text:
         logger.warning("Vector search query text is empty.")
         return []
     try:
-        # 1. Get embedding for the query text
+        # 1. Get query embedding
         logger.info(f"Generating embedding for vector search query: '{query_text[:50]}...'")
         query_embedding_response = call_vertex_embedding_agent([query_text])
         if not query_embedding_response or not query_embedding_response[0]:
             logger.error("Failed to get embedding for vector search query.")
             return []
         query_embedding = query_embedding_response[0]
-        # Ensure the embedding is formatted as a string list '[val1, val2,...]' for SQL
         query_embedding_str = f"[{', '.join(map(str, query_embedding))}]"
 
+        # 2. Run VECTOR_SEARCH - Select base struct and distance
+        initial_top_k = top_n * 10 + 30
 
-        # 2. Construct the VECTOR_SEARCH query using a CTE
-        # Retrieve slightly more in the vector search phase for better filtering results
-        initial_top_k = top_n + 15
-
-        query = f"""
-        WITH VectorSearchResults AS (
-          -- Perform vector search and explicitly select doc_id and distance
-          SELECT
-              base.doc_id,
-              distance
-          FROM
-              VECTOR_SEARCH(
-                  TABLE `{BQ_FULL_RAG_TABLE_ID}`,
-                  'embedding',
-                  (SELECT {query_embedding_str} AS embedding), -- Use the formatted embedding string
-                  top_k => {initial_top_k},
-                  distance_type => 'COSINE'
-              ) AS base
-        )
-        -- Join the vector search results back to the original table
+        # ***** REVISED QUERY STRUCTURE v11 (Select base AS STRUCT, distance) *****
+        vector_search_query = f"""
         SELECT
-            t.content,
-            vsr.distance
+            base,      -- Select the entire base row as a STRUCT/OBJECT
+            distance   -- Select the distance calculated by VECTOR_SEARCH
         FROM
-            VectorSearchResults AS vsr
-        JOIN
-            `{BQ_FULL_RAG_TABLE_ID}` AS t ON vsr.doc_id = t.doc_id
-        """
-
-        # Add WHERE clause AFTER the join if game_pk is specified
-        if game_pk:
-            query += f"\nWHERE t.game_id = {game_pk}"
-
-        query += f"""
+            VECTOR_SEARCH(
+                TABLE `{BQ_FULL_RAG_TABLE_ID}`,
+                'embedding',
+                (SELECT {query_embedding_str} AS embedding),
+                top_k => {initial_top_k},
+                distance_type => 'COSINE'
+            ) AS base -- Alias the base table context
         ORDER BY
-            vsr.distance ASC
-        LIMIT {top_n}
+            distance ASC -- Order by the top-level distance column
+        LIMIT {initial_top_k}
         """
+        # ***********************************************************************
 
-        logger.info(f"Performing vector search w/ CTE JOIN: '{query_text[:50]}...' (Game PK: {game_pk})")
-        df = execute_bq_query(query) # Execute the JOIN query
+        logger.info("Executing vector search selecting base struct and distance...")
+        df_candidates = execute_bq_query(vector_search_query)
 
-        if df is not None and not df.empty:
-            results = df['content'].tolist()
-            logger.info(f"Vector search returned {len(results)} snippets.")
-            return results
-        else:
-            logger.warning(f"Vector search returned no results for query: '{query_text[:50]}...' (Game PK: {game_pk})")
-            return [] # Return empty list explicitly
+        if df_candidates is None or df_candidates.empty:
+            logger.warning("Vector search returned no candidates.")
+            return []
+
+        # 3. Filter, Sort, and Limit results in Python using Pandas
+        logger.info(f"Received {len(df_candidates)} candidates. Processing struct and filtering/sorting...")
+
+        # Check if required columns ('base', 'distance') exist
+        if 'base' not in df_candidates.columns or 'distance' not in df_candidates.columns:
+            logger.error(f"Required columns ('base', 'distance') not found in results. Found: {df_candidates.columns.tolist()}. Cannot proceed.")
+            return []
+
+        # --- Extract data from the 'base' struct/object column ---
+        extracted_data = []
+        for index, row in df_candidates.iterrows():
+            base_data = row['base']
+            distance = row['distance']
+            # Check if base_data is a dict (or compatible type) before accessing keys
+            if isinstance(base_data, dict):
+                extracted_data.append({
+                    'doc_id': base_data.get('doc_id'), # Use .get for safety
+                    'game_id': base_data.get('game_id'),
+                    'content': base_data.get('content'),
+                    'distance': distance
+                })
+            else:
+                logger.warning(f"Row {index}: 'base' column is not a dictionary (type: {type(base_data)}), skipping.")
+
+        if not extracted_data:
+             logger.warning("No valid data extracted from 'base' column structs.")
+             return []
+
+        processed_df = pd.DataFrame(extracted_data)
+        # -----------------------------------------------------------
+
+        # Filter by game_pk
+        filtered_df = processed_df
+        if game_pk:
+            # Ensure game_id is numeric before comparison
+            filtered_df['game_id'] = pd.to_numeric(filtered_df['game_id'], errors='coerce')
+            filtered_df = filtered_df[filtered_df['game_id'] == game_pk].dropna(subset=['game_id'])
+            logger.info(f"Filtered down to {len(filtered_df)} candidates for game_pk {game_pk}.")
+
+        # Sort by distance (already sorted by SQL, but re-sorting doesn't hurt)
+        # and take top N
+        final_df = filtered_df.sort_values(by='distance', ascending=True).head(top_n)
+
+        if final_df.empty:
+            logger.warning(f"No results remained after filtering/sorting for game_pk {game_pk}.")
+            return []
+
+        # 4. Extract the content
+        # Ensure 'content' column exists after extraction and filtering
+        if 'content' not in final_df.columns:
+            logger.error("'content' column missing after processing 'base' struct.")
+            return []
+
+        results = final_df['content'].tolist()
+        logger.info(f"Vector search with Python filter/sort returned {len(results)} final snippets.")
+        return results
 
     except Exception as e:
-        logger.error(f"Error during vector search: {e}", exc_info=True)
-        # Consider specific error handling if needed, e.g., for embedding failures
-        return [] # Return empty list on error
+        logger.error(f"Error during vector search (struct access attempt): {e}", exc_info=True)
+        return []
 
-# --- Rest of the mlb_agent.py code (Nodes, Graph, main, etc.) ---
+# --- Rest of the mlb_agent.py code ---
 # ...
+
+# --- Rest of the mlb_agent.py code ---
+# ...
+
+# --- Rest of the mlb_agent.py code ---
+# Ensure the graph nodes (especially retrieve_data_node_refined) call this version.
+# Ensure the __main__ block is set up correctly.
+# ...
+# --- Rest of the mlb_agent.py code ---
+# ...
+
 # --- Refined Retriever Logic ---
 # Define Pydantic models for structured LLM output for planning retrieval
 class BQQuery(BaseModel):
@@ -272,142 +363,121 @@ RETRIEVER_PLANNER_PROMPT = """
 You are a data retrieval expert for an MLB analysis system. Your goal is to decide HOW to fetch the data needed based on the user's task and the overall plan.
 
 Available Data Sources:
-1.  **BQ Structured Metadata (`{rag_table}`):** Contains game-level metadata (teams, score, date, venue) accessible via SQL. Use `WHERE game_id = <game_pk> AND doc_type = 'game_summary'`.
-2.  **BQ Structured Plays (`{plays_table}`):** Contains detailed play-by-play data (inning, description, pitch data, hit data, rbi, scores) accessible via SQL. Use `WHERE game_pk = <game_pk>`. Filter further based on the need (e.g., `AND is_scoring_play = TRUE`, `AND batter_id = <id>`).
-3.  **BQ Vector Search (`{rag_table}` column `embedding`):** Contains embeddings for game summaries and key play narrative snippets. Use for semantic search (similarity, context, "feeling"). Can be filtered by game_pk.
+1.  BQ Structured Metadata (`{rag_table}`): Game-level metadata. Key columns: `metadata`, `content`. Use `WHERE game_id = <pk> AND doc_type = 'game_summary'`.
+2.  BQ Structured Plays (`{plays_table}`): Play-by-play data. Key columns: `inning`, `description`, `pitch_data`, `hit_data`, `rbi`, `event_type`. Use `WHERE game_pk = <pk>`.
+3.  BQ Vector Search (`{rag_table}` column `embedding`): Narrative summaries & snippets. Filter by `game_id`. Key column: `content`.
 
 User Request: {task}
 Overall Plan: {plan}
 Game ID (if applicable): {game_pk}
 
-Determine the best retrieval actions. Generate a list of specific BQ SQL queries and/or vector search queries needed.
+Determine the best retrieval actions. Output ONLY a JSON object containing two keys: "structured_queries" (a list of SQL query strings) and "vector_searches" (a list of strings for semantic search). If no queries of a type are needed, provide an empty list. Ensure the output is a single, valid JSON object.
 
-- Use BQ Structured Queries for precise facts, stats, scores, lists of specific plays.
-- Use Vector Search for narrative context, summaries, finding 'similar' items, or understanding subjective elements.
-- If a game_pk is provided, filter queries appropriately unless the request explicitly asks for cross-game comparison.
-- Be specific in your SQL queries (e.g., select needed columns, filter effectively).
-- Formulate concise, targeted vector search queries based on the task/plan.
-"""
+JSON Output:
+""" 
 
+# --- Modify retrieve_data_node_refined to PARSE TEXT ---
 def retrieve_data_node_refined(state: AgentState) -> Dict[str, Any]:
-    """Parses the plan and executes structured BQ queries and/or vector searches."""
-    logger.info("--- Refined Data Retrieval Node ---")
+    """Generates queries as text, parses them, and executes retrieval."""
+    logger.info("--- Refined Data Retrieval Node (Parsing Text) ---")
     task = state.get('task')
     plan = state.get('plan')
     game_pk = state.get('game_pk')
 
     if not plan: return {"error": "Plan is missing for retrieval."}
 
-    # ** MODIFIED RETRIEVAL PLANNING **
-    # Ask LLM to generate JSON string based on Pydantic descriptions
-    retrieval_planner_prompt_json = f"""
-    You are a data retrieval expert for an MLB analysis system. Your goal is to decide HOW to fetch the data needed based on the user's task and the overall plan.
-
-    Available Data Sources:
-    1.  BQ Structured Metadata (`{BQ_FULL_RAG_TABLE_ID}`): Game-level metadata (teams, score, date). SQL: `WHERE game_id = <pk> AND doc_type = 'game_summary'`
-    2.  BQ Structured Plays (`{BQ_FULL_PLAYS_TABLE_ID}`): Detailed play-by-play. SQL: `WHERE game_pk = <pk>`. Can filter further.
-    3.  BQ Vector Search (`{BQ_FULL_RAG_TABLE_ID}` embedding column): Narrative summaries/snippets. Use for context/similarity. Filterable by game_pk.
-
-    User Request: {task}
-    Overall Plan: {plan}
-    Game ID (if applicable): {game_pk}
-
-    Based on the request and plan, determine the retrieval actions. Output ONLY a JSON object string adhering to the following structure:
-    {{
-      "structured_queries": [ {{ "query": "SELECT ... FROM `{BQ_FULL_PLAYS_TABLE_ID}` WHERE game_pk = {game_pk} AND ..." }} ],
-      "vector_searches": [ {{ "query_text": "Relevant semantic query text", "filter_by_game": true }} ]
-    }}
-    - Include specific, runnable SQL queries for 'structured_queries'. Use full table IDs. Filter by game_pk where appropriate.
-    - Include concise text queries for 'vector_searches'.
-    - If no queries of a type are needed, provide an empty list for that key (e.g., "vector_searches": []).
-    - Ensure the output is a single, valid JSON string.
-    """
+    prompt = RETRIEVER_PLANNER_PROMPT.format(
+        task=task,
+        plan=plan,
+        game_pk=game_pk if game_pk else "Not Specified",
+        rag_table=BQ_FULL_RAG_TABLE_ID,
+        plays_table=BQ_FULL_PLAYS_TABLE_ID
+    )
 
     retrieved_structured_data = []
     retrieved_narrative_context = []
-    retrieval_actions = None # Initialize
+    structured_queries_to_run = []
+    vector_searches_to_run = []
 
     try:
-        logger.info("Generating retrieval action plan as JSON string...")
-        # Use the standard model, not structured_output_model here
-        response = model.invoke(retrieval_planner_prompt_json)
-        json_string = response.content.strip()
-        # Clean potential markdown backticks
-        if json_string.startswith("```json"):
-            json_string = json_string[7:]
-        if json_string.endswith("```"):
-            json_string = json_string[:-3]
-        json_string = json_string.strip()
+        logger.info("Generating retrieval query plan (as text)...")
+        # Use standard invoke, not with_structured_output
+        response = model.invoke(prompt)
+        llm_output_text = response.content
+        logger.info(f"LLM Raw Output for Retrieval Plan:\n{llm_output_text}")
 
-        logger.info(f"Attempting to parse JSON: {json_string}")
-        parsed_json = json.loads(json_string)
+        # Parse the JSON output string
+        try:
+            # Clean potential markdown backticks
+            json_match = re.search(r"```json\s*(\{.*?\})\s*```", llm_output_text, re.DOTALL | re.IGNORECASE)
+            if json_match:
+                json_string = json_match.group(1)
+            else:
+                json_string = llm_output_text.strip()
 
-        # Validate the parsed JSON using Pydantic *after* loading
-        retrieval_actions = RetrievalPlan(**parsed_json)
-        logger.info(f"Successfully parsed and validated RetrievalPlan: {retrieval_actions}")
+            retrieval_actions_dict = json.loads(json_string)
+            # Extract lists, defaulting to empty list if key missing
+            structured_queries_to_run = retrieval_actions_dict.get("structured_queries", [])
+            vector_searches_to_run = retrieval_actions_dict.get("vector_searches", [])
+            logger.info(f"Parsed {len(structured_queries_to_run)} structured queries and {len(vector_searches_to_run)} vector searches.")
 
-    except json.JSONDecodeError as json_err:
-         logger.error(f"Failed to parse LLM JSON output: {json_err}. Raw output:\n{json_string}", exc_info=True)
-         return {"error": f"Failed to parse retrieval plan JSON: {json_err}"}
-    except Exception as e: # Catch Pydantic validation errors or other issues
-        logger.error(f"Error generating or validating retrieval plan: {e}", exc_info=True)
-        # Fallback or error state
-        return {"error": f"Error generating/validating retrieval plan: {e}"}
+            # Validate that queries are strings
+            if not all(isinstance(q, str) for q in structured_queries_to_run):
+                logger.error("Parsed structured_queries is not a list of strings.")
+                structured_queries_to_run = [] # Reset on error
+            if not all(isinstance(q, str) for q in vector_searches_to_run):
+                logger.error("Parsed vector_searches is not a list of strings.")
+                vector_searches_to_run = [] # Reset on error
 
-    try:
-
-        # Execute Structured Queries
-        if retrieval_actions and retrieval_actions.structured_queries:
-            for bq_query in retrieval_actions.structured_queries:
-                # Simple safety check: ensure game_pk filter if game_pk provided
-                query_to_run = bq_query.query
-                if game_pk and f"game_pk = {game_pk}" not in query_to_run.lower() and f"game_id = {game_pk}" not in query_to_run.lower():
-                     # Attempt to add a WHERE clause intelligently (basic example)
-                     if "where" in query_to_run.lower():
-                         query_to_run = query_to_run.replace("WHERE", f"WHERE game_pk = {game_pk} AND ") # Assumes game_pk exists in the target table
-                     else:
-                         # Find table name to append WHERE clause
-                         match = re.search(r"FROM\s+`([\w.-]+)`\.`([\w.-]+)`\.`(\w+)`", query_to_run, re.IGNORECASE)
-                         if match:
-                             query_to_run += f" WHERE game_pk = {game_pk}" # Assumes game_pk is the column name
-                         else:
-                              logger.warning(f"Could not automatically add game_pk filter to: {query_to_run}")
-                     logger.info(f"Modified query for game_pk filter: {query_to_run[:200]}...")
+        except (json.JSONDecodeError, AttributeError, KeyError, TypeError) as parse_error:
+            logger.error(f"Failed to parse LLM output into retrieval actions: {parse_error}. Raw output: {llm_output_text}")
+            # Fallback behavior
+            if game_pk:
+                 logger.warning("Falling back to basic game metadata retrieval.")
+                 basic_meta = get_structured_game_metadata(game_pk)
+                 if basic_meta: retrieved_structured_data.append(basic_meta)
+            vector_searches_to_run = [task] # Default search based on original task
 
 
-                df_result = execute_bq_query(query_to_run)
-                if df_result is not None and not df_result.empty:
-                    retrieved_structured_data.extend(df_result.to_dict('records'))
-                time.sleep(0.5) # Small delay between queries
+        # Execute Parsed Queries
+        if structured_queries_to_run:
+            logger.info("Executing structured queries...")
+            for query_to_run in structured_queries_to_run:
+                 if not isinstance(query_to_run, str) or not query_to_run.strip():
+                      logger.warning("Skipping empty or invalid structured query.")
+                      continue
+                 # Simple safety check
+                 if game_pk and f"{game_pk}" not in query_to_run:
+                     logger.warning(f"Query '{query_to_run[:100]}...' might be missing game_pk filter.")
+                 df_result = execute_bq_query(query_to_run)
+                 if df_result is not None and not df_result.empty:
+                     retrieved_structured_data.extend(df_result.to_dict('records'))
+                 time.sleep(0.5)
 
-        # Execute Vector Searches
-        if retrieval_actions.vector_searches:
-            for vec_search in retrieval_actions.vector_searches:
-                search_game_pk = game_pk if vec_search.filter_by_game else None
-                snippets = get_narrative_context_vector_search(vec_search.query_text, search_game_pk)
-                retrieved_narrative_context.extend(snippets)
-                time.sleep(0.5) # Small delay
+        if vector_searches_to_run:
+            logger.info("Executing vector searches...")
+            for search_term in vector_searches_to_run:
+                 if not isinstance(search_term, str) or not search_term.strip():
+                      logger.warning("Skipping empty or invalid vector search term.")
+                      continue
+                 snippets = get_narrative_context_vector_search(search_term, game_pk) # Use the potentially fixed vector search function
+                 retrieved_narrative_context.extend(snippets)
+                 time.sleep(0.5)
 
     except Exception as e:
-        logger.error(f"Error during refined data retrieval: {e}", exc_info=True)
-        # Fallback: try fetching basic game metadata if specific retrieval failed
+        logger.error(f"Error during refined data retrieval node execution: {e}", exc_info=True)
+        # Fallback if needed
         if game_pk and not retrieved_structured_data:
-             logger.warning("Falling back to basic game metadata retrieval.")
+             logger.warning("Falling back to basic game metadata retrieval after execution error.")
              basic_meta = get_structured_game_metadata(game_pk)
-             if basic_meta: retrieved_structured_data.append(basic_meta) # Append as list for consistency
-        if not retrieved_narrative_context:
-             logger.warning("No narrative context retrieved.")
-        # Decide if this should be a hard error for the graph
-        # return {"error": f"Data retrieval failed: {e}"}
+             if basic_meta: retrieved_structured_data.append(basic_meta)
 
-    # Deduplicate narrative context
     unique_narratives = list(dict.fromkeys(retrieved_narrative_context))
-
     logger.info(f"Retrieved {len(retrieved_structured_data)} structured data records.")
     logger.info(f"Retrieved {len(unique_narratives)} unique narrative snippets.")
 
     return {
-        "structured_data": retrieved_structured_data if retrieved_structured_data else None, # Store results
+        "structured_data": retrieved_structured_data if retrieved_structured_data else None,
         "narrative_context": unique_narratives if unique_narratives else None
     }
 
