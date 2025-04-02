@@ -39,12 +39,43 @@ MLB_API_RATE_LIMIT = 60
 VERTEX_LLM_RPM = 180 # Adjust based on model and quotas
 VERTEX_EMB_RPM = 1400 # Adjust
 
-NUM_GAMES_PER_TEAM = 5 # Keep low for testing, increase later
+NUM_GAMES_PER_TEAM = 10 # Keep low for testing, increase later
 MAX_PLAY_SNIPPETS_PER_GAME = 10 # Limit LLM calls for play snippets
 
 # Teams (Shortened)
-TEAMS = { 'rangers': 140, 'angels': 108, #'astros': 117, # Add more as needed
+TEAMS = {
+    'rangers': 140,
+    'angels': 108,
+    'astros': 117,
+    'rays': 139,
+    'blue_jays': 141,
+    'yankees': 147,
+    'orioles': 110,
+    'red_sox': 111,
+    'twins': 142,
+    'white_sox': 145,
+    'guardians': 114,
+    'tigers': 116,
+    'royals': 118,
+    'padres': 135,
+    'giants': 137,
+    'diamondbacks': 109,
+    'rockies': 115,
+    'phillies': 143,
+    'braves': 144,
+    'marlins': 146,
+    'nationals': 120,
+    'mets': 121,
+    'pirates': 134,
+    'cardinals': 138,
+    'brewers': 158,
+    'cubs': 112,
+    'reds': 113,
+    'athletics': 133,
+    'mariners': 136,
+    'dodgers': 119,
 }
+
 
 # --- Initialize Clients ---
 try:
@@ -272,7 +303,7 @@ def create_bq_vector_index(client: bigquery.Client, dataset_id: str, table_id: s
 
 # --- NEW/Enhanced Processing Functions ---
 
-def get_recent_game_ids(team_id: int, season: int = 2025, num_games: int = 10) -> List[int]:
+def get_recent_game_ids(team_id: int, season: int = 2025, num_games: int = 50) -> List[int]:
     # (Keep same as original)
     url = f'https://statsapi.mlb.com/api/v1/schedule?sportId=1&season={season}&teamId={team_id}&fields=dates,games,gamePk,officialDate,status,detailedState'
     schedule_data = call_mlb_api(url)
