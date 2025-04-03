@@ -223,9 +223,57 @@ def execute_filtered_query(table_name, column_name, filter_value, select_columns
 # --- Keep all imports, config, clients, other functions ---
 # ...s
 # --- Update the get_narrative_context_vector_search function ---
+# mlb_agent.py
+
+# --- Keep all imports, config, clients, other functions ---
+# ...
+# mlb_agent.py
+
+# --- Keep all imports, config, clients, other functions ---
+# ...
+import pandas as pd
+import json
+import logging
+import time
+from typing import Dict, List, Tuple, Any, Optional, TypedDict
+# ... other imports
+
+# --- Logging setup, Client initialization, AgentState, Other Nodes ---
+# ... (Make sure these are correct) ...
+
+# mlb_agent.py
+
+# --- Keep all imports, config, clients, other functions ---
+# ...
+import pandas as pd
+import json
+import logging
+import time
+from typing import Dict, List, Tuple, Any, Optional, TypedDict
+from google.cloud.bigquery import Row # Import Row type for checking
+
+# ... other imports
+
+# --- Logging setup, Client initialization, AgentState, Other Nodes ---
+# ... (Make sure these are correct) ...
+
+# mlb_agent.py
+
+# mlb_agent.py
+
+# --- Keep all imports, config, clients, other functions ---
+# ...
+import pandas as pd
+import json
+import logging
+import time
+from typing import Dict, List, Tuple, Any, Optional
+# ... other imports
+
+# --- Update the get_narrative_context_vector_search function ---
 def get_narrative_context_vector_search(query_text: str, game_pk: Optional[int] = None, top_n: int = 5) -> List[str]:
     """
-    Performs vector search, selecting the base row as a struct, and filters/sorts in Python.
+    Performs vector search, expecting a nested struct under 'base', and filters/sorts in Python.
     """
     if not query_text:
         logger.warning("Vector search query text is empty.")
@@ -243,7 +291,7 @@ def get_narrative_context_vector_search(query_text: str, game_pk: Optional[int] 
         # 2. Run VECTOR_SEARCH - Select base struct and distance
         initial_top_k = top_n * 10 + 30
 
-        # ***** REVISED QUERY STRUCTURE v11 (Select base AS STRUCT, distance) *****
+        # ***** QUERY STRUCTURE v12 (Same SQL as v11, Python parsing changes) *****
         vector_search_query = f"""
         SELECT
             base,      -- Select the entire base row as a STRUCT/OBJECT
@@ -255,9 +303,9 @@ def get_narrative_context_vector_search(query_text: str, game_pk: Optional[int] 
                 (SELECT {query_embedding_str} AS embedding),
                 top_k => {initial_top_k},
                 distance_type => 'COSINE'
-            ) AS base -- Alias the base table context
+            ) AS base -- Alias the results
         ORDER BY
-            distance ASC -- Order by the top-level distance column
+            distance ASC
         LIMIT {initial_top_k}
         """
         # ***********************************************************************
@@ -270,46 +318,58 @@ def get_narrative_context_vector_search(query_text: str, game_pk: Optional[int] 
             return []
 
         # 3. Filter, Sort, and Limit results in Python using Pandas
-        logger.info(f"Received {len(df_candidates)} candidates. Processing struct and filtering/sorting...")
+        logger.info(f"Received {len(df_candidates)} candidates. Processing nested 'base' struct...")
 
-        # Check if required columns ('base', 'distance') exist
+        # Check if required top-level columns ('base', 'distance') exist
         if 'base' not in df_candidates.columns or 'distance' not in df_candidates.columns:
-            logger.error(f"Required columns ('base', 'distance') not found in results. Found: {df_candidates.columns.tolist()}. Cannot proceed.")
+            logger.error(f"Required top-level columns ('base', 'distance') not found in results. Found: {df_candidates.columns.tolist()}. Cannot proceed.")
             return []
 
-        # --- Extract data from the 'base' struct/object column ---
+        # --- Extract data from the NESTED 'base' struct ---
         extracted_data = []
+        logger.info(f"Inspecting first few rows of 'base' column (dtype: {df_candidates['base'].dtype}):") # Log dtype
+        for index, row in df_candidates.head().iterrows(): # Log first few rows only
+             logger.info(f"  Row {index}: Type = {type(row['base'])}, Value = {str(row['base'])[:500]}...") # Log type and truncated value
+             if isinstance(row['base'], dict):
+                   logger.info(f"  Row {index}: Keys in dict object = {list(row['base'].keys())}")
+
         for index, row in df_candidates.iterrows():
-            base_data = row['base']
-            distance = row['distance']
-            # Check if base_data is a dict (or compatible type) before accessing keys
-            if isinstance(base_data, dict):
+            nested_base_data = row['base'] # This is the outer dict {'query':..., 'base':..., 'distance':...} based on logs
+            actual_base_struct = nested_base_data.get('base') # Try accessing the inner 'base' key
+            distance = nested_base_data.get('distance') # Get distance from the outer dict
+
+            # Check if actual_base_struct is a dict before accessing keys
+            if isinstance(actual_base_struct, dict):
                 extracted_data.append({
-                    'doc_id': base_data.get('doc_id'), # Use .get for safety
-                    'game_id': base_data.get('game_id'),
-                    'content': base_data.get('content'),
-                    'distance': distance
+                    'doc_id': actual_base_struct.get('doc_id'),
+                    'game_id': actual_base_struct.get('game_id'),
+                    'content': actual_base_struct.get('content'),
+                    'distance': distance # Use distance from outer dict
                 })
             else:
-                logger.warning(f"Row {index}: 'base' column is not a dictionary (type: {type(base_data)}), skipping.")
+                logger.warning(f"Row {index}: Inner 'base' data is not a dictionary (type: {type(actual_base_struct)}), skipping.")
 
         if not extracted_data:
-             logger.warning("No valid data extracted from 'base' column structs.")
+             logger.warning("No valid data extracted after processing nested 'base' struct.")
              return []
 
         processed_df = pd.DataFrame(extracted_data)
-        # -----------------------------------------------------------
+        # --- Finished extraction ---
+
+        # Ensure required columns exist in the new DataFrame
+        required_cols = ['game_id', 'content', 'distance', 'doc_id']
+        if not all(col in processed_df.columns for col in required_cols):
+            logger.error(f"Required columns ({required_cols}) not found after extracting from struct. Found: {processed_df.columns.tolist()}. Cannot proceed.")
+            return []
 
         # Filter by game_pk
         filtered_df = processed_df
         if game_pk:
-            # Ensure game_id is numeric before comparison
             filtered_df['game_id'] = pd.to_numeric(filtered_df['game_id'], errors='coerce')
             filtered_df = filtered_df[filtered_df['game_id'] == game_pk].dropna(subset=['game_id'])
             logger.info(f"Filtered down to {len(filtered_df)} candidates for game_pk {game_pk}.")
 
-        # Sort by distance (already sorted by SQL, but re-sorting doesn't hurt)
-        # and take top N
+        # Sort by distance and take top N
         final_df = filtered_df.sort_values(by='distance', ascending=True).head(top_n)
 
         if final_df.empty:
@@ -317,19 +377,27 @@ def get_narrative_context_vector_search(query_text: str, game_pk: Optional[int] 
             return []
 
         # 4. Extract the content
-        # Ensure 'content' column exists after extraction and filtering
-        if 'content' not in final_df.columns:
-            logger.error("'content' column missing after processing 'base' struct.")
-            return []
-
         results = final_df['content'].tolist()
         logger.info(f"Vector search with Python filter/sort returned {len(results)} final snippets.")
         return results
 
     except Exception as e:
-        logger.error(f"Error during vector search (struct access attempt): {e}", exc_info=True)
+        logger.error(f"Error during vector search (nested struct access attempt): {e}", exc_info=True)
         return []
 
+
+# --- Rest of the mlb_agent.py code ---
+# ...
+
+# --- Rest of the mlb_agent.py code ---
+# ...
+
+# --- Rest of the mlb_agent.py code ---
+# ...
+# --- Rest of the mlb_agent.py code ---
+# ... Make sure the Agent nodes, graph definition, and __main__ block are correct ...
+# --- Rest of the mlb_agent.py code ---
+# ...
 # --- Rest of the mlb_agent.py code ---
 # ...
 
@@ -829,7 +897,7 @@ if __name__ == "__main__":
 
     # --- Dynamic Game PK ---
     # Choose a default team ID to find the latest game for (e.g., Rangers = 140)
-    default_team_id_for_latest = 108
+    default_team_id_for_latest = 121
     latest_game_pk = get_latest_final_game_pk(default_team_id_for_latest)
 
     if not latest_game_pk:

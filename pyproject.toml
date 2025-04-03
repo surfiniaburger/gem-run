@@ -55,6 +55,8 @@ flask-cors = "^5.0.1"
 fitz = "^0.0.1.dev2"
 pymupdf = "^1.25.4"
 langgraph = "^0.3.21"
+bs4 = "^0.0.2"
+pybaseball = "^2.2.7"
 
 
 [tool.poetry.group.dev.dependencies]
