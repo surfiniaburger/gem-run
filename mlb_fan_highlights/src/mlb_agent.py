@@ -897,7 +897,7 @@ if __name__ == "__main__":
 
     # --- Dynamic Game PK ---
     # Choose a default team ID to find the latest game for (e.g., Rangers = 140)
-    default_team_id_for_latest = 121
+    default_team_id_for_latest = 144
     latest_game_pk = get_latest_final_game_pk(default_team_id_for_latest)
 
     if not latest_game_pk:
