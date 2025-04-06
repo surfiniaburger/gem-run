@@ -166,16 +166,27 @@ def setup_remote_embedding_model():
         raise
 
 def setup_embedding_table():
-    """Creates the table to store image embeddings and metadata (including entity_name)."""
+    """Creates the table to store image embeddings and metadata (including entity_name).
+       DELETES the table first to ensure the schema is updated.
+    """
     full_table_id = f"{GCP_PROJECT_ID}.{BQ_DATASET_ID}.{EMBEDDING_TABLE_ID}"
-    logger.info(f"Ensuring Embedding Table {full_table_id} exists...")
+    logger.info(f"Ensuring Embedding Table {full_table_id} exists with the correct schema...")
 
-    # *** UPDATED SCHEMA ***
+    # *** ADD THIS BLOCK TO DELETE THE TABLE FIRST ***
+    try:
+        logger.warning(f"Attempting to delete existing table {full_table_id} to ensure schema update...")
+        bq_client.delete_table(full_table_id, not_found_ok=True) # not_found_ok=True prevents error if it doesn't exist
+        logger.info(f"Table {full_table_id} deleted or did not exist.")
+    except Exception as e:
+        logger.error(f"Error attempting to delete table {full_table_id} (continuing to create): {e}", exc_info=True)
+    # *** END BLOCK TO DELETE TABLE ***
+
+    # Schema definition remains the same
     schema = [
         bigquery.SchemaField("image_uri", "STRING", mode="REQUIRED", description="GCS URI of the image"),
         bigquery.SchemaField("image_type", "STRING", mode="NULLABLE", description="Type of image: 'logo' or 'headshot'"),
         bigquery.SchemaField("entity_id", "STRING", mode="NULLABLE", description="Team ID/Name (from logo name) or Player ID (from headshot name)"),
-        bigquery.SchemaField("entity_name", "STRING", mode="NULLABLE", description="Player Name (from metadata table) or Team Name (parsed)"), # <-- New Field
+        bigquery.SchemaField("entity_name", "STRING", mode="NULLABLE", description="Player Name (from metadata table) or Team Name (parsed)"), # <-- The important column
         bigquery.SchemaField("embedding", "FLOAT64", mode="REPEATED", description=f"Multimodal embedding vector ({EMBEDDING_DIMENSIONALITY} dimensions)"),
         bigquery.SchemaField("last_updated", "TIMESTAMP", mode="NULLABLE"),
     ]
@@ -183,10 +194,13 @@ def setup_embedding_table():
     table.description = "Stores multimodal embeddings for MLB logos and player headshots"
 
     try:
-        bq_client.create_table(table, exists_ok=True)
-        logger.info(f"Ensured table {full_table_id} exists or was created.")
+        # Now create_table will definitely create it with the schema above
+        bq_client.create_table(table) # Remove exists_ok=True if delete works reliably, or keep it as safety
+        logger.info(f"Table {full_table_id} created with the latest schema.")
+    except Conflict:
+         logger.info(f"Table {full_table_id} already exists (potentially delete failed?). Check schema manually if errors persist.")
     except Exception as e:
-        logger.error(f"Failed to create or ensure embedding table {full_table_id}: {e}", exc_info=True)
+        logger.error(f"Failed to create embedding table {full_table_id}: {e}", exc_info=True)
         raise
 
 # --- New Functions for Player Metadata ---
@@ -292,116 +306,118 @@ def populate_player_metadata():
         except Exception as e:
             logger.error(f"Error deleting temporary table {full_temp_table_id}: {e}", exc_info=True)
 
-
-# --- Embedding Generation and Indexing Functions ---
-
-def generate_and_store_embeddings(batch_size: int = 20):
-    """Generates embeddings using ML.GENERATE_EMBEDDING and stores them, joining player names."""
+def generate_and_store_embeddings(batch_size: int = 20): # batch_size is now unused
+    """Generates embeddings using ML.GENERATE_EMBEDDING and stores them, joining player names.
+       Passes the FULL OBJECT TABLE directly to ML.GENERATE_EMBEDDING.
+       Applies anti-duplication check *after* embedding generation, before insert.
+    """
     object_table_ref = f"`{GCP_PROJECT_ID}.{BQ_DATASET_ID}.{OBJECT_TABLE_ID}`"
     embedding_table_ref = f"`{GCP_PROJECT_ID}.{BQ_DATASET_ID}.{EMBEDDING_TABLE_ID}`"
     model_ref = f"`{GCP_PROJECT_ID}.{BQ_DATASET_ID}.{EMBEDDING_MODEL_ID}`"
-    player_meta_ref = f"`{GCP_PROJECT_ID}.{BQ_DATASET_ID}.{PLAYER_METADATA_TABLE_ID}`" # <-- Ref to new table
+    player_meta_ref = f"`{GCP_PROJECT_ID}.{BQ_DATASET_ID}.{PLAYER_METADATA_TABLE_ID}`"
 
-    # --- Get total count ---
-    # (Add retry logic as before, check permissions)
+    # --- Count checks (optional, mainly for logging) ---
+    count_existing_sql = f"SELECT count(*) as existing_count FROM {embedding_table_ref}"
+    logger.info("Checking count of existing embeddings...")
+    count_existing_result = execute_bq_query(count_existing_sql)
+    existing_rows = 0
+    if count_existing_result:
+        try: existing_rows = list(count_existing_result)[0].existing_count
+        except IndexError: pass
+    logger.info(f"Found {existing_rows} existing embeddings.")
+
     count_sql = f"SELECT count(*) as total_count FROM {object_table_ref}"
     logger.info("Attempting to count objects in object table...")
     count_result = execute_bq_query(count_sql)
     if not count_result:
-        logger.warning("Initial count failed. Check connection permissions (storage.objectViewer) and table existence. Waiting...")
-        time.sleep(15) # Wait longer if permissions might be propagating
-        count_result = execute_bq_query(count_sql)
-        if not count_result:
-             logger.error("Still could not get count from object table. Aborting embedding generation.")
-             return
-
+        logger.error("Could not get count from object table. Aborting embedding generation.")
+        return
     total_rows = list(count_result)[0].total_count
-    logger.info(f"Found {total_rows} objects in {object_table_ref} to process for embeddings.")
-    if total_rows == 0: return
+    logger.info(f"Found {total_rows} objects in {object_table_ref}.")
+    if total_rows == 0:
+        logger.info("Object table is empty, skipping embedding generation.")
+        return
 
-    logger.info(f"Starting embedding generation in batches of {batch_size}...")
-    processed_count = 0
-    for offset in range(0, total_rows, batch_size):
-        logger.info(f"Processing batch starting at offset {offset}...")
+    logger.info(f"Starting embedding generation and insertion query (will process all {total_rows} objects)...")
+    processed_in_query = 0
+    error_count = 0
 
-        # *** UPDATED INSERT SQL with LEFT JOIN ***
-        # Use raw strings (r'') for regex patterns to avoid SyntaxWarning
-        generate_sql = f"""
-        INSERT INTO {embedding_table_ref} (image_uri, image_type, entity_id, entity_name, embedding, last_updated)
-        WITH ObjectBatch AS (
-            -- Select the current batch of objects
-            SELECT uri FROM {object_table_ref} ORDER BY uri LIMIT {batch_size} OFFSET {offset}
-        ),
-        EmbeddingsRaw AS (
-            -- Generate embeddings for the batch
-            SELECT uri, ml_generate_embedding_result
-            FROM ML.GENERATE_EMBEDDING( MODEL {model_ref}, TABLE ObjectBatch )
-            WHERE ml_generate_embedding_status = 'OK'
-        ),
-        ObjectsWithMeta AS (
-            -- Parse metadata from URI for joining
-            SELECT
-                uri,
-                CASE
-                    WHEN uri LIKE '%/logos/%' THEN 'logo'
-                    WHEN uri LIKE '%/headshots/%' THEN 'headshot'
-                    ELSE 'unknown'
-                END AS image_type,
-                -- Extract ID (Player ID as INTEGER for headshots, Team name/ID as STRING for logos)
-                CASE
-                    WHEN uri LIKE '%/logos/%' THEN
-                         -- Try ID first, then team name from pattern 'mlb-team-name-logo.png'
-                         COALESCE(REGEXP_EXTRACT(uri, r'logos/.*?(\d+).*\.png$'),
-                                  REGEXP_EXTRACT(uri, r'logos/mlb-([a-z0-9-]+(?:-[a-z0-9-]+)*)-logo\.png$')
-                                  )
-                    -- Extract player ID as INTEGER for joining
-                    WHEN uri LIKE '%/headshots/%' THEN SAFE_CAST(REGEXP_EXTRACT(uri, r'headshots/headshot_(\d+)\.\w+$') AS INTEGER)
-                    ELSE NULL
-                END AS parsed_entity_id
-            FROM ObjectBatch
+    # --- Single Query - Embed ALL objects, then filter ---
+    # Pass the full object table directly to ML.GENERATE_EMBEDDING
+    generate_sql = f"""
+    INSERT INTO {embedding_table_ref} (image_uri, image_type, entity_id, entity_name, embedding, last_updated)
+    WITH EmbeddingsAllRaw AS (
+        -- Generate embeddings for ALL objects in the object table
+        SELECT uri, content_type, ml_generate_embedding_status, ml_generate_embedding_result
+        FROM ML.GENERATE_EMBEDDING(
+            MODEL {model_ref},
+            TABLE {object_table_ref} -- <<< Pass the OBJECT TABLE directly
         )
-        -- Final SELECT combining embeddings and metadata, joining for player names
+        -- Note: We filter for 'OK' status later if needed, process all results first
+    ),
+    EmbeddingsOk AS (
+      -- Filter for successful embeddings before parsing/joining
+      SELECT uri, ml_generate_embedding_result
+      FROM EmbeddingsAllRaw
+      WHERE ml_generate_embedding_status = 'OK'
+    ),
+    ParsedMeta AS (
+        -- Parse metadata from the URIs we successfully got embeddings for
         SELECT
-            O.uri AS image_uri,
-            O.image_type,
-            CAST(O.parsed_entity_id AS STRING) AS entity_id, -- Store all entity IDs as STRING for consistency
-            -- Get player name if it's a headshot and join succeeds, otherwise use parsed team name/ID
+            E.uri, E.ml_generate_embedding_result,
+            CASE WHEN E.uri LIKE '%/logos/%' THEN 'logo' WHEN E.uri LIKE '%/headshots/%' THEN 'headshot' ELSE 'unknown' END AS image_type,
             CASE
-                WHEN O.image_type = 'headshot' THEN P.player_name
-                WHEN O.image_type = 'logo' THEN CAST(O.parsed_entity_id AS STRING) -- Use parsed team name/ID for logos
+                WHEN E.uri LIKE '%/logos/%' THEN COALESCE(REGEXP_EXTRACT(E.uri, r'logos/.*?(\d+).*\.png$'), REGEXP_EXTRACT(E.uri, r'logos/mlb-([a-z0-9-]+(?:-[a-z0-9-]+)*)-logo\.png$'))
+                WHEN E.uri LIKE '%/headshots/%' THEN CAST(REGEXP_EXTRACT(E.uri, r'headshots/headshot_(\d+)\.\w+$') AS STRING)
                 ELSE NULL
-            END AS entity_name,
-            E.ml_generate_embedding_result AS embedding,
-            CURRENT_TIMESTAMP() AS last_updated
-        FROM ObjectsWithMeta O
-        JOIN EmbeddingsRaw E ON O.uri = E.uri
-        -- Left join to player metadata only if it's a headshot and ID was parsed
-        LEFT JOIN {player_meta_ref} P ON O.image_type = 'headshot' AND O.parsed_entity_id = P.player_id
-        -- Exclude already processed URIs
-        LEFT JOIN {embedding_table_ref} Existing ON O.uri = Existing.image_uri
-        WHERE Existing.image_uri IS NULL;
-        """
+            END AS parsed_entity_id
+        FROM EmbeddingsOk E -- Process only OK embeddings
+    ),
+    ParsedMetaForJoin AS (
+        SELECT *, SAFE_CAST(parsed_entity_id AS INT64) as joinable_player_id
+        FROM ParsedMeta WHERE image_type = 'headshot'
+    ),
+    FinalDataToInsert AS (
+      -- Combine embeddings and metadata, joining for player names
+      SELECT
+          PM.uri AS image_uri, PM.image_type, PM.parsed_entity_id AS entity_id,
+          CASE
+              WHEN PM.image_type = 'headshot' AND PJ.joinable_player_id IS NOT NULL THEN P.player_name
+              ELSE PM.parsed_entity_id
+          END AS entity_name,
+          PM.ml_generate_embedding_result AS embedding, CURRENT_TIMESTAMP() AS last_updated
+      FROM ParsedMeta PM
+      LEFT JOIN ParsedMetaForJoin PJ ON PM.uri = PJ.uri
+      LEFT JOIN {player_meta_ref} P ON PJ.joinable_player_id = P.player_id
+    )
+    -- Final SELECT for INSERT, applying anti-duplication check HERE
+    SELECT F.*
+    FROM FinalDataToInsert F
+    LEFT JOIN {embedding_table_ref} Existing ON F.image_uri = Existing.image_uri
+    WHERE Existing.image_uri IS NULL; -- Only insert if URI doesn't exist in target table
+    """
 
-        try:
-            job_config = bigquery.QueryJobConfig(priority=bigquery.QueryPriority.BATCH)
-            job = bq_client.query(generate_sql, job_config=job_config)
-            job.result(timeout=900)
-            logger.info(f"Processed embedding batch offset {offset}. Job ID: {job.job_id}")
-            if job.num_dml_affected_rows is not None:
-                processed_count += job.num_dml_affected_rows
-                logger.info(f" -> Inserted {job.num_dml_affected_rows} new rows. Total processed so far: {processed_count}")
-            else:
-                 logger.info(f" -> Insertion complete for batch (affected rows count unavailable).")
+    logger.info("Executing single query to embed all objects and insert missing...")
+    try:
+        job_config = bigquery.QueryJobConfig(priority=bigquery.QueryPriority.BATCH)
+        job = bq_client.query(generate_sql, job_config=job_config)
+        job.result(timeout=3600) # Allow up to 1 hour
+        logger.info(f"Embedding generation and insertion job completed. Job ID: {job.job_id}")
+        if job.num_dml_affected_rows is not None:
+            processed_in_query = job.num_dml_affected_rows
+            logger.info(f" -> Inserted {processed_in_query} new rows.")
+        else:
+             logger.info(f" -> Insertion complete (affected rows count unavailable). Check table count manually.")
 
-        except Exception as e:
-            logger.error(f"Error processing embedding batch at offset {offset}: {e}", exc_info=True)
-            # Log the generated SQL for debugging
-            logger.error(f"Failed Query Batch SQL:\n{generate_sql}")
-            logger.warning("Continuing to next batch despite error in current batch.")
+    except Exception as e:
+        error_count += 1
+        logger.error(f"Error executing the main embedding/insertion query: {e}", exc_info=True)
+        # Log the failed SQL (it's long, but helpful for debugging)
+        logger.error(f"Failed Query SQL:\n{generate_sql}")
 
-        time.sleep(5)
-
-    logger.info(f"Finished embedding generation. Inserted approximately {processed_count} new embeddings.")
+    logger.info(f"Finished embedding generation process. Inserted approximately {processed_in_query} new embeddings.")
+    if error_count > 0:
+        logger.warning(f"Encountered {error_count} errors during the embedding query execution.")
 
 
 def setup_vector_index():
