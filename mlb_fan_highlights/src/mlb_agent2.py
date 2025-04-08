@@ -23,13 +23,13 @@ from langchain.schema.output_parser import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
 # Google Cloud specific
-from google.cloud import bigquery
+from google.cloud import bigquery, secretmanager
 from google.api_core.exceptions import BadRequest, NotFound, PermissionDenied
 import vertexai
 from vertexai.language_models import TextEmbeddingModel, TextEmbeddingInput
 from google.cloud import storage # Added GCS client
 from vertexai.vision_models import Image, MultiModalEmbeddingModel
-
+from tavily import TavilyClient
 from image_embedding_pipeline2 import search_similar_images_sdk, execute_bq_query
 
 # --- Configuration (Ensure these match ingestion script) ---
@@ -61,12 +61,44 @@ GCS_PREFIX_LOGOS = "" # e.g., "logos/" if logos are in a subfolder
 GCS_BUCKET_HEADSHOTS = "mlb-headshots"
 GCS_PREFIX_HEADSHOTS = "headshots/" # e.g., "headshots/"
 
+# --- Secret Manager Configuration ---
+TAVILY_SECRET_ID = "TAVILY_SEARCH" # <-- REPLACE with your Secret ID in Secret Manager
+TAVILY_SECRET_VERSION = "latest" #
 
 # --- Logging and Clients (Initialize as before) ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# mlb_agent_graph_refined.py or mlb_agent.py
+# --- Helper Function to Access Secret Manager ---
+def access_secret_version(project_id: str, secret_id: str, version_id: str) -> Optional[str]:
+    """Accesses a secret version from Google Secret Manager."""
+    try:
+        client = secretmanager.SecretManagerServiceClient()
+        name = f"projects/{project_id}/secrets/{secret_id}/versions/{version_id}"
+        response = client.access_secret_version(request={"name": name})
+        payload = response.payload.data.decode("UTF-8")
+        logger.info(f"Successfully accessed secret: {secret_id} (version: {version_id})")
+        return payload
+    except PermissionDenied:
+        logger.error(f"Permission denied accessing secret: {secret_id}. Ensure the service account has 'Secret Manager Secret Accessor' role.")
+        return None
+    except NotFound:
+         logger.error(f"Secret or version not found: projects/{project_id}/secrets/{secret_id}/versions/{version_id}")
+         return None
+    except Exception as e:
+        logger.error(f"Error accessing secret {secret_id}: {e}", exc_info=True)
+        return None
+
+# --- Fetch Tavily API Key and Initialize Clients ---
+tavily_api_key = access_secret_version(GCP_PROJECT_ID, TAVILY_SECRET_ID, TAVILY_SECRET_VERSION)
+if tavily_api_key:
+    os.environ["TAVILY_API_KEY"] = tavily_api_key
+    logger.info("Tavily API key loaded into environment variable.")
+    tavily = TavilyClient()
+else:
+    logger.warning("Tavily API key not found in Secret Manager or access failed. Web search node will not function.")
+    # Decide how to handle this: exit, or let the node fail gracefully?
+    # exit(1) # Option to exit if key is critical
 
 try:
     # Simply call init(). If already initialized, it typically handles it gracefully.
@@ -852,6 +884,101 @@ def planner_node(state: AgentState) -> Dict[str, Any]:
         # Return error and a default plan to potentially allow graceful failure
         return {"error": f"Failed to generate plan: {e}", "plan": "Default Plan due to error: Retrieve basic info."}
 
+# Define Pydantic model for web search queries
+class WebQueries(BaseModel):
+    """Queries for web search."""
+    queries: List[str] = Field(description="List of 1-3 targeted web search queries.")
+
+# Prompt to generate web search queries based on critique
+WEB_SEARCH_CRITIQUE_PROMPT = """
+You are a research assistant specializing in finding external context for sports analysis.
+Based on the critique of a generated MLB game recap, identify 1-3 key topics or questions raised in the critique that could be answered or enriched by a targeted web search.
+Generate specific, concise search queries for the Tavily search engine to find this external information (e.g., player injury status before the game, historical significance of a milestone reached, recent team news impacting context, explanations of advanced stats mentioned).
+
+Critique Provided:
+{critique}
+
+Generate a JSON object containing a single key "queries" which is a list of the search strings.
+Example Output:
+{{
+  "queries": ["Nathan Eovaldi injury history 2024", "Rangers vs Red Sox rivalry significance", "what is wRC+ in baseball?"]
+}}
+
+JSON Output:
+"""
+
+@sleep_and_retry # Add rate limits if Tavily has them
+@limits(calls=50, period=60) # Example Tavily limit - adjust as needed
+def call_tavily_search(query: str, max_results: int = 2) -> List[str]:
+    """Calls Tavily search API and returns a list of content snippets."""
+    if not tavily:
+        logger.warning("Tavily client not initialized, skipping web search.")
+        return []
+    try:
+        logger.info(f"Performing Tavily search for: '{query}'")
+        response = tavily.search(query=query, max_results=max_results, include_raw_content=False) # Adjust params as needed
+        results = [r.get("content", "") for r in response.get("results", []) if r.get("content")]
+        logger.info(f" -> Tavily returned {len(results)} results.")
+        return results
+    except Exception as e:
+        logger.error(f"Error calling Tavily API for query '{query}': {e}", exc_info=True)
+        return []
+
+def web_search_critique_node(state: AgentState) -> Dict[str, Any]:
+    """Generates web search queries from critique and executes them using Tavily."""
+    logger.info("--- Web Search Critique Node ---")
+    tavily = TavilyClient()
+    critique = state.get("critique")
+    current_narrative_context = state.get("narrative_context") or [] # Get existing context
+
+    if not critique or "excellent" in critique.lower():
+        logger.info("Critique positive or missing, skipping web search.")
+        return {} # No change to narrative context
+
+    if not tavily:
+        logger.warning("Tavily client not available, skipping web search.")
+        return {} # No change
+
+    prompt = WEB_SEARCH_CRITIQUE_PROMPT.format(critique=critique)
+    web_search_results = []
+    web_queries = []
+
+    try:
+        logger.info("Generating web search queries based on critique...")
+        # Use structured output model to get JSON query list
+        response = structured_output_model.with_structured_output(WebQueries).invoke(prompt)
+        web_queries = response.queries if response and response.queries else []
+        logger.info(f"Generated {len(web_queries)} web search queries: {web_queries}")
+
+    except Exception as e:
+        logger.error(f"Failed to generate web search queries from critique: {e}", exc_info=True)
+        # Optionally, could try a fallback query based on critique text itself
+
+    # Execute web searches
+    if web_queries:
+        for query in web_queries:
+            if query and isinstance(query, str):
+                 results = call_tavily_search(query)
+                 if results:
+                     # Prepend context for clarity
+                     web_search_results.extend([f"[Web Search Result for '{query}']: {res}" for res in results])
+                 time.sleep(1) # Be polite to Tavily API
+            else:
+                 logger.warning(f"Skipping invalid web query: {query}")
+
+
+    # Combine internal context and web search results
+    if web_search_results:
+         logger.info(f"Adding {len(web_search_results)} web snippets to narrative context.")
+         # Add web results *after* internal context
+         combined_context = current_narrative_context + web_search_results
+         # Optional: Deduplicate or limit total context length if needed
+         return {"narrative_context": combined_context}
+    else:
+         logger.info("No web search results obtained.")
+         return {} # Return no changes if search yielded nothing
+
+
 # --- Generate Node (Updated Prompt) ---
 GENERATOR_PROMPT_REFINED_TEMPLATE = """
 You are an expert MLB analyst and storyteller.
@@ -863,7 +990,7 @@ You have already generated a draft, and received the following critique:
 Critique:
 {critique}
 
-Based on the critique AND the available data, revise the draft or generate new content. Utilize all information below:
+Based on the critique AND the available data(including internal data and external web search results), revise the draft or generate new content. Utilize all information below:
 
 Structured Data:
 ```json
@@ -873,9 +1000,9 @@ Structured Data:
 
 Instructions:
 
-- Address the Critique: Explicitly incorporate the feedback from the critique.
+- Address the Critique: Explicitly incorporate the feedback from the critique, using web search results if they provide relevant context or facts.
 
-- Synthesize ALL Data: Combine structured facts/stats with narrative context.
+- Synthesize ALL Data: Combine structured facts/stats with narrative context (internal and external). Clearly attribute information from web searches if necessary (e.g., "According to recent reports..." or implicitly use the fact).
 
 - Deep Storytelling: Connect stats to game flow, explain significance, highlight key moments/matchups. Use specific details if available (pitch types, speeds, hit data).
 
@@ -977,6 +1104,7 @@ workflow.add_node("generate", generate_node_refined) # Use refined generator
 workflow.add_node("reflect", reflection_node)
 workflow.add_node("research_critique", research_critique_node)
 workflow.add_node("analyze_script_for_images", analyze_script_for_images_node) # NEW
+workflow.add_node("web_search_context", web_search_critique_node)
 workflow.add_node("retrieve_images", retrieve_images_node) # NEW
 workflow.add_node("final_output", final_output_node)
 
@@ -993,11 +1121,13 @@ workflow.add_conditional_edges(
 should_continue, # Function to decide the path
 {
 "reflect": "reflect", # If function returns "reflect", go to reflect node
-"END": "analyze_script_for_images"  # <--- Transition to image analysis when text is final
+"END": "web_search_context"  # <--- Transition to image analysis when text is final
 }
 )
 workflow.add_edge("reflect", "research_critique")
-workflow.add_edge("research_critique", "generate") # Loop back to generate
+workflow.add_edge("research_critique", "generate")
+
+workflow.add_edge("web_search_context", "analyze_script_for_images") 
 
 # Define edges for image retrieval path
 workflow.add_edge("analyze_script_for_images", "retrieve_images")
@@ -1135,7 +1265,7 @@ if __name__ == "__main__":
         # ***** INCREASED RECURSION LIMIT *****
         # Set a higher, fixed limit or a more generous calculation
         # recursion_limit = max_loops * 4 + 5 # Generous calculation
-        recursion_limit = 25 # Or just a fixed higher number
+        recursion_limit = 50 # Or just a fixed higher number
         # *************************************
 
         final_state = app.invoke(initial_state, {"recursion_limit": recursion_limit})
