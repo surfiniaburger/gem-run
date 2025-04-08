@@ -11,6 +11,7 @@ import os
 import re 
 from ratelimit import limits, sleep_and_retry
 from pydantic import BaseModel, Field
+from google.cloud import secretmanager
 
 # LangGraph and LangChain specific
 from langgraph.graph import StateGraph, END
@@ -23,9 +24,11 @@ from langchain_core.prompts import ChatPromptTemplate
 
 # Google Cloud specific
 from google.cloud import bigquery
-from google.api_core.exceptions import BadRequest, NotFound
+from google.api_core.exceptions import BadRequest, NotFound, PermissionDenied
 import vertexai
 from vertexai.language_models import TextEmbeddingModel, TextEmbeddingInput
+from google.cloud import storage # Added GCS client
+from vertexai.vision_models import Image, MultiModalEmbeddingModel
 
 from image_embedding_pipeline2 import search_similar_images_sdk, execute_bq_query
 
@@ -47,6 +50,17 @@ VERTEX_EMB_RPM = 1400 # Adjust
 MLB_API_CALLS = 9
 MLB_API_RATE_LIMIT = 60
 PLAYER_METADATA_TABLE_ID = "mlb_player_metadata"
+EMBEDDING_TABLE_ID = "mlb_image_embeddings_sdk"
+
+BQ_DATASET_LOCATION = "US" # Actual location of your BQ dataset
+VERTEX_MULTIMODAL_MODEL_NAME = "multimodalembedding@001"
+
+# GCS Configuration
+GCS_BUCKET_LOGOS = "mlb_logos"
+GCS_PREFIX_LOGOS = "" # e.g., "logos/" if logos are in a subfolder
+GCS_BUCKET_HEADSHOTS = "mlb-headshots"
+GCS_PREFIX_HEADSHOTS = "headshots/" # e.g., "headshots/"
+
 
 # --- Logging and Clients (Initialize as before) ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -79,6 +93,17 @@ try:
 except Exception as e:
     logger.critical(f"Failed to initialize Google Cloud clients or LangChain Model: {e}", exc_info=True)
     raise RuntimeError("Critical initialization failed.") from e
+
+# --- Initialize Clients ---
+try:
+    bq_client = bigquery.Client(project=GCP_PROJECT_ID, location=BQ_DATASET_LOCATION)
+    storage_client = storage.Client(project=GCP_PROJECT_ID)
+    vertexai.init(project=GCP_PROJECT_ID, location=GCP_LOCATION)
+    multimodal_embedding_model = MultiModalEmbeddingModel.from_pretrained(VERTEX_MULTIMODAL_MODEL_NAME)
+    logger.info(f"Initialized BQ, GCS, and Vertex AI clients/models.")
+except Exception as e:
+    logger.critical(f"Failed to initialize clients: {e}", exc_info=True)
+    exit(1)
 
 
 # --- Agent State Definition (Added critique, revision tracking) ---
@@ -531,142 +556,133 @@ def analyze_script_for_images_node(state: AgentState) -> Dict[str, Any]:
     return {"image_search_queries": image_search_queries}
 
 
+# --- Helper function needed ---
+def parse_player_name_from_query(search_term: str) -> Optional[str]:
+    """Extracts player name from a search query like 'Player Name headshot'."""
+    name = search_term.lower()
+    # Remove common keywords
+    name = name.replace(" headshot", "").replace("player ", "").strip()
+    # Basic title casing (might need refinement for complex names)
+    return name.title() if name else None
 
-# --- Modify retrieve_images_node ---
+# --- Make sure storage_client is accessible or passed to the node ---
+# It's initialized globally in the SDK script version, so it should be accessible.
+# Add check_gcs_blob_exists helper if not already present
+def check_gcs_blob_exists(bucket_name: str, blob_name: str) -> bool:
+    """Checks if a blob exists in the GCS bucket."""
+    try:
+        bucket = storage_client.bucket(bucket_name) # Use the global client
+        blob = bucket.blob(blob_name)
+        exists = blob.exists()
+        logger.debug(f"Checking existence for gs://{bucket_name}/{blob_name}: {exists}")
+        return exists
+    except Exception as e:
+        logger.error(f"Error checking existence for blob {blob_name} in bucket {bucket_name}: {e}")
+        return False # Assume it doesn't exist if check fails
+
+# --- Revised retrieve_images_node ---
 def retrieve_images_node(state: AgentState) -> Dict[str, Any]:
-    """Retrieves images and VERIFIES headshots using player metadata."""
-    logger.info("--- Retrieve Images Node (with Verification) ---")
+    """
+    Retrieves images: Uses DIRECT LOOKUP for headshots based on Player ID,
+    and VECTOR SEARCH for logos.
+    """
+    logger.info("--- Retrieve Images Node (Direct Headshot Lookup + Vector Logo Search) ---")
     image_searches_to_run = state.get("image_search_queries")
+    player_lookup_dict = state.get("player_lookup_dict") or {}
 
-    # --- Corrected Player Lookup Logic ---
-    player_lookup_dict = state.get("player_lookup_dict") # Try to get from state first
-
-    if not player_lookup_dict:
-         logger.warning("Player lookup dict not found in state. Reloading...")
-         player_lookup_query = f"SELECT player_id, player_name FROM `{GCP_PROJECT_ID}.{BQ_DATASET_ID}.{PLAYER_METADATA_TABLE_ID}`"
-         player_results_df = execute_bq_query(player_lookup_query) # Returns DataFrame or None
-
-         # *** APPLY THE FIX HERE ***
-         if player_results_df is not None and not player_results_df.empty:
-             # Iterate over DataFrame rows to build the dictionary
-             player_lookup_dict = {row['player_id']: row['player_name'] for index, row in player_results_df.iterrows()}
-             logger.info(f"Successfully reloaded {len(player_lookup_dict)} player names.")
-             # Optionally add it back to state if useful for other potential nodes later
-             # state["player_lookup_dict"] = player_lookup_dict
-         else:
-             player_lookup_dict = {} # Default to empty dict if query failed or returned no rows
-             logger.error("Player metadata query failed or returned no results during reload. Lookup dictionary is empty.")
-    # --- End Corrected Player Lookup Logic ---
-
-
-    verified_image_data = [] # Store only verified results
+    final_retrieved_images = [] # Store final selected images
 
     if not image_searches_to_run:
-        logger.info("No image search queries provided. Skipping image retrieval.")
+        logger.info("No image search queries provided.")
         return {"retrieved_image_data": []}
 
-    # --- Add safety check for empty lookup dict before proceeding ---
-    if not player_lookup_dict:
-        logger.error("Player lookup dictionary is empty. Cannot verify headshots effectively. Skipping image retrieval.")
-        # Return empty or maybe try retrieving without verification? For now, skip.
-        return {"retrieved_image_data": []}
-
-    # Invert lookup for name -> ID mapping
+    # Create name -> ID lookup (case-insensitive)
     name_to_id_lookup = {name.lower(): pid for pid, name in player_lookup_dict.items()}
 
     processed_image_queries = set()
-    logger.info(f"Executing {len(image_searches_to_run)} image searches with verification...")
+    logger.info(f"Processing {len(image_searches_to_run)} image search queries...")
 
-    # (Rest of the function remains the same as the previous version with verification logic)
     for search_term in image_searches_to_run:
-        # ... (existing loop logic calling search_similar_images_sdk and verifying results) ...
         if not isinstance(search_term, str) or not search_term.strip() or search_term in processed_image_queries:
             continue
         processed_image_queries.add(search_term)
 
-        filter_type = None
-        is_headshot_query = False
-        target_player_name = None
+        selected_image_data = None # To hold the data for the selected image
 
+        # --- Determine Query Type ---
         if "logo" in search_term.lower():
-            filter_type = "logo"
-        elif "headshot" in search_term.lower() or "player" in search_term.lower():
-            filter_type = "headshot"
-            is_headshot_query = True
-            target_player_name = parse_player_name_from_query(search_term)
-            if not target_player_name:
-                 logger.warning(f"Could not parse target player name from headshot query: '{search_term}'. Skipping verification.")
-
-        k_to_retrieve = 3 if is_headshot_query and target_player_name else 1
-
-        logger.info(f"Searching images for '{search_term}' (filter: {filter_type}, k={k_to_retrieve})...")
-        try:
-            image_candidates = search_similar_images_sdk(
-                query_text=search_term,
-                top_k=k_to_retrieve
-            )
-
-            if not image_candidates:
-                logger.warning(f"No candidates found for '{search_term}'.")
-                continue
-
-            # Verification Logic
-            found_verified = False
-            if is_headshot_query and target_player_name and name_to_id_lookup:
-                target_player_id = name_to_id_lookup.get(target_player_name.lower())
-                if not target_player_id:
-                    logger.warning(f"Could not find target player ID for name '{target_player_name}'. Adding top unverified result for '{search_term}'.")
-                    # Add top result if verification isn't possible
-                    top_candidate = image_candidates[0]
-                    top_candidate['search_term_origin'] = search_term
-                    verified_image_data.append(top_candidate)
-                    found_verified = True
+            # --- Logo Logic: Use Vector Search ---
+            logger.info(f"Searching logo for '{search_term}' using Vector Search...")
+            try:
+                logo_candidates = search_similar_images_sdk(
+                    query_text=search_term,
+                    top_k=1
+                )
+                if logo_candidates:
+                    selected_image_data = logo_candidates[0] # Take the top result
+                    selected_image_data['search_term_origin'] = search_term
+                    logger.info(f" -> Found logo: {selected_image_data.get('image_uri')}")
                 else:
-                    # Proceed with verification loop
-                    logger.info(f"Verifying headshot results for '{target_player_name}' (Target ID: {target_player_id})...")
-                    for candidate in image_candidates:
-                        candidate_entity_id_str = candidate.get("entity_id")
-                        try:
-                             candidate_entity_id_int = int(candidate_entity_id_str)
-                             if candidate_entity_id_int == target_player_id:
-                                 logger.info(f"   Verified match found: {candidate['image_uri']} for ID {target_player_id}")
-                                 candidate['search_term_origin'] = search_term
-                                 verified_image_data.append(candidate)
-                                 found_verified = True
-                                 break
-                             else:
-                                 logger.debug(f"   Candidate ID {candidate_entity_id_int} != target {target_player_id}.")
-                        except (TypeError, ValueError):
-                             logger.warning(f"   Could not parse candidate entity_id '{candidate_entity_id_str}' as integer.")
-                    if not found_verified:
-                        logger.warning(f"No verified headshot found for '{target_player_name}'.")
+                    logger.warning(f"Vector search found no logo for '{search_term}'.")
+            except Exception as search_err:
+                logger.error(f"Error during logo vector search for '{search_term}': {search_err}", exc_info=True)
+            # --- End Logo Logic ---
 
-            else: # Logo query or unverified headshot query
-                 logger.info(f"Adding top result for '{search_term}' (no verification needed/possible).")
-                 top_candidate = image_candidates[0]
-                 top_candidate['search_term_origin'] = search_term
-                 verified_image_data.append(top_candidate)
-                 found_verified = True
+        elif "headshot" in search_term.lower() or "player" in search_term.lower():
+            # --- Headshot Logic: Use Direct Lookup ---
+            target_player_name = parse_player_name_from_query(search_term)
 
-        except Exception as search_err:
-            logger.error(f"Error during image search for '{search_term}': {search_err}", exc_info=True)
+            if not target_player_name:
+                logger.warning(f"Could not parse target player name from headshot query: '{search_term}'. Skipping.")
+                continue # Skip if name cannot be parsed
 
-        time.sleep(0.5)
+            if not player_lookup_dict:
+                 logger.warning(f"Player lookup empty, cannot perform direct lookup for '{target_player_name}'. Skipping.")
+                 continue # Skip if lookup failed
 
+            target_player_id = name_to_id_lookup.get(target_player_name.lower())
 
-    # Deduplicate final verified list
-    unique_image_data = list({img['image_uri']: img for img in verified_image_data}.values())
-    logger.info(f"Retrieved {len(unique_image_data)} unique & verified/selected image metadata records.")
+            if target_player_id:
+                logger.info(f"Attempting direct lookup for '{target_player_name}' (ID: {target_player_id})...")
+                # Construct the expected URI (ensure GCS bucket/prefix config vars are correct)
+                # Assuming filename format headshot_{player_id}.jpg
+                expected_blob_name = f"{GCS_PREFIX_HEADSHOTS}headshot_{target_player_id}.jpg"
+                expected_uri = f"gs://{GCS_BUCKET_HEADSHOTS}/{expected_blob_name}"
+
+                # Optional: Verify blob exists
+                if check_gcs_blob_exists(GCS_BUCKET_HEADSHOTS, expected_blob_name):
+                    logger.info(f"   --> Found and verified headshot via direct lookup: {expected_uri}")
+                    # Create the result dictionary directly
+                    selected_image_data = {
+                        "image_uri": expected_uri,
+                        "image_type": "headshot",
+                        "entity_id": str(target_player_id), # Store ID as string
+                        "entity_name": player_lookup_dict.get(target_player_id, target_player_name), # Get name from original dict
+                        "distance": 0.0, # Indicate perfect match from lookup
+                        "search_term_origin": search_term
+                    }
+                else:
+                    logger.warning(f"   Direct lookup failed: Expected blob '{expected_blob_name}' not found in GCS for '{target_player_name}'.")
+                    # Consider fallback? For now, we add nothing if direct lookup fails verification.
+
+            else:
+                # If the target player name wasn't in our metadata lookup
+                logger.warning(f"Could not find player ID for name '{target_player_name}' in lookup table. Cannot retrieve headshot for '{search_term}'.")
+            # --- End Headshot Logic ---
+        else:
+            logger.warning(f"Unrecognized image search type for query: '{search_term}'. Skipping.")
+
+        # Add the selected image data (if any) to the final list
+        if selected_image_data:
+            final_retrieved_images.append(selected_image_data)
+
+        time.sleep(0.2) # Small pause between processing each search term
+
+    # Deduplicate final list (less likely needed with direct lookup but safe)
+    unique_image_data = list({img['image_uri']: img for img in final_retrieved_images}.values())
+    logger.info(f"Retrieved {len(unique_image_data)} unique image metadata records (Direct lookup for headshots).")
 
     return {"retrieved_image_data": unique_image_data}
-
-# --- Helper function needed by the above ---
-def parse_player_name_from_query(search_term: str) -> Optional[str]:
-    # Simple approach: remove " headshot", " player ", etc.
-    name = search_term.lower()
-    name = name.replace(" headshot", "").replace("player ", "").strip()
-    # Basic title casing (might need refinement for names like 'McCullers Jr.')
-    return name.title() if name else None
 
 
 def final_output_node(state: AgentState) -> Dict[str, Any]:
@@ -690,24 +706,28 @@ def final_output_node(state: AgentState) -> Dict[str, Any]:
     return output
 
 
-# --- Reflection and Critique Nodes ---
+# --- Updated REFLECTION_PROMPT ---
 REFLECTION_PROMPT = """
-You are an expert MLB analyst acting as a writing critic. Review the generated draft based on the original request and plan.
+You are a sharp, demanding MLB analyst and broadcast producer acting as a writing critic. Review the generated draft script based on the original request and plan.
 
 Original Request: {task}
 Plan: {plan}
-Draft:
+Draft Script:
 {draft}
 
-Provide constructive criticism and specific recommendations for improvement. Focus on:
-- Accuracy: Does the draft accurately reflect the data? Point out any factual errors.
-- Completeness: Does the draft fully address the user's request and the plan? What's missing?
-- Storytelling/Engagement: Is the narrative compelling? Does it connect stats to the game flow well? Is it interesting for an MLB fan? Suggest ways to make it more engaging (e.g., add context, highlight drama, use stronger verbs).
-- Clarity and Conciseness: Is the writing clear and easy to understand? Is it too verbose or too brief?
-- Specific Data Usage: Could specific stats or play details (if available in context, though not explicitly shown here) be integrated better?
+Provide constructive criticism and specific, actionable recommendations for improvement. Be tough but fair. Focus on:
+- **Accuracy:** Are ALL scores, stats (including exit velo, distance), player actions, and sequences correct based on typical game data? Point out ANY discrepancies or vagueness.
+- **Compelling Narrative:** Does it have a strong hook? Does it build tension or excitement? Is the storytelling engaging for an MLB fan, or just a dry recitation of facts? Use stronger verbs, more vivid language.
+- **Context:** Does it explain the *significance* of the game (e.g., playoff implications, rivalry, player milestones)? Does it explain *why* a stat (like exit velocity) is notable? Compare stats to averages if possible.
+- **Impactful Play Descriptions:** Do they capture the moment? Add sensory details, crowd reaction context (even if inferred), explain the *impact* of the play beyond just the score change. Integrate pitch data (speed, type) if relevant and available.
+- **Player Highlights:** Do they go beyond just listing stats? Connect performance to game narrative. Provide context on the player's role or typical performance.
+- **Clarity and Conciseness:** Is it easy to follow? Is it too verbose or too brief for the target format (e.g., short video script)? Eliminate repetition. Be specific.
+- **Data Integration:** Are stats used effectively to support the narrative, or just dropped in? Is there an opportunity to use *more* specific data points (pitch types, locations, defensive plays)?
 
-If the draft is excellent and requires no changes, respond with "The draft looks excellent and fully addresses the request." Otherwise, provide specific, actionable feedback.
+If the draft is excellent and requires no changes (rare!), respond with "The draft looks excellent and fully addresses the request."
+Otherwise, provide **specific, bulleted feedback** with clear examples of what needs improvement and *suggestions* for how to fix it. For instance, instead of saying "be more engaging," suggest *where* and *how* (e.g., "In the description of Higashioka's homer, add a sentence about the crowd's reaction or how it shifted the dugout energy.").
 """
+
 
 RESEARCH_CRITIQUE_PROMPT = """
 You are a research assistant. Based on the critique of the previous draft, generate specific search queries (max 3) to find information needed for the revision.
@@ -1125,6 +1145,7 @@ if __name__ == "__main__":
         elif final_state.get("retrieved_image_data"): # Check 'draft' as it holds the last generated content
              print("\n--- Final Generated Content ---")
              print(json.dumps(final_state["retrieved_image_data"], indent=2, default=str))
+             print(final_state["draft"])
         else:
             print("\n--- Execution Finished, but no final draft found in state. Check logs. ---")
             print("Final state snapshot:", {k: v for k,v in final_state.items() if k != 'structured_data' and k != 'narrative_context'}) # Avoid printing huge data
