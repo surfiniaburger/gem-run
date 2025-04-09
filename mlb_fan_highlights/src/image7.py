@@ -16,7 +16,7 @@ def access_secret_version(project_id, secret_id, version_id="latest"):
 def generate_image():
     # Get secrets from Google Secret Manager
     try:
-        project_id = "gem-rush-007"  # Replace with your Google Cloud project ID
+        project_id = "silver-455021"  # Replace with your Google Cloud project ID
         account_id = access_secret_version(project_id, "cloudflare-account-id")
         api_token = access_secret_version(project_id, "cloudflare-api-token")
     except Exception as e:
@@ -34,8 +34,7 @@ def generate_image():
 
     # Request body
     data = {
-        "prompt": "Gleyber Torres hit a home run, extending the Yankees lead",
-        "negative_prompt": "blurry, low quality, distorted",
+        "prompt": "an mlb player hits a ball with a bat, extending the Yankees lead",
         "width": 768,
         "height": 768,
         "num_steps": 20,

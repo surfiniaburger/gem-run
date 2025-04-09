@@ -39,7 +39,7 @@ MLB_API_RATE_LIMIT = 60
 VERTEX_LLM_RPM = 180 # Adjust based on model and quotas
 VERTEX_EMB_RPM = 1400 # Adjust
 
-NUM_GAMES_PER_TEAM = 10 # Keep low for testing, increase later
+NUM_GAMES_PER_TEAM = 1 # Keep low for testing, increase later
 MAX_PLAY_SNIPPETS_PER_GAME = 10 # Limit LLM calls for play snippets
 
 # Teams (Shortened)
