@@ -40,16 +40,26 @@ from image_embedding_pipeline2 import search_similar_images_sdk, execute_bq_quer
 from vertexai.preview.vision_models import ImageGenerationModel
 import google.cloud.storage # Ensure storage client is used for saving generated images too
 
+
+# Imagen Generation Parameters
+IMAGE_GENERATION_SEED = None # Set to None initially, Imagen 3 might handle random seed internally better without conflicts. Can add back if needed.
+IMAGE_GENERATION_WATERMARK = False # Set to False if using Seed, or if you just don't want it.
+IMAGE_GENERATION_NEGATIVE_PROMPT = "text, words, letters, blurry, low quality, cartoonish, illustration, drawing, sketch, unrealistic, watermark, signature, writing"
+IMAGE_GENERATION_ASPECT_RATIO = "16:9" # Common video aspect ratio
+IMAGE_GENERATION_NUMBER_PER_PROMPT = 1
+
+
 # --- Add near other model configurations ---
-VERTEX_IMAGEN_MODEL = "imagen-3.0-generate-001" # From the advertising notebook
+VERTEX_IMAGEN_MODEL = "imagen-3.0-generate-002" # From the advertising notebook
 # VERTEX_VEO_MODEL = "veo-2.0-generate-001" # From the retail notebook (for potential future video)
 GCS_BUCKET_GENERATED_ASSETS = "mlb_generated_assets" # NEW: Define a bucket for generated images/videos
 # Ensure this bucket exists in your GCP project!
 
 # You might want to make these configurable
-IMAGE_GENERATION_SLEEP_SECONDS = 3 # Sleep between successful calls
-IMAGE_GENERATION_ERROR_SLEEP_SECONDS = 5 # Sleep after a general error
-IMAGE_GENERATION_QUOTA_SLEEP_SECONDS = 15 # Longer sleep after hitting quota
+IMAGE_GENERATION_SLEEP_SECONDS = 60 # Sleep between successful calls
+IMAGE_GENERATION_ERROR_SLEEP_SECONDS = 15 # Sleep after a general error
+IMAGE_GENERATION_QUOTA_SLEEP_SECONDS = 70 # Longer sleep after hitting quota
+CLOUDFLARE_FALLBACK_SLEEP_SECONDS = 5     # Sleep after a Cloudflare attempt
 
 # --- Configuration (Ensure these match ingestion script) ---
 GCP_PROJECT_ID = "silver-455021"
@@ -652,14 +662,12 @@ def generate_image_cloudflare(prompt: str, width: int = 768, height: int = 768, 
 # --- End Cloudflare helper function ---
 # (Make sure imports are present: time, random, io, requests, google_exceptions, Image from PIL)
 
-# Configurable sleeps (keep these)
-IMAGE_GENERATION_SLEEP_SECONDS = 3
-IMAGE_GENERATION_ERROR_SLEEP_SECONDS = 5
-IMAGE_GENERATION_QUOTA_SLEEP_SECONDS = 15
-CLOUDFLARE_FALLBACK_SLEEP_SECONDS = 2 # Shorter sleep after fallback attempt
 
 def generate_visuals_node(state: AgentState) -> Dict[str, Any]:
-    """Generates images using Imagen 3 with Cloudflare Stable Diffusion fallback."""
+    """
+    Generates images using the configured Imagen model with appropriate sleep,
+    error handling, and Cloudflare fallback.
+    """
     node_start_time = time.time()
     logger.info(f"--- Generate Visuals Node (Revision: {state.get('visual_revision_number', 0)}) ---")
     prompts = state.get("visual_generation_prompts")
@@ -667,161 +675,258 @@ def generate_visuals_node(state: AgentState) -> Dict[str, Any]:
 
     if not prompts:
         logger.warning("No visual generation prompts provided.")
-        return {"generated_visual_assets": current_assets}
+        return {"generated_visual_assets": current_assets} # Return existing assets
 
-    if not imagen_model:
-         logger.error("Primary Imagen model not available.")
-         # Decide if we should proceed directly to fallback or error out
-         # Let's try fallback if Cloudflare creds are available, otherwise error
-         if not cloudflare_account_id or not cloudflare_api_token:
-              logger.error("Imagen model unavailable and Cloudflare fallback disabled. Cannot generate visuals.")
-              return {"generated_visual_assets": current_assets, "error": "Image generation models unavailable."}
-         else:
-              logger.warning("Imagen model unavailable, will attempt Cloudflare fallback for all prompts.")
-
+    # --- Check if primary Imagen model is available ---
+    global imagen_model
+    primary_model_available = False
+    if 'imagen_model' in globals() and imagen_model is not None:
+        primary_model_available = True
+    else:
+        logger.error(f"Primary Imagen model ({VERTEX_IMAGEN_MODEL}) not initialized.")
+        # Check if fallback is possible
+        if not cloudflare_account_id or not cloudflare_api_token:
+             logger.error("Imagen model unavailable AND Cloudflare fallback disabled. Cannot generate visuals.")
+             # Return error to potentially stop the loop gracefully
+             return {
+                 "generated_visual_assets": current_assets,
+                 "error": "Primary image generation model unavailable and fallback disabled."
+             }
+        else:
+             logger.warning("Imagen model unavailable, will attempt Cloudflare fallback ONLY.")
 
     newly_generated_assets = []
     game_pk = state.get("game_pk", "unknown_game")
     timestamp = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
-    negative_prompt = "text, words, letters, blurry, low quality, cartoonish, illustration, drawing, sketch, unrealistic, watermark"
-    aspect_ratio = "16:9"
-    number_of_images_per_prompt = 1
+
+    # --- Prepare Generation Parameters from Config ---
+    generation_params = {
+        "number_of_images": IMAGE_GENERATION_NUMBER_PER_PROMPT,
+        "aspect_ratio": IMAGE_GENERATION_ASPECT_RATIO,
+        "add_watermark": IMAGE_GENERATION_WATERMARK,
+    }
+    # Conditionally add seed and negative prompt
+    if IMAGE_GENERATION_SEED is not None and not IMAGE_GENERATION_WATERMARK:
+        generation_params["seed"] = IMAGE_GENERATION_SEED # Or use random.randint(0, 2**31 - 1) per call if SEED is None
+    elif IMAGE_GENERATION_WATERMARK:
+        logger.warning("Watermark is enabled, seed parameter will be ignored by Imagen.")
+
+    if IMAGE_GENERATION_NEGATIVE_PROMPT:
+        generation_params["negative_prompt"] = IMAGE_GENERATION_NEGATIVE_PROMPT
 
     successful_generations = 0
     failed_generations = 0
     fallback_attempts = 0
     fallback_successes = 0
 
+    # --- Loop through prompts ---
+    num_prompts_to_process = len(prompts)
     for i, prompt_text in enumerate(prompts):
+        # Skip if already generated in a previous visual revision loop for this task run
+        # Note: This check assumes prompts don't change between visual revisions.
+        # A more robust check might involve comparing image URIs if prompts could be regenerated.
         if any(asset.get("prompt_origin") == prompt_text for asset in current_assets):
-             logger.info(f"Skipping prompt already generated: '{prompt_text[:80]}...'")
+             logger.info(f"Skipping prompt already generated in a previous revision: '{prompt_text[:80]}...'")
              continue
+
+        logger.info(f"Processing visual prompt {i+1}/{num_prompts_to_process}: '{prompt_text[:80]}...'")
 
         imagen_succeeded = False
         gcs_uri = None
         model_used = None
         pil_image_object = None
+        prompt_start_time = time.time()
 
-        # --- Attempt 1: Imagen ---
-        if imagen_model: # Only try Imagen if the model is loaded
+        # --- Attempt 1: Configured Imagen Model ---
+        if primary_model_available:
             try:
-                logger.info(f"Attempting Imagen generation ({i+1}/{len(prompts)}): '{prompt_text[:80]}...'")
+                # Use a random seed per image if main SEED is None and watermark is off
+                current_seed = generation_params.get("seed")
+                if current_seed is None and not IMAGE_GENERATION_WATERMARK:
+                    current_seed = random.randint(1, 2**31 - 1) # Generate random seed
+                    logger.debug(f"Using random seed for this prompt: {current_seed}")
+                else:
+                     current_seed = generation_params.get("seed") # Use configured seed or None if watermark on
+
+                logger.info(f"Attempting Imagen generation ({VERTEX_IMAGEN_MODEL})...")
                 response = imagen_model.generate_images(
                     prompt=prompt_text,
-                    number_of_images=number_of_images_per_prompt,
-                    aspect_ratio=aspect_ratio,
-                    seed=random.randint(0, 2**31 - 1),
-                    add_watermark=False, # Watermark disabled for seed
-                    negative_prompt=negative_prompt,
+                    seed=current_seed, # Pass the determined seed
+                    **{k:v for k,v in generation_params.items() if k != 'seed'} # Pass other params except seed
                 )
+                prompt_duration = time.time() - prompt_start_time
+                logger.info(f"Imagen API call completed in {prompt_duration:.2f} seconds.")
 
-                if response.images:
-                    img_candidate = response.images[0]._pil_image
-                    # *** FIX: Correct isinstance check ***
-                    if isinstance(img_candidate, PilImage.Image): # Use 'Image' directly
+                # --- Check Response ---
+                # Updated check based on SDK structure
+                if response and response.images: # Check if response and images list exist
+                     # Directly access the PIL image via the intended property if available
+                     # Assuming response.images[0] gives an object with a ._pil_image attribute
+                     # Or potentially just response.images[0] IS the PIL image? Need to confirm SDK structure.
+                     # Let's assume the ._pil_image attribute for now based on previous context.
+                     img_candidate = response.images[0]._pil_image # Access internal attribute
+
+                     if isinstance(img_candidate, PilImage.Image): # Check if it's a valid PIL Image
                         pil_image_object = img_candidate
                         model_used = VERTEX_IMAGEN_MODEL
                         imagen_succeeded = True
-                        logger.info(f"Imagen generation successful for prompt {i+1}.")
-                    else:
-                         logger.warning(f"Imagen response for prompt {i+1} did not contain a valid PIL Image object.")
+                        successful_generations += 1
+                        logger.info(f" --> Imagen generation successful.")
+                     else:
+                        logger.warning(f"Imagen response for prompt {i+1} did not contain a valid PIL Image object.")
+                        failed_generations += 1
                 else:
-                    logger.warning(f"Imagen returned no image(s) for prompt {i+1}.")
+                    safety_ratings = getattr(response, 'safety_ratings', 'N/A')
+                    logger.warning(f"Imagen returned no image(s) for prompt {i+1}. Possible safety filter? Ratings: {safety_ratings}")
+                    failed_generations += 1 # Count as failed if no image returned
 
-                # Sleep after Imagen attempt (success or known failure like 'no image returned')
-                logger.debug(f"Sleeping {IMAGE_GENERATION_SLEEP_SECONDS}s after Imagen attempt.")
+                # --- Sleep AFTER Imagen Success or known failure (but NOT Quota Error) ---
+                # Use the configured long sleep time
+                logger.info(f"Sleeping {IMAGE_GENERATION_SLEEP_SECONDS}s after successful Imagen attempt.")
                 time.sleep(IMAGE_GENERATION_SLEEP_SECONDS)
 
+
             except google_exceptions.ResourceExhausted as quota_error:
-                logger.error(f"Imagen Quota Exceeded for prompt {i+1}: {quota_error}. Sleeping {IMAGE_GENERATION_QUOTA_SLEEP_SECONDS}s.")
-                time.sleep(IMAGE_GENERATION_QUOTA_SLEEP_SECONDS)
-                # Don't attempt fallback immediately after quota error for Imagen, try Imagen again on next prompt.
+                prompt_duration = time.time() - prompt_start_time
+                logger.error(f"Imagen Quota Exceeded for prompt {i+1} after {prompt_duration:.2f}s: {quota_error}. Sleeping {IMAGE_GENERATION_QUOTA_SLEEP_SECONDS}s.")
                 failed_generations += 1
-                continue # Move to the next prompt after quota sleep
+                time.sleep(IMAGE_GENERATION_QUOTA_SLEEP_SECONDS)
+                # DO NOT attempt fallback immediately after quota error. Skip to next prompt.
+                continue
 
             except google_exceptions.InvalidArgument as arg_error:
-                logger.error(f"Imagen Invalid Argument for prompt {i+1}: {arg_error}. Will attempt fallback.")
-                time.sleep(IMAGE_GENERATION_ERROR_SLEEP_SECONDS)
+                prompt_duration = time.time() - prompt_start_time
+                logger.error(f"Imagen Invalid Argument for prompt {i+1} after {prompt_duration:.2f}s: {arg_error}. Will attempt fallback.")
+                failed_generations += 1
+                time.sleep(IMAGE_GENERATION_ERROR_SLEEP_SECONDS) # Shorter sleep before fallback
 
             except Exception as e:
-                logger.error(f"Unexpected Imagen Error for prompt {i+1}: {e}", exc_info=True)
+                prompt_duration = time.time() - prompt_start_time
+                logger.error(f"Unexpected Imagen Error for prompt {i+1} after {prompt_duration:.2f}s: {e}", exc_info=True)
                 logger.warning("Will attempt fallback due to unexpected Imagen error.")
-                time.sleep(IMAGE_GENERATION_ERROR_SLEEP_SECONDS)
+                failed_generations += 1
+                time.sleep(IMAGE_GENERATION_ERROR_SLEEP_SECONDS) # Shorter sleep before fallback
+
         else:
-            # If Imagen model wasn't loaded initially, go directly to fallback attempt
-            logger.info(f"Imagen model not loaded, proceeding directly to fallback for prompt {i+1}.")
+            # If primary model wasn't loaded, log it and proceed to fallback
+            logger.info(f"Primary Imagen model not loaded, proceeding directly to fallback for prompt {i+1}.")
 
 
-        # --- Attempt 2: Cloudflare Fallback (if Imagen failed and not due to quota) ---
-        if not imagen_succeeded:
-            fallback_attempts += 1
-            cloudflare_image_bytes = generate_image_cloudflare(prompt_text)
+        # --- Attempt 2: Cloudflare Fallback (if Imagen failed for reasons OTHER than quota) ---
+        if not imagen_succeeded and primary_model_available: # Only fallback if Imagen was tried and failed (non-quota)
+             fallback_attempts += 1
+             logger.info("Attempting Cloudflare fallback...")
+             cloudflare_image_bytes = generate_image_cloudflare(prompt_text) # Use helper
 
-            if cloudflare_image_bytes:
-                try:
-                    # Convert bytes to PIL Image
-                    fallback_image = PilImage.open(BytesIO(cloudflare_image_bytes))
-                    if isinstance(fallback_image, PilImage.Image): # Verify conversion
-                        pil_image_object = fallback_image
-                        model_used = CLOUDFLARE_FALLBACK_MODEL # Note the model used
-                        fallback_successes += 1
-                        logger.info(f"Cloudflare fallback successful for prompt {i+1}.")
-                    else:
+             if cloudflare_image_bytes:
+                 try:
+                     fallback_image = PilImage.open(BytesIO(cloudflare_image_bytes))
+                     if isinstance(fallback_image, PilImage.Image): # Verify conversion
+                         pil_image_object = fallback_image
+                         model_used = CLOUDFLARE_FALLBACK_MODEL # Note the fallback model used
+                         fallback_successes += 1
+                         # Overwrite failed generation count since fallback worked
+                         failed_generations -= 1 # Decrement failure count
+                         successful_generations +=1 # Increment success count
+                         logger.info(f" --> Cloudflare fallback successful.")
+                     else:
                          logger.warning(f"Could not convert Cloudflare response to valid PIL Image for prompt {i+1}.")
+                         # Failed generations count remains incremented from Imagen failure
 
-                except Exception as conversion_err:
-                    logger.error(f"Error converting Cloudflare image bytes to PIL Image for prompt {i+1}: {conversion_err}", exc_info=True)
-            else:
-                logger.warning(f"Cloudflare fallback also failed for prompt {i+1}.")
+                 except Exception as conversion_err:
+                     logger.error(f"Error converting Cloudflare image bytes to PIL Image: {conversion_err}", exc_info=True)
+                     # Failed generations count remains incremented
+             else:
+                 logger.warning(f" --> Cloudflare fallback also failed for prompt {i+1}.")
+                 # Failed generations count remains incremented
 
-            # Sleep after fallback attempt
-            logger.debug(f"Sleeping {CLOUDFLARE_FALLBACK_SLEEP_SECONDS}s after fallback attempt.")
-            time.sleep(CLOUDFLARE_FALLBACK_SLEEP_SECONDS)
+             # Sleep after fallback attempt (success or fail)
+             logger.debug(f"Sleeping {CLOUDFLARE_FALLBACK_SLEEP_SECONDS}s after fallback attempt.")
+             time.sleep(CLOUDFLARE_FALLBACK_SLEEP_SECONDS)
+
+        elif not primary_model_available: # Case where Imagen wasn't available from the start
+             fallback_attempts += 1
+             logger.info("Attempting Cloudflare fallback (primary model was unavailable)...")
+             # (Duplicate Cloudflare logic for clarity - could be refactored)
+             cloudflare_image_bytes = generate_image_cloudflare(prompt_text)
+             if cloudflare_image_bytes:
+                 try:
+                     fallback_image = PilImage.open(BytesIO(cloudflare_image_bytes))
+                     if isinstance(fallback_image, PilImage.Image):
+                         pil_image_object = fallback_image
+                         model_used = CLOUDFLARE_FALLBACK_MODEL
+                         fallback_successes += 1
+                         successful_generations +=1 # Count as success
+                         logger.info(f" --> Cloudflare fallback successful.")
+                     else:
+                         logger.warning(f"Could not convert Cloudflare response to valid PIL Image.")
+                         failed_generations += 1 # Count as failure if conversion fails
+                 except Exception as conversion_err:
+                     logger.error(f"Error converting Cloudflare image bytes to PIL Image: {conversion_err}", exc_info=True)
+                     failed_generations += 1
+             else:
+                 logger.warning(f" --> Cloudflare fallback also failed.")
+                 failed_generations += 1
+
+             logger.debug(f"Sleeping {CLOUDFLARE_FALLBACK_SLEEP_SECONDS}s after fallback attempt.")
+             time.sleep(CLOUDFLARE_FALLBACK_SLEEP_SECONDS)
 
 
-        # --- Save the resulting image (if any) ---
+        # --- Save the resulting image (if generation succeeded with either model) ---
         if pil_image_object and model_used:
             try:
-                # Create unique blob name including revision number
                 rev_num = state.get('visual_revision_number', 0)
-                blob_name = f"generated/game_{game_pk}/img_{timestamp}_rev{rev_num}_{i:02d}.png"
+                # Use a more descriptive blob name
+                prompt_slug = re.sub(r'\W+', '_', prompt_text[:30]).strip('_') # Basic slug from prompt
+                blob_name = f"generated/game_{game_pk}/img_{timestamp}_rev{rev_num}_{i+1:02d}_{prompt_slug}.jpg" # Use JPEG
+
+                # Use the helper function to save
                 gcs_uri = save_image_to_gcs(pil_image_object, GCS_BUCKET_GENERATED_ASSETS, blob_name)
 
                 if gcs_uri:
                     newly_generated_assets.append({
                         "prompt_origin": prompt_text,
                         "image_uri": gcs_uri,
-                        "model_used": model_used, # Will be Imagen or Cloudflare model ID
-                        "type": "generated_image"
+                        "model_used": model_used,
+                        "type": "generated_image",
+                        "revision": rev_num # Store revision number with the asset
                     })
-                    successful_generations += 1
+                    # Success already counted when pil_image_object was set
                 else:
                      logger.warning(f"Failed to save generated image to GCS for prompt {i+1} (model: {model_used}).")
+                     # If saving fails, we should probably decrement success and increment failure
+                     successful_generations -= 1
                      failed_generations += 1
 
             except Exception as save_err:
                  logger.error(f"Failed to save image from {model_used} for prompt {i+1} to GCS: {save_err}", exc_info=True)
+                 successful_generations -= 1
                  failed_generations += 1
-        elif not imagen_succeeded: # Only count as failure if Imagen *and* fallback failed
-             failed_generations += 1
+        # No else needed here, failure count is handled within the try/except blocks
 
 
     # --- Node Summary ---
     all_generated_assets = current_assets + newly_generated_assets
-    current_revision = state.get('visual_revision_number', 0)
+    current_revision = state.get('visual_revision_number', 0) # Revision number before incrementing
     node_duration = time.time() - node_start_time
-    logger.info(f"Visuals Node (Rev: {current_revision}) finished in {node_duration:.2f}s. "
-                f"Success: {successful_generations}, Failed: {failed_generations}, "
-                f"Fallback Attempts: {fallback_attempts}, Fallback Success: {fallback_successes}. "
-                f"Total assets now: {len(all_generated_assets)}")
+    logger.info(f"--- Visuals Node (Rev: {current_revision}) Summary ---")
+    logger.info(f"  Duration: {node_duration:.2f}s")
+    logger.info(f"  Prompts Processed: {num_prompts_to_process}")
+    logger.info(f"  Successful Generations: {successful_generations}")
+    logger.info(f"  Failed Generations: {failed_generations}")
+    logger.info(f"  Fallback Attempts: {fallback_attempts}")
+    logger.info(f"  Fallback Successes: {fallback_successes}")
+    logger.info(f"  Total Assets Now: {len(all_generated_assets)}")
 
     output_state = {
         "generated_visual_assets": all_generated_assets,
+         # Increment revision number *before* returning from the node
         "visual_revision_number": current_revision + 1
     }
-    # Optional: Set error state if zero images generated after trying all prompts/fallbacks
-    # if successful_generations == 0 and failed_generations == len(prompts) and not current_assets:
-    #    output_state["error"] = "Failed to generate any visual assets using primary or fallback methods."
+    # Optional: Check if ALL prompts failed despite retries/fallbacks
+    # if successful_generations == 0 and num_prompts_to_process > 0:
+    #    logger.error("All visual generation prompts failed.")
+    #    output_state["error"] = "Failed to generate any visual assets for the provided prompts."
 
     return output_state
 
@@ -1833,14 +1938,14 @@ if __name__ == "__main__":
         if final_state.get("error"):
              print("\n--- Execution Failed ---")
              print(f"Error: {final_state['error']}")
-        elif final_state.get("all_visual_assets"): # Check 'draft' as it holds the last generated content
+        elif final_state.get("generated_visual_assets"): # Check 'draft' as it holds the last generated content
 
             print("\n--- Final Generated Content & Assets ---")
             print("\n** Script: **")
             print(final_state.get("generated_content", "N/A"))
             print("\n** Visual Assets (Static & Generated): **")
-            if final_state.get("all_visual_assets"):
-               print(json.dumps(final_state["all_visual_assets"], indent=2, default=str))
+            if final_state.get("generated_visual_assets"):
+               print(json.dumps(final_state["generated_visual_assets"], indent=2, default=str))
             else:
                print("No visual assets found.")
         else:
