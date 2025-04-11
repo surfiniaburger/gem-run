@@ -216,6 +216,7 @@ def call_vertex_embedding(text_inputs: List[str]) -> List[Optional[List[float]]]
                  logger.info(f"Embedded batch {i // batch_size + 1}, pausing briefly...")
                  time.sleep(1) # Small pause between large batches
 
+
         # Basic validation
         if not all(len(emb) == EMBEDDING_DIMENSIONALITY for emb in all_embeddings if emb):
              logger.warning(f"Embeddings have unexpected dimensionality. Expected {EMBEDDING_DIMENSIONALITY}.")
