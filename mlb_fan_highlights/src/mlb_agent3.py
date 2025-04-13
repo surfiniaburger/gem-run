@@ -1953,6 +1953,7 @@ if __name__ == "__main__":
              # Print selective final state for debugging
              print("Final state snapshot (excluding large data):", {k: v for k, v in final_state.items() if k not in ['structured_data', 'narrative_context', 'draft', 'generated_content', 'all_visual_assets']})
 
+
     except Exception as e:
          logger.error(f"Error invoking graph: {e}", exc_info=True)
          print(f"\n--- Graph Invocation Error ---")
