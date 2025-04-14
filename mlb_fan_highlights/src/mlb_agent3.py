@@ -490,26 +490,38 @@ class RetrievalPlan(BaseModel):
 
 
 VISUAL_PROMPT_ANALYSIS_PROMPT = """
-You are an assistant director analyzing an MLB game script to plan visual shots.
-Read the script carefully and identify 3-5 key moments, scenes, or actions that need a generated visual.
-For actions (like a home run, double play, strikeout), break them down into 2-4 distinct visual prompts representing the sequence (e.g., swing, ball flight, player running, tag/catch, celebration).
-For descriptive moments (e.g., stadium shot, manager looking tense), generate a single detailed prompt.
-Focus on creating prompts suitable for the Imagen 3 text-to-image model. Be descriptive.
+You are an assistant director analyzing an MLB game script to plan visual shots, specifically for the Imagen 3 text-to-image model which has filters against specific names.
+Read the script carefully. Your primary goal is to identify 3-5 key moments, scenes, or actions that need a generated visual.
 
-Example Input Script: "Ohtani crushed a high fastball, sending it deep into the right-field stands for a 3-run homer! The crowd went wild as he rounded the bases."
-Example JSON Output:
+**Critical Instructions for Imagen Compatibility:**
+1.  **NO Player Names:** Absolutely **DO NOT** use any real player names (e.g., "Ohtani", "Judge"). Use generic descriptions like "an MLB player", "the batter", "the pitcher", "a fielder", "the runner".
+2.  **NO Team Names:** Absolutely **DO NOT** use specific MLB team names (e.g., "Dodgers", "Yankees").
+3.  **Uniform Descriptions:**
+    *   If the script explicitly states a player is on the **home team**, describe their uniform generically as such (e.g., "a player in a white home uniform", "the batter in a home jersey"). Assume home uniforms are primarily white or light grey unless the script specifies otherwise.
+    *   If the script explicitly states a player is on the **away team**, describe their uniform generically as such (e.g., "a player in a colored away uniform", "the pitcher in a gray away jersey"). Assume away uniforms are colored or dark grey unless the script specifies otherwise.
+    *   If the script provides **specific color details** for a uniform (e.g., "wearing blue and orange"), use those details.
+    *   If the script **does not specify** home/away or give color details for the relevant player/action, use a neutral description like "an MLB player's uniform".
+
+**Prompt Generation Guidelines:**
+*   For actions (like a home run, double play, strikeout), break them down into 2-4 distinct visual prompts representing the sequence (e.g., swing, ball flight, player running, tag/catch, celebration).
+*   For descriptive moments (e.g., stadium shot, manager looking tense), generate a single detailed prompt.
+*   Focus on creating descriptive prompts suitable for Imagen 3. Emphasize action, emotion, setting, and relevant details like uniform descriptions based on the rules above.
+
+**Example Input Script:** "The Dodgers' star player crushed a high fastball while playing at home, sending it deep into the right-field stands for a 3-run homer! The crowd went wild as he rounded the bases."
+
+**Example JSON Output (Reflecting New Rules):**
 [
-  "Shohei Ohtani swinging a baseball bat powerfully, follow-through motion, intense focus, stadium background.",
-  "Baseball soaring high in the air against a blue sky, heading towards the right-field seats of a packed stadium.",
-  "Shohei Ohtani jogging around third base, smiling, pointing upwards, during a baseball game.",
-  "Wide shot of a baseball stadium crowd cheering ecstatically after a home run."
+  "An MLB batter in a white home uniform swinging a baseball bat powerfully, follow-through motion, intense focus, stadium background during daytime.",
+  "Baseball soaring high in the air against a blue sky, heading towards the right-field seats of a packed baseball stadium.",
+  "An MLB player in a white home uniform jogging around third base, smiling, pointing upwards, during a baseball game.",
+  "Wide shot of a baseball stadium crowd cheering ecstatically, fans on their feet, after a home run."
 ]
 
-Script to Analyze:
+**Script to Analyze:**
 {script}
 
-Output ONLY a JSON list of prompt strings. Keep the list concise (max 5-7 prompts total unless the script is very long).
-JSON Output:
+**Output Format:** Output ONLY a JSON list of prompt strings. Keep the list concise (maximum 5-7 prompts total unless the script is exceptionally long and detailed). Ensure every prompt adheres strictly to the NO Player Name and NO Team Name rules, and uses uniform descriptions as specified.
+**JSON Output:**
 """
 
 def analyze_script_for_visual_prompts_node(state: AgentState) -> Dict[str, Any]:
