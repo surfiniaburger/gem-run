@@ -1813,7 +1813,32 @@ memory = MemorySaver() # Optional: Add if chat history/memory is needed
 app = workflow.compile(checkpointer=memory)
 app = workflow.compile()
 
-# Dancing emoji
+logger.info("Graph compiled successfully.") # Add a log message
+
+# --- START: Graph Visualization Code ---
+try:
+    logger.info("Attempting to generate graph visualization...")
+    # Get the graph structure
+    graph_structure = app.get_graph()
+
+    # Generate the PNG image data using Mermaid syntax
+    # Ensure you have the necessary optional dependencies installed for LangGraph visualization
+    # pip install pygraphviz or other Mermaid rendering tools might be needed if not already present
+    png_bytes = graph_structure.draw_mermaid_png()
+
+    # Define the output filename
+    output_filename = "mlb_agent_graph_visualization.png"
+
+    # Save the PNG data to a file
+    with open(output_filename, "wb") as f:
+        f.write(png_bytes)
+    logger.info(f"Successfully saved graph visualization to {output_filename}")
+
+except ImportError as ie:
+     logger.error(f"Visualization failed: Missing required libraries. Please install necessary dependencies for LangGraph visualization (e.g., 'pip install pygraphviz'). Error: {ie}")
+except Exception as e:
+    logger.error(f"Failed to generate or save graph visualization: {e}", exc_info=True)
+# --- END: Graph Visualization Code ---
 
 # --- Helper function (add this near the start of mlb_agent_graph_refined.py) ---
 # Requires call_mlb_api to be defined in this script as well
