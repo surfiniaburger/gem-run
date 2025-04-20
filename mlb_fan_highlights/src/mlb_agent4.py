@@ -272,7 +272,9 @@ class AgentState(TypedDict):
     retrieved_image_data: Optional[List[Dict[str, Any]]] # Results from image search
     draft: Optional[str]       # The current draft being worked on
     critique: Optional[str]    # Feedback from the reflection node
-    generated_content: str     # Final output
+    generated_content: str  
+    all_image_assets: Optional[List[Dict[str, Any]]] # Combined static and generated images
+    all_video_assets: Optional[List[Dict[str, Any]]] # Combined generated videos   # Final output
     revision_number: int       # Start at 0, increment with each generation attempt
     max_revisions: int         # Max refinement loops
     # --- NEW: Visual Generation Loop ---
@@ -1865,28 +1867,36 @@ Output the improved content in Markdown format.
 
 # --- Define the Aggregation Node ---
 def aggregate_final_output_node(state: AgentState) -> Dict[str, Any]:
-    """Combines final text, static assets, and generated assets."""
+    """Combines final text, static assets, generated images, and generated videos."""
     logger.info("--- Aggregate Final Output Node ---")
     final_draft = state.get("draft")
     retrieved_static_data = state.get("retrieved_image_data") or []
-    generated_visual_data = state.get("generated_visual_assets") or []
-    generated_video_data = state.get("generated_video_assets") or [] 
+    generated_image_data = state.get("generated_visual_assets") or []
+    generated_video_data = state.get("generated_video_assets") or [] # Get video data
 
-    # Combine all visual assets
-    all_visuals = retrieved_static_data + generated_visual_data
+    # *** ADD DEBUG LOGGING HERE ***
+    logger.debug(f"Aggregate Node Received State Keys: {list(state.keys())}")
+    logger.debug(f"Aggregate Node - Type of generated_video_assets: {type(generated_video_data)}")
+    logger.debug(f"Aggregate Node - Length of generated_video_assets: {len(generated_video_data)}")
+    if generated_video_data:
+        logger.debug(f"Aggregate Node - First video asset received: {generated_video_data[0]}")
+    # *** END DEBUG LOGGING ***
 
-    logger.info(f"Aggregating final output: Text script, {len(retrieved_static_data)} static assets, {len(generated_visual_data)} generated assets, {len(generated_video_data)} generated videos.")
+    all_image_assets = retrieved_static_data + generated_image_data
 
-    # Decide on final output structure. Store combined list? Keep separate?
-    # Let's put the final text in 'generated_content' and combined visuals in 'all_visual_assets'
+    logger.info(f"Aggregating final output: Text script, "
+                f"{len(retrieved_static_data)} static assets, "
+                f"{len(generated_image_data)} generated images, "
+                f"{len(generated_video_data)} generated videos.")
+
     output = {
         "generated_content": final_draft,
-        "all_visual_assets": all_visuals,
-        "all_video_assets": generated_video_data
+        "all_image_assets": all_image_assets, # Combined static and generated images
+        "all_video_assets": generated_video_data # List of generated videos
     }
 
     if state.get("error"):
-        output["error"] = state.get("error") # Preserve any errors
+        output["error"] = state.get("error")
 
     return output
 
@@ -2126,7 +2136,7 @@ if __name__ == "__main__":
 
     # --- Dynamic Game PK ---
     # Choose a default team ID to find the latest game for (e.g., Rangers = 140)
-    default_team_id_for_latest = 144
+    default_team_id_for_latest = 109
     latest_game_pk = get_latest_final_game_pk(default_team_id_for_latest)
 
     if not latest_game_pk:
@@ -2177,6 +2187,8 @@ if __name__ == "__main__":
         "draft": None,
         "critique": None,
         "generated_content": None,
+        "all_image_assets": [],
+        "all_video_assets": [],
         # --- Visual Generation Fields ---
         "visual_generation_prompts": [],
         "generated_visual_assets": [], # Initialize as empty list
@@ -2207,14 +2219,14 @@ if __name__ == "__main__":
         if final_state.get("error"):
              print("\n--- Execution Failed ---")
              print(f"Error: {final_state['error']}")
-        elif final_state.get("generated_visual_assets")  or final_state.get("all_video_assets"): # Check 'draft' as it holds the last generated content
+        elif final_state.get("all_image_assets")  or final_state.get("all_video_assets"): # Check 'draft' as it holds the last generated content
 
             print("\n--- Final Generated Content & Assets ---")
             print("\n** Script: **")
             print(final_state.get("generated_content", "N/A"))
             print("\n** Visual Assets (Static & Generated): **")
-            if final_state.get("generated_visual_assets"):
-               print(json.dumps(final_state["generated_visual_assets"], indent=2, default=str))
+            if final_state.get("all_image_assets"):
+               print(json.dumps(final_state["all_image_assets"], indent=2, default=str))
             else:
                print("No visual assets found.")
 
