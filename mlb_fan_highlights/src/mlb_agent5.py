@@ -15,7 +15,7 @@ import re
 from ratelimit import limits, sleep_and_retry
 from pydantic import BaseModel, Field
 from google.cloud import secretmanager
-
+from pydub import AudioSegment 
 
 # LangGraph and LangChain specific
 from langgraph.graph import StateGraph, END
@@ -40,6 +40,8 @@ from image_embedding_pipeline2 import search_similar_images_sdk, execute_bq_quer
 #import google.generativeai as genai # Use alias genai for clarity
 #from google.generativeai.types import GenerateVideosConfig, Image as GenAiImage 
 from google.genai import types as genai_types # Alias types to avoid conflict
+from google.cloud import texttospeech # Ensure this import is present
+
 
 # --- Add near other Vertex AI imports ---
 from vertexai.preview.vision_models import ImageGenerationModel
@@ -121,6 +123,41 @@ CLOUDFLARE_ACCOUNT_ID_SECRET = "cloudflare-account-id" # Your Secret Manager ID
 CLOUDFLARE_API_TOKEN_SECRET = "cloudflare-api-token" # Your Secret Manager ID
 CLOUDFLARE_FALLBACK_MODEL = "@cf/bytedance/stable-diffusion-xl-lightning" # Or choose another
 CLOUDFLARE_API_ENDPOINT_TEMPLATE = "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/{model_id}"
+
+# Team configurations (shortened for brevity)
+TEAMS = {
+    'rangers': 140,
+    'angels': 108,
+    'astros': 117,
+    'rays': 139,
+    'blue_jays': 141,
+    'yankees': 147,
+    'orioles': 110,
+    'red_sox': 111,
+    'twins': 142,
+    'white_sox': 145,
+    'guardians': 114,
+    'tigers': 116,
+    'royals': 118,
+    'padres': 135,
+    'giants': 137,
+    'diamondbacks': 109,
+    'rockies': 115,
+    'phillies': 143,
+    'braves': 144,
+    'marlins': 146,
+    'nationals': 120,
+    'mets': 121,
+    'pirates': 134,
+    'cardinals': 138,
+    'brewers': 158,
+    'cubs': 112,
+    'reds': 113,
+    'athletics': 133,
+    'mariners': 136,
+    'dodgers': 119,
+}
+
 
 # --- Store credentials globally after fetching ---
 cloudflare_account_id = None
@@ -284,6 +321,7 @@ class AgentState(TypedDict):
     visual_revision_number: int # Counter for visual generation loop
     max_visual_revisions: int   # Max loops for visual generation (e.g., 2)
     generated_video_assets: Optional[List[Dict[str, Any]]]
+    generated_audio_uri: Optional[str] # GCS URI for the final audio
     error: Optional[str]
 
 def load_image_bytes_from_gcs(gcs_uri: str) -> Optional[Tuple[bytes, str]]:
@@ -1595,26 +1633,26 @@ def final_output_node(state: AgentState) -> Dict[str, Any]:
 
 # --- Updated REFLECTION_PROMPT ---
 REFLECTION_PROMPT = """
-You are a sharp, demanding MLB analyst and broadcast producer acting as a writing critic. Review the generated draft script based on the original request and plan.
+You are a sharp, demanding MLB analyst and broadcast producer acting as a writing critic. Review the generated **two-host dialogue script** based on the original request and plan.
 
 Original Request: {task}
 Plan: {plan}
-Draft Script:
+Dialogue Draft:
 {draft}
 
 Provide constructive criticism and specific, actionable recommendations for improvement. Be tough but fair. Focus on:
+- **Dialogue Flow & Engagement:** Does the conversation sound natural? Is the back-and-forth engaging? Do the hosts have distinct enough 'voices' or roles (e.g., analyst vs. color commentator)? Is it just question/answer or a real discussion?
 - **Accuracy:** Are ALL scores, stats (including exit velo, distance), player actions, and sequences correct based on typical game data? Point out ANY discrepancies or vagueness.
-- **Compelling Narrative:** Does it have a strong hook? Does it build tension or excitement? Is the storytelling engaging for an MLB fan, or just a dry recitation of facts? Use stronger verbs, more vivid language.
-- **Context:** Does it explain the *significance* of the game (e.g., playoff implications, rivalry, player milestones)? Does it explain *why* a stat (like exit velocity) is notable? Compare stats to averages if possible.
-- **Impactful Play Descriptions:** Do they capture the moment? Add sensory details, crowd reaction context (even if inferred), explain the *impact* of the play beyond just the score change. Integrate pitch data (speed, type) if relevant and available.
-- **Player Highlights:** Do they go beyond just listing stats? Connect performance to game narrative. Provide context on the player's role or typical performance.
-- **Clarity and Conciseness:** Is it easy to follow? Is it too verbose or too brief for the target format (e.g., short video script)? Eliminate repetition. Be specific.
-- **Data Integration:** Are stats used effectively to support the narrative, or just dropped in? Is there an opportunity to use *more* specific data points (pitch types, locations, defensive plays)?
+- **Compelling Narrative:** Does the *conversation* have a strong hook? Does it build tension or excitement? Is the storytelling engaging for an MLB fan, or just a dry recitation of facts passed between hosts?
+- **Context:** Does the dialogue explain the *significance* of the game (e.g., playoff implications, rivalry, player milestones)? Does it explain *why* a stat (like exit velocity) is notable? Compare stats to averages if possible within the conversation.
+- **Impactful Play Descriptions:** Do the hosts' descriptions capture the moment? Add sensory details, crowd reaction context (even if inferred), explain the *impact* of the play beyond just the score change. Integrate pitch data (speed, type) if relevant and available *within the dialogue*.
+- **Player Highlights:** Do they go beyond just listing stats? Connect performance to game narrative *through the hosts' discussion*. Provide context on the player's role or typical performance.
+- **Clarity and Conciseness:** Is the dialogue easy to follow? Is it too verbose or too brief? Eliminate repetition between hosts.
+- **Data Integration:** Are stats used effectively to support the conversation, or just dropped in? Is there an opportunity to use *more* specific data points?
 
-If the draft is excellent and requires no changes (rare!), respond with "The draft looks excellent and fully addresses the request."
-Otherwise, provide **specific, bulleted feedback** with clear examples of what needs improvement and *suggestions* for how to fix it. For instance, instead of saying "be more engaging," suggest *where* and *how* (e.g., "In the description of Higashioka's homer, add a sentence about the crowd's reaction or how it shifted the dugout energy.").
+If the draft is excellent and requires no changes (rare!), respond with "The dialogue draft looks excellent and fully addresses the request."
+Otherwise, provide **specific, bulleted feedback** with clear examples of what needs improvement and *suggestions* for how to fix it within the dialogue format.
 """
-
 
 RESEARCH_CRITIQUE_PROMPT = """
 You are a research assistant. Based on the critique of the previous draft, generate specific search queries (max 3) to find information needed for the revision.
@@ -1779,6 +1817,188 @@ def call_tavily_search(query: str, max_results: int = 2) -> List[str]:
         logger.error(f"Error calling Tavily API for query '{query}': {e}", exc_info=True)
         return []
 
+def save_audio_to_gcs(audio_bytes: bytes, bucket_name: str, blob_name: str) -> Optional[str]:
+    """Saves audio bytes to GCS and returns the gs:// URI."""
+    try:
+        global storage_client
+        if 'storage_client' not in globals() or storage_client is None:
+             logger.error("GCS storage client not initialized. Cannot save audio.")
+             return None
+
+        bucket = storage_client.bucket(bucket_name)
+        blob = bucket.blob(blob_name)
+
+        # Upload directly from bytes
+        blob.upload_from_string(audio_bytes, content_type='audio/mpeg') # For MP3
+
+        gcs_uri = f"gs://{bucket_name}/{blob_name}"
+        logger.info(f"Successfully saved generated audio to {gcs_uri}")
+        return gcs_uri
+    except Exception as e:
+        logger.error(f"Error saving audio to GCS gs://{bucket_name}/{blob_name}: {e}", exc_info=True)
+        return None
+
+
+
+# --- Make sure these imports are present ---
+from google.cloud import texttospeech
+from pydub import AudioSegment # Requires pydub library (pip install pydub)
+import io                      # Requires ffmpeg to be installed on the system
+import os
+import tempfile # For creating temporary files safely
+
+# --- Configuration for Audio Node (Add Alt Voice) ---
+TTS_VOICE_NAME = "en-US-Chirp3-HD-Puck"           # Voice for Host 1 (even lines: 0, 2, 4...)
+TTS_VOICE_NAME_ALT = "en-US-Chirp3-HD-Aoede"      # Voice for Host 2 (odd lines: 1, 3, 5...) # Example WaveNet voice
+# Or use other Chirp voices:
+# TTS_VOICE_NAME = "en-US-Chirp3-HD-Puck"
+# TTS_VOICE_NAME_ALT = "en-US-Chirp3-HD-Aoede"
+
+AUDIO_ENCODING = texttospeech.AudioEncoding.MP3
+GCS_BUCKET_GENERATED_AUDIO = "mlb_generated_audio" # Ensure this bucket exists
+AUDIO_SILENCE_MS = 350 # Silence between speakers in milliseconds
+
+# Helper function (should already exist)
+# def save_audio_to_gcs(audio_bytes: bytes, bucket_name: str, blob_name: str) -> Optional[str]: ...
+
+# --- NEW Multi-Speaker generate_audio_node ---
+def generate_audio_node(state: AgentState) -> Dict[str, Any]:
+    """Generates multi-speaker audio from the final dialogue script using TTS and pydub."""
+    node_start_time = time.time()
+    logger.info("--- Generate Multi-Speaker Audio Node ---")
+    final_script = state.get("generated_content")
+    game_pk = state.get("game_pk", "unknown_game")
+    existing_audio_uri = state.get("generated_audio_uri")
+
+    # Check prerequisites
+    try:
+        # Check if pydub is installed (optional but helpful for user feedback)
+        from pydub import AudioSegment
+    except ImportError:
+        logger.error("pydub library not found. Please install it (`pip install pydub`) and ensure ffmpeg is installed.")
+        return {"error": "Missing pydub library or ffmpeg dependency."}
+
+    # If audio already exists
+    if existing_audio_uri:
+        logger.info(f"Audio already generated: {existing_audio_uri}")
+        return {"generated_audio_uri": existing_audio_uri}
+
+    if not final_script:
+        logger.warning("No final script ('generated_content') found to synthesize audio.")
+        return {"error": "Missing final script for audio generation."}
+
+    # Parse the dialogue script
+    dialogue_lines = [line.strip() for line in final_script.splitlines() if line.strip()]
+    if not dialogue_lines:
+        logger.warning("Final script contains no valid dialogue lines.")
+        return {"error": "Script has no content for audio generation."}
+
+    # --- Initialize TTS Client ---
+    try:
+        tts_client = texttospeech.TextToSpeechClient()
+        logger.info("TextToSpeechClient initialized.")
+    except Exception as e:
+        logger.error(f"Failed to initialize TextToSpeechClient: {e}", exc_info=True)
+        return {"error": "Failed to initialize TTS client."}
+
+    temp_audio_files = []
+    audio_uri = None
+    temp_dir = tempfile.mkdtemp() # Create a temporary directory
+    logger.info(f"Created temporary directory for audio parts: {temp_dir}")
+
+    try:
+        # --- Generate Audio for Each Line ---
+        logger.info(f"Generating {len(dialogue_lines)} audio segments...")
+        for count, line in enumerate(dialogue_lines):
+            # Choose the voice for the current line, alternating
+            if count % 2 == 0:
+                current_voice_name = TTS_VOICE_NAME
+                host_num = 1
+            else: # count % 2 == 1
+                current_voice_name = TTS_VOICE_NAME_ALT
+                host_num = 2
+
+            logger.debug(f"  Generating line {count+1} (Host {host_num}, Voice: {current_voice_name}): '{line[:50]}...'")
+
+            synthesis_input = texttospeech.SynthesisInput(text=line)
+            voice = texttospeech.VoiceSelectionParams(language_code="en-US", name=current_voice_name)
+            audio_config = texttospeech.AudioConfig(audio_encoding=AUDIO_ENCODING)
+
+            try:
+                response = tts_client.synthesize_speech(
+                    input=synthesis_input, voice=voice, audio_config=audio_config
+                )
+
+                # Save the generated audio to a temporary file in the temp dir
+                temp_filename = os.path.join(temp_dir, f"part-{count}.mp3")
+                with open(temp_filename, "wb") as out:
+                    out.write(response.audio_content)
+                temp_audio_files.append(temp_filename)
+                # logger.debug(f"    -> Saved temporary file: {temp_filename}")
+
+            except google_exceptions.GoogleAPIError as api_error:
+                logger.error(f"    TTS API Error for line {count+1}: {api_error}. Skipping segment.")
+                # Continue to next line, the segment will be missing
+            except Exception as line_err:
+                logger.error(f"    Error generating TTS for line {count+1}: {line_err}. Skipping segment.")
+
+        # --- Combine Audio Files with Pydub ---
+        if not temp_audio_files:
+            logger.error("No audio segments were successfully generated.")
+            return {"error": "Failed to generate any audio segments."}
+
+        logger.info(f"Combining {len(temp_audio_files)} audio segments...")
+        full_audio = AudioSegment.silent(duration=AUDIO_SILENCE_MS) # Start with silence
+
+        for i, file_path in enumerate(temp_audio_files):
+            try:
+                segment = AudioSegment.from_mp3(file_path)
+                full_audio += segment + AudioSegment.silent(duration=AUDIO_SILENCE_MS)
+                logger.debug(f"  Appended segment {i+1} from {os.path.basename(file_path)}")
+            except Exception as pydub_err:
+                logger.error(f"  Error processing segment {i+1} ({os.path.basename(file_path)}) with pydub: {pydub_err}. Skipping.")
+
+        # --- Export Combined Audio to Bytes ---
+        logger.info("Exporting combined audio to MP3 format in memory...")
+        buffer = io.BytesIO()
+        full_audio.export(buffer, format="mp3")
+        audio_bytes = buffer.getvalue()
+        logger.info(f"Combined audio generated ({len(audio_bytes)} bytes).")
+
+        # --- Save Final Audio to GCS ---
+        timestamp = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
+        blob_name = f"generated/audio/game_{game_pk}/dialogue_audio_{timestamp}.mp3"
+        audio_uri = save_audio_to_gcs(audio_bytes, GCS_BUCKET_GENERATED_AUDIO, blob_name)
+
+    except Exception as e:
+        logger.error(f"Error during multi-speaker audio generation/combination: {e}", exc_info=True)
+        return {"error": f"Failed during multi-speaker audio process: {e}"}
+    finally:
+        # --- Cleanup Temporary Files and Directory ---
+        logger.info(f"Cleaning up temporary audio files in {temp_dir}...")
+        for file_path in temp_audio_files:
+            try:
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+            except OSError as e:
+                logger.warning(f"  Could not remove temporary file {file_path}: {e}")
+        try:
+            if os.path.exists(temp_dir):
+                 os.rmdir(temp_dir) # Remove the temp directory itself
+                 logger.info(f"Removed temporary directory: {temp_dir}")
+        except OSError as e:
+             logger.warning(f"Could not remove temporary directory {temp_dir}: {e}")
+
+
+    node_duration = time.time() - node_start_time
+    logger.info(f"--- Multi-Speaker Audio Node Summary ---")
+    logger.info(f"  Duration: {node_duration:.2f}s")
+    logger.info(f"  Dialogue Lines Processed: {len(dialogue_lines)}")
+    logger.info(f"  Segments Combined: {len(temp_audio_files)}")
+    logger.info(f"  Generated Audio URI: {audio_uri}")
+
+    return {"generated_audio_uri": audio_uri}
+
 def web_search_critique_node(state: AgentState) -> Dict[str, Any]:
     """Generates web search queries from critique and executes them using Tavily."""
     logger.info("--- Web Search Critique Node ---")
@@ -1901,64 +2121,140 @@ def aggregate_final_output_node(state: AgentState) -> Dict[str, Any]:
 
     return output
 
+# --- Near the top with other prompts ---
 
+# Prompt for the *first* draft generation
+GENERATOR_PROMPT_DIALOGUE_TEMPLATE = """
+You are an expert MLB analyst and podcast script writer. Your task is to create an engaging **two-host dialogue script** discussing an MLB game based on the user's request and plan.
+
+User Request: "{task}"
+Plan:
+{plan}
+
+Available Data:
+Structured:
+```json
+{structured_data_json}
+Narrative Context (Summaries, Snippets, Research):
+{narrative_context_str}
+
+Instructions:
+
+- Dialogue Format: Write a conversation between two hosts (imagine Host 1 and Host 2).
+
+- Strict Alternation: Each line of the script MUST represent one host speaking, alternating strictly between Host 1 and Host 2.
+
+- NO Speaker Labels: CRITICAL: Do NOT include speaker labels like "Host 1:", "Host 2:", or any character names. Just write the raw dialogue line for each speaker's turn.
+
+- Engaging Conversation: Make the dialogue sound natural, with back-and-forth reactions, questions, and analysis. Avoid just reading stats.
+
+- Synthesize Data: Weave the structured data and narrative context naturally into the conversation.
+
+- Storytelling: Build a narrative, highlight key moments, explain significance, and ensure the dialogue flows logically.
+
+- Fulfill Request: Ensure the dialogue fully addresses the original user request: "{task}".
+
+Output ONLY the raw dialogue script, with each speaker's line on a new line.
+"""
+
+GENERATOR_PROMPT_REFINED_DIALOGUE_TEMPLATE = """
+You are an expert MLB analyst and podcast script writer revising a two-host dialogue script.
+Original user request: "{task}"
+Original Plan:
+{plan}
+
+You previously generated a draft, and received the following critique:
+Critique:
+{critique}
+
+Based on the critique AND the available data (including internal data and external web search results), revise the dialogue script. Utilize all information below:
+
+Structured Data:
+
+{structured_data_json}
+Narrative Context (Summaries, Play Snippets, Internal & Web Research based on Critique):
+{narrative_context_str}
+
+Instructions:
+
+- Address the Critique: Explicitly incorporate the feedback, improving the dialogue flow, accuracy, analysis, or engagement as suggested. Use web search results where relevant.
+
+- Maintain Dialogue Format: Ensure the revised script remains a conversation between two hosts.
+
+- Strict Alternation: Each line MUST represent one host speaking, alternating strictly.
+
+- NO Speaker Labels: CRITICAL: Do NOT include speaker labels like "Host 1:", "Host 2:".
+
+- Synthesize ALL Data: Combine structured facts/stats with narrative context naturally within the dialogue.
+
+- Deep Storytelling: Connect stats to game flow, explain significance, highlight key moments/matchups.
+
+- Fulfill Original Task: Ensure the final output clearly answers the user's request: "{task}".
+
+Output ONLY the revised raw dialogue script, with each speaker's line on a new line.
+"""
 
 def generate_node_refined(state: AgentState) -> Dict[str, Any]:
-  """Generates or revises content based on data, plan, and critique."""
-  logger.info(f"--- Content Generation/Revision Node (Revision: {state.get('revision_number', 0)}) ---")
-  task = state.get('task')
-  plan = state.get('plan')
-  critique = state.get('critique') # Might be None on first pass
-  structured_data = state.get('structured_data')
-  narrative_context = state.get('narrative_context', [])
+    """Generates or revises content as a dialogue script based on data, plan, and critique."""
+    logger.info(f"--- Content Generation/Revision Node (Dialogue - Revision: {state.get('revision_number', 0)}) ---")
 
-  if state.get("error"): return {"error": state.get("error")}
-  if not plan: return {"error": "Plan missing."}
+    # Assume variables like task, plan, critique, structured_data, narrative_context are extracted from state here
+    task = state.get('task')
+    plan = state.get('plan')
+    critique = state.get('critique') # Might be None on first pass
+    structured_data = state.get('structured_data')
+    narrative_context = state.get('narrative_context', [])
+    # ...(rest of the initial variable assignments: task, plan, critique, etc.)...
 
-  structured_data_json = json.dumps(structured_data, indent=2, default=str) if structured_data else "{}"
-  narrative_context_str = "\n---\n".join(narrative_context) if narrative_context else "No narrative context available."
+    if state.get("error"):
+        return {"error": state.get("error")}
+    if not plan:
+        return {"error": "Plan missing."}
 
-  # Use different prompts for first draft vs revision
-  if critique and "excellent" not in critique.lower(): # Revision prompt
-    prompt = GENERATOR_PROMPT_REFINED_TEMPLATE.format(
-        task=task,
-        plan=plan,
-        critique=critique,
-        structured_data_json=structured_data_json,
-        narrative_context_str=narrative_context_str
-    )
-  else: # First draft prompt (or if critique was positive)
-     # Use a slightly simpler prompt if no critique needs addressing
-     prompt = f"""
-        You are an expert MLB analyst and storyteller.
-        User request: "{task}"
-        Plan:
-        {plan}
+    structured_data_json = json.dumps(structured_data, indent=2, default=str) if structured_data else "{}"
+    narrative_context_str = "\n---\n".join(narrative_context) if narrative_context else "No narrative context available."
 
-        Available Data:
-        Structured:
-        ```json
-        {structured_data_json}
-        ```
-        Narrative Context:
-        {narrative_context_str}
+    # Use different prompts for first draft vs revision
+    if critique and "excellent" not in critique.lower(): # Revision prompt
+        prompt = GENERATOR_PROMPT_REFINED_DIALOGUE_TEMPLATE.format( # Use REFINED DIALOGUE prompt
+            task=task,
+            plan=plan,
+            critique=critique,
+            structured_data_json=structured_data_json,
+            narrative_context_str=narrative_context_str
+        )
+    else: # First draft prompt (or if critique was positive)
+        prompt = GENERATOR_PROMPT_DIALOGUE_TEMPLATE.format( # Use INITIAL DIALOGUE prompt
+            task=task,
+            plan=plan,
+            structured_data_json=structured_data_json,
+            narrative_context_str=narrative_context_str
+        )
 
-        Generate the content following the plan, using deep data storytelling by synthesizing structured stats and narrative context. Output in Markdown.
-        """
+    try:
+        response = model.invoke(prompt)
+        new_draft = response.content.strip() # Strip leading/trailing whitespace
 
-  try:
-    response = model.invoke(prompt)
-    new_draft = response.content
-    logger.info(f"Generated/Revised Draft (first 100 chars): {new_draft[:100]}...")
-    # Increment revision number *after* successful generation
-    current_revision = state.get('revision_number', 0)
-    return {
-        "draft": new_draft,
-        "revision_number": current_revision + 1 # Increment happens here
-        }
-  except Exception as e:
-    logger.error(f"Error in generate_node_refined: {e}", exc_info=True)
-    return {"error": f"Failed to generate content: {e}", "draft": state.get("draft") or "Error generating draft."}
+        # --- Add basic validation for dialogue format ---
+        lines = [line for line in new_draft.splitlines() if line.strip()]
+        if not lines:
+            logger.error("Generator returned an empty script.")
+            return {"error": "Generated script was empty.", "draft": ""}
+        # Quick check for common speaker label patterns (e.g., "Host 1:", "Name:")
+        if any(":" in line.split(" ")[0] and len(line.split(" ")[0]) < 15 for line in lines[:5]): # Check first word of first 5 lines
+             logger.warning("Generated script might contain speaker labels despite instructions. Attempting to proceed anyway.")
+             # Potentially add logic here to strip labels if they consistently appear
+
+        logger.info(f"Generated/Revised Dialogue Draft (first 100 chars): {new_draft[:100]}...")
+        current_revision = state.get('revision_number', 0)
+        return {
+            "draft": new_draft,
+            "revision_number": current_revision + 1
+            }
+    except Exception as e:
+        logger.error(f"Error in generate_node_refined (dialogue): {e}", exc_info=True)
+        return {"error": f"Failed to generate content: {e}", "draft": state.get("draft") or "Error generating draft."}
+
 
 #--- Conditional Edge Logic ---
 def should_continue(state: AgentState) -> str:
@@ -2002,6 +2298,7 @@ workflow.add_node("generate_visuals", generate_visuals_node)
 workflow.add_node("critique_visuals", critique_visuals_node)
 workflow.add_node("generate_video_clips", generate_video_clips_node)
 workflow.add_node("aggregate_final_output", aggregate_final_output_node)
+workflow.add_node("generate_audio", generate_audio_node)
 
 #Set entry point
 workflow.set_entry_point("planner")
@@ -2032,6 +2329,10 @@ workflow.add_edge("retrieve_images", "analyze_script_for_visual_prompts")
 workflow.add_edge("analyze_script_for_visual_prompts", "generate_visuals")
 workflow.add_edge("generate_visuals", "critique_visuals") # Always critique after generating
 
+# --- Add edge from video generation to final aggregation ---
+workflow.add_edge("generate_video_clips", "aggregate_final_output")
+
+
 # Add the conditional edge for the visual loop
 workflow.add_conditional_edges(
     "critique_visuals",       # Node providing the condition basis
@@ -2043,13 +2344,12 @@ workflow.add_conditional_edges(
     }
 )
 
-# --- Add edge from video generation to final aggregation ---
-workflow.add_edge("generate_video_clips", "aggregate_final_output")
 
-# Final edge to END the graph
-workflow.add_edge("aggregate_final_output", END)
+# NEW: Edge from the asset aggregation node to the NEW audio node
+workflow.add_edge("aggregate_final_output", "generate_audio")
 
-
+# NEW: Final edge from audio generation to END
+workflow.add_edge("generate_audio", END)
 memory = MemorySaver() # Optional: Add if chat history/memory is needed
 app = workflow.compile(checkpointer=memory)
 app = workflow.compile()
@@ -2130,7 +2430,7 @@ def get_latest_final_game_pk(team_id: int, season: int = 2024) -> Optional[int]:
 
     return latest_game_pk
 
-
+ # generate_node_refined
 # --- Updated Example Usage (at the end of mlb_agent_graph_refined.py) ---
 if __name__ == "__main__":
     logger.info("\n--- Running Refined Agent Graph ---")
@@ -2197,6 +2497,7 @@ if __name__ == "__main__":
         "visual_revision_number": 0,
         "max_visual_revisions": 2, # Set the visual loop limit (user requested 2)
         "generated_video_assets": [],
+        "generated_audio_uri": [],
         "error": None,
     }
 
@@ -2237,10 +2538,13 @@ if __name__ == "__main__":
             else:
                 print("No video assets found.")
 
+            print("\n** Audio Asset (Generated): **") # Print audio asset URI
+            if final_state.get("generated_audio_uri"):
+                print(final_state.get("generated_audio_uri", "No audio generated or URI missing."))
         else:
              print("\n--- Execution Finished, but no final content/assets found. Check logs. ---")
              # Print selective final state for debugging
-             print("Final state snapshot (excluding large data):", {k: v for k, v in final_state.items() if k not in ['structured_data', 'narrative_context', 'draft', 'generated_content', 'all_visual_assets', 'all_video_assets']})
+             print("Final state snapshot (excluding large data):", {k: v for k, v in final_state.items() if k not in ['structured_data', 'narrative_context', 'draft', 'generated_content', 'all_visual_assets', 'all_video_assets', 'generated_audio_uri']})
 
     except Exception as e:
          logger.error(f"Error invoking graph: {e}", exc_info=True)
