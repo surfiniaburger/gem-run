@@ -3,9 +3,9 @@
 git pull
 
 GCP_REGION='us-central1'
-GCP_PROJECT='gem-rush-007'
-AR_REPO='gem-run-007'
-SERVICE_NAME='mlb-strings'
+GCP_PROJECT='silver-455021'
+AR_REPO='gem-run'
+SERVICE_NAME='mlb'
 
 gcloud builds submit \
     --tag "$GCP_REGION-docker.pkg.dev/$GCP_PROJECT/$AR_REPO/$SERVICE_NAME"
@@ -16,5 +16,5 @@ gcloud run deploy "$SERVICE_NAME" \
     --region="$GCP_REGION" \
     --platform=managed \
     --project="$GCP_PROJECT" \
-    --service-account=cloud-run-invoker@gem-rush-007.iam.gserviceaccount.com \
+    --service-account=mlb-agent-runner@silver-455021.iam.gserviceaccount.com \
     --set-env-vars="GCP_PROJECT=$GCP_PROJECT,GCP_REGION=$GCP_REGION"

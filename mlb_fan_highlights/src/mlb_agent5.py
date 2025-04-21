@@ -2430,6 +2430,34 @@ def get_latest_final_game_pk(team_id: int, season: int = 2024) -> Optional[int]:
 
     return latest_game_pk
 
+
+def load_player_metadata() -> Dict[int, str]:
+    """Loads player ID to player name mapping from BigQuery."""
+    logger.info("Loading player metadata into memory for lookups...")
+    lookup_dict = {} # Initialize as empty dict for this function scope
+    try:
+        # Ensure BQ client is available (should be initialized globally)
+        if 'bq_client' not in globals() or bq_client is None:
+             logger.error("BigQuery client not initialized. Cannot load player metadata.")
+             return {} # Return empty on critical error
+
+        player_lookup_query = f"SELECT player_id, player_name FROM `{GCP_PROJECT_ID}.{BQ_DATASET_ID}.{PLAYER_METADATA_TABLE_ID}`"
+        player_results_df = execute_bq_query(player_lookup_query) # Assumes execute_bq_query is defined above
+
+        if player_results_df is not None and not player_results_df.empty:
+            # Use .iterrows() to build the dictionary
+            lookup_dict = {int(row['player_id']): row['player_name']
+                           for index, row in player_results_df.iterrows()
+                           if pd.notna(row['player_id']) and pd.notna(row['player_name'])} # Added check for name too
+            logger.info(f"Loaded {len(lookup_dict)} player names into lookup dictionary.")
+        else:
+            logger.warning("Player metadata query failed or returned no results. Lookup dictionary will be empty.")
+    except Exception as meta_err:
+         logger.error(f"Failed to load player metadata: {meta_err}. Proceeding with empty lookup.", exc_info=True)
+         lookup_dict = {} # Ensure it's an empty dict on error
+    return lookup_dict
+
+
  # generate_node_refined
 # --- Updated Example Usage (at the end of mlb_agent_graph_refined.py) ---
 if __name__ == "__main__":
