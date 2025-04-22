@@ -159,20 +159,30 @@ def run_agent_and_stream_progress(agent_app, initial_agent_state):
                 elif node_name == "generate_audio":
                     if latest_full_state.get("generated_audio_uri"):
                         status_message += " Audio generated."
+                # --- CORRECTED LENGTH CHECKS ---
                 elif node_name == "retrieve_data":
-                     ctx_len = len(latest_full_state.get('narrative_context', []))
-                     struct_data = latest_full_state.get('structured_data', [])
-                     struct_len = len(struct_data) if isinstance(struct_data, list) else 0
+                     narrative_ctx = latest_full_state.get('narrative_context') # Get value, could be None
+                     ctx_len = len(narrative_ctx) if isinstance(narrative_ctx, list) else 0 # Check type before len()
+
+                     struct_data = latest_full_state.get('structured_data') # Get value
+                     struct_len = len(struct_data) if isinstance(struct_data, list) else 0 # Check type before len()
                      status_message += f" (Context: {ctx_len}, Structured: {struct_len})"
+
                 elif node_name == "retrieve_images":
-                     img_len = len(latest_full_state.get('retrieved_image_data', []))
+                     retrieved_images = latest_full_state.get('retrieved_image_data')
+                     img_len = len(retrieved_images) if isinstance(retrieved_images, list) else 0
                      status_message += f" (Static Assets: {img_len})"
+
                 elif node_name == "generate_visuals":
-                     vis_len = len(latest_full_state.get('generated_visual_assets', []))
-                     status_message += f" (Generated Images: {vis_len})"
+                     gen_visuals = latest_full_state.get('generated_visual_assets')
+                     vis_len = len(gen_visuals) if isinstance(gen_visuals, list) else 0
+                     status_message += f" (Generated Images: {vis_len})" # Note: This shows count *after* generation
+
                 elif node_name == "generate_video_clips":
-                     vid_len = len(latest_full_state.get('generated_video_assets', []))
+                     gen_videos = latest_full_state.get('generated_video_assets')
+                     vid_len = len(gen_videos) if isinstance(gen_videos, list) else 0
                      status_message += f" (Generated Videos: {vid_len})"
+                # --- END CORRECTED LENGTH CHECKS ---
 
 
             yield status_message + "\n\n" # Add extra newline for spacing
