@@ -65,7 +65,7 @@ VIDEO_GENERATION_PROMPT = "Subtle camera pan, slow motion effect, cinematic ligh
 VIDEO_GENERATION_ASPECT_RATIO = "16:9" # Should match image aspect ratio
 VIDEO_GENERATION_PERSON_ALLOW = "allow_adult" # Or "allow_all" / "block_adult" etc.
 VIDEO_GENERATION_SLEEP_SECONDS = 15 # Sleep between starting video generations
-VIDEO_POLLING_INTERVAL_SECONDS = 60 # How often to check if video operation is done
+VIDEO_POLLING_INTERVAL_SECONDS = 30 # How often to check if video operation is done
 VIDEO_GENERATION_QUOTA_SLEEP_SECONDS = 90 # Sleep after quota error starting generation
 VIDEO_GENERATION_ERROR_SLEEP_SECONDS = 20 # Sleep after other errors starting generation
 MAX_IMAGES_TO_ANIMATE = 3 # Limit how many images get turned into videos (per run)
@@ -78,7 +78,7 @@ MAX_PROMPTS_TO_ANIMATE = 3 # Limit how many prompts get turned into videos
 GCS_VIDEO_OUTPUT_PREFIX = "generated/videos/"
 
 # You might want to make these configurable
-IMAGE_GENERATION_SLEEP_SECONDS = 60 # Sleep between successful calls
+IMAGE_GENERATION_SLEEP_SECONDS = 10 # Sleep between successful calls
 IMAGE_GENERATION_ERROR_SLEEP_SECONDS = 15 # Sleep after a general error
 IMAGE_GENERATION_QUOTA_SLEEP_SECONDS = 70 # Longer sleep after hitting quota
 CLOUDFLARE_FALLBACK_SLEEP_SECONDS = 5     # Sleep after a Cloudflare attempt
