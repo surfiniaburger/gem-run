@@ -7,7 +7,8 @@ GCP_PROJECT='silver-455021'
 AR_REPO='gem-run'
 SERVICE_NAME='mlb'
 
-gcloud artifacts repositories create "$AR_REPO" --location="$GCP_REGION" --repository-format=Docker
+# the commented out line is for creating the repository
+# gcloud artifacts repositories create "$AR_REPO" --location="$GCP_REGION" --repository-format=Docker
 
 gcloud builds submit \
     --tag "$GCP_REGION-docker.pkg.dev/$GCP_PROJECT/$AR_REPO/$SERVICE_NAME"
