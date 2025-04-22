@@ -78,7 +78,7 @@ MAX_PROMPTS_TO_ANIMATE = 3 # Limit how many prompts get turned into videos
 GCS_VIDEO_OUTPUT_PREFIX = "generated/videos/"
 
 # You might want to make these configurable
-IMAGE_GENERATION_SLEEP_SECONDS = 10 # Sleep between successful calls
+IMAGE_GENERATION_SLEEP_SECONDS = 35 # Sleep between successful calls
 IMAGE_GENERATION_ERROR_SLEEP_SECONDS = 15 # Sleep after a general error
 IMAGE_GENERATION_QUOTA_SLEEP_SECONDS = 70 # Longer sleep after hitting quota
 CLOUDFLARE_FALLBACK_SLEEP_SECONDS = 5     # Sleep after a Cloudflare attempt
