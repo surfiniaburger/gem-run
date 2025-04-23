@@ -9,6 +9,8 @@ from typing import Optional, Dict, Any, List # Added for type hints
 # --- GCS Client ---
 from google.cloud import storage
 from google.api_core import exceptions as google_exceptions
+from google.cloud import secretmanager
+from google.oauth2 import service_account # NEW: For loading credentials from key
 
 # --- Import necessary components from your agent script ---
 # Assume mlb_agent5.py is in the same directory or accessible in PYTHONPATH
@@ -21,7 +23,7 @@ try:
         # Define load_player_metadata if it exists in your agent script,
         # otherwise load it here or remove if not needed for initial state
         # load_player_metadata, # Example import if defined in agent
-        logger, # Use the same logger setup if desired
+        logger, GCP_PROJECT_ID # Use the same logger setup if desired
     )
     # Configure logger for Streamlit if it wasn't configured in the imported script
     if not logger.handlers:
@@ -37,6 +39,51 @@ except NameError as ne:
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - Streamlit - %(levelname)s - %(message)s')
     logger = logging.getLogger(__name__)
     logger.warning(f"Caught NameError during import (likely 'logger'): {ne}. Initialized logger.")
+
+# --- Configuration ---
+SERVICE_ACCOUNT_SECRET_ID = "streamlit-gcs-sa-key" # <-- **REPLACE** with your Secret ID
+SECRET_VERSION = "latest"
+# Ensure GCP_PROJECT_ID is available (either imported or defined above)
+if 'GCP_PROJECT_ID' not in globals():
+     st.error("GCP_PROJECT_ID is not defined. Please define it or import from agent.")
+     st.stop()
+
+# --- Load Credentials for Signed URLs ---
+@st.cache_resource # Cache credentials for the session duration
+def load_gcs_signing_credentials(project_id: str, secret_id: str, secret_version: str) -> Optional[service_account.Credentials]:
+    """Loads Service Account credentials from Secret Manager for signing URLs."""
+    try:
+        client = secretmanager.SecretManagerServiceClient()
+        name = f"projects/{project_id}/secrets/{secret_id}/versions/{secret_version}"
+        response = client.access_secret_version(request={"name": name})
+        sa_key_json = response.payload.data.decode("UTF-8")
+        sa_key_dict = json.loads(sa_key_json)
+
+        credentials = service_account.Credentials.from_service_account_info(
+            sa_key_dict,
+            scopes=['https://www.googleapis.com/auth/devstorage.read_only'] # Scope just needed to read objects
+        )
+        logger.info(f"Successfully loaded signing credentials from secret: {secret_id}")
+        return credentials
+    except Exception as e:
+        logger.error(f"Failed to load signing credentials from Secret Manager ({secret_id}): {e}", exc_info=True)
+        st.error(f"⚠️ Failed to load credentials from Secret Manager ({secret_id}) required for media display. Ensure Secret exists and Cloud Run SA has Secret Accessor role.")
+        return None
+
+# --- Initialize GCS Client & Load Credentials ---
+gcs_signing_credentials = load_gcs_signing_credentials(GCP_PROJECT_ID, SERVICE_ACCOUNT_SECRET_ID, SECRET_VERSION)
+
+try:
+    # Initialize a storage client - this one can use ADC for general ops if needed,
+    # but we'll primarily use the signing_credentials for signed URLs.
+    # If *all* GCS access should use the key, initialize with credentials here too.
+    storage_client = storage.Client(project=GCP_PROJECT_ID) # Use ADC or specify credentials if needed globally
+    logger.info("Initialized Google Cloud Storage client.")
+except Exception as e:
+    st.error(f"⚠️ Failed to initialize Google Cloud Storage client: {e}. Media display might fail.")
+    storage_client = None
+    logger.error(f"Failed to initialize GCS client: {e}", exc_info=True)
+
 
 # --- Streamlit App Configuration ---
 st.set_page_config(page_title="MLB Game Recap Generator", layout="wide")
@@ -65,9 +112,13 @@ if 'selected_team_key' not in st.session_state:
 # --- Helper Function for Signed URLs ---
 def generate_signed_url(gcs_uri: str, expiration_minutes: int = 30) -> Optional[str]:
     """Generates a temporary signed URL for a GCS object."""
-    global storage_client
+    global storage_client, gcs_signing_credentials 
     if not storage_client:
         logger.error("GCS storage client not available for generating signed URL.")
+        return None 
+    if not gcs_signing_credentials: # Check if credentials loaded successfully
+        logger.error("Signing credentials not available for generating signed URL.")
+        # Error message already shown by load_gcs_signing_credentials
         return None
     if not gcs_uri or not gcs_uri.startswith("gs://"):
         logger.warning(f"Invalid GCS URI provided for signing: {gcs_uri}")
@@ -82,6 +133,7 @@ def generate_signed_url(gcs_uri: str, expiration_minutes: int = 30) -> Optional[
             version="v4",
             expiration=timedelta(minutes=expiration_minutes),
             method="GET",
+            credentials=gcs_signing_credentials,
         )
         logger.debug(f"Generated signed URL for: {gcs_uri}")
         return signed_url
@@ -260,91 +312,62 @@ if st.button(f"Generate Recap for {selected_team_display_name}'s Latest Game", k
     # Create a container for the streaming output
     stream_output_container = st.container(border=True) # Add border for visibility
 
-    try:
-        # 1. Find Latest Game PK (Keep this part outside the stream)
-        with stream_output_container:
-            st.info("Finding latest completed game...")
-        logger.info(f"Attempting to find latest game PK for team ID: {selected_team_id}")
-        latest_game_pk = get_latest_final_game_pk(selected_team_id)
-
-        if not latest_game_pk:
-            logger.error(f"Could not find a recent completed game for team {selected_team_display_name} (ID: {selected_team_id}).")
-            st.session_state.error_message = f"❌ Could not find a recent completed game for {selected_team_display_name}. Please try another team or check game schedules."
-            st.session_state.run_complete = True
-            st.rerun() # Rerun to display error message immediately
-
-        # 2. Load Player Metadata (Keep outside stream, happens once)
-        with stream_output_container:
-            st.info("Loading player metadata...")
-        try:
-             player_lookup = load_player_metadata() # Call the function defined above or imported
-             if not player_lookup:
-                 logger.warning("Player metadata lookup returned empty.")
-                 with stream_output_container:
-                     st.warning("⚠️ Could not load player metadata. Headshot images may be unavailable.")
-             else:
-                 logger.info(f"Successfully loaded {len(player_lookup)} players via Streamlit.")
-        except Exception as load_err:
-             logger.error(f"Error calling load_player_metadata from Streamlit: {load_err}", exc_info=True)
-             with stream_output_container:
-                st.error("Failed to load player metadata. Headshots may be unavailable.")
-             player_lookup = {} # Ensure it's an empty dict on error
-
-        logger.info(f"Found latest game PK: {latest_game_pk} for team {selected_team_display_name}")
-        with stream_output_container:
-            st.info(f"Found latest game (PK: {latest_game_pk}). Preparing agent...")
-
-        # 3. Prepare Initial State (Keep this part outside the stream)
-        task = f"Provide a detailed recap of game {latest_game_pk} ({selected_team_display_name}), highlighting impactful plays and player performances in an engaging two-host dialogue format."
-        initial_state = {
-            "task": task,
-            "game_pk": latest_game_pk,
-            "max_revisions": 2,
-            "revision_number": 0,
-            "player_lookup_dict": player_lookup, # Pass loaded metadata
-            "narrative_context": [],
-            "all_image_assets": [],
-            "all_video_assets": [],
-            "generated_visual_assets": [],
-            "generated_video_assets": [],
-            "visual_revision_number": 0,
-            "max_visual_revisions": 2,
-            "error": None,
-            "plan": None,
-            "structured_data": None,
-            "image_search_queries":None,
-            "retrieved_image_data":None,
-            "draft": None,
-            "critique": None,
-            "generated_content": None,
-            "visual_generation_prompts": [],
-            "visual_critique": None,
-            "generated_audio_uri": None,
-        }
-        logger.info(f"Initial state prepared for game PK {latest_game_pk}.")
-
-
-        # 4. --- Execute Agent via Streaming ---
-        start_time = time.time()
-        with stream_output_container: # Write stream into the container
-             # Use st.write_stream with the generator function
-             st.write_stream(run_agent_and_stream_progress(app, initial_state))
-        end_time = time.time()
-        logger.info(f"Agent streaming process finished UI-side in {end_time - start_time:.2f} seconds.")
-        # NOTE: The helper function run_agent_and_stream_progress now handles
-        # setting st.session_state['final_state'] and st.session_state['error_message']
-
-
-    except Exception as e:
-        # Catch errors happening *outside* the stream (like game_pk lookup or state setup)
-        logger.error(f"An unexpected error occurred *before* agent streaming started for team {selected_team_display_name}: {e}", exc_info=True)
-        st.session_state.error_message = f"❌ An unexpected error occurred before agent start: {e}"
-
-    finally:
-         # Mark run as complete regardless of success/error to trigger results display/error message
+    # Check if signing credentials loaded - crucial for displaying results later
+    if not gcs_signing_credentials:
+         st.session_state.error_message = "Failed to load necessary credentials from Secret Manager. Cannot generate signed URLs for media."
          st.session_state.run_complete = True
-         st.rerun() # Rerun to display final results or the final error message
+         st.rerun()
+    else:
+        try:
+            # 1. Find Latest Game PK
+            with stream_output_container: st.info("Finding latest completed game...")
+            logger.info(f"Attempting to find latest game PK for team ID: {selected_team_id}")
+            latest_game_pk = get_latest_final_game_pk(selected_team_id)
+            if not latest_game_pk:
+                st.session_state.error_message = f"❌ Could not find a recent completed game for {selected_team_display_name}."
+                st.session_state.run_complete = True
+                st.rerun()
 
+            # 2. Load Player Metadata
+            with stream_output_container: st.info("Loading player metadata...")
+            try:
+                player_lookup = load_player_metadata()
+                if not player_lookup:
+                     with stream_output_container: st.warning("⚠️ Could not load player metadata.")
+                else: logger.info(f"Successfully loaded {len(player_lookup)} players.")
+            except Exception as load_err:
+                logger.error(f"Error loading player metadata: {load_err}", exc_info=True)
+                with stream_output_container: st.error("Failed to load player metadata.")
+                player_lookup = {}
+
+            with stream_output_container: st.info(f"Found latest game (PK: {latest_game_pk}). Preparing agent...")
+
+            # 3. Prepare Initial State
+            task = f"Provide a detailed recap of game {latest_game_pk} ({selected_team_display_name}), highlighting impactful plays and player performances in an engaging two-host dialogue format."
+            initial_state = {
+                "task": task, "game_pk": latest_game_pk, "max_revisions": 2, "revision_number": 0,
+                "player_lookup_dict": player_lookup, "narrative_context": [], "all_image_assets": [],
+                "all_video_assets": [], "generated_visual_assets": [], "generated_video_assets": [],
+                "visual_revision_number": 0, "max_visual_revisions": 2, "error": None, "plan": None,
+                "structured_data": None, "image_search_queries":None, "retrieved_image_data":None,
+                "draft": None, "critique": None, "generated_content": None, "visual_generation_prompts": [],
+                "visual_critique": None, "generated_audio_uri": None,
+            }
+            logger.info(f"Initial state prepared for game PK {latest_game_pk}.")
+
+            # 4. Execute Agent via Streaming
+            start_time = time.time()
+            with stream_output_container:
+                 st.write_stream(run_agent_and_stream_progress(app, initial_state))
+            end_time = time.time()
+            logger.info(f"Agent streaming process finished UI-side in {end_time - start_time:.2f} seconds.")
+
+        except Exception as e:
+            logger.error(f"An unexpected error occurred *before* agent streaming started: {e}", exc_info=True)
+            st.session_state.error_message = f"❌ An unexpected error occurred before agent start: {e}"
+        finally:
+             st.session_state.run_complete = True
+             st.rerun()
 
 # --- Display Results ---
 if st.session_state.run_complete:
