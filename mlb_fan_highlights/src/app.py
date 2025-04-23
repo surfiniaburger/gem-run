@@ -86,7 +86,7 @@ except Exception as e:
 
 
 # --- Streamlit App Configuration ---
-st.set_page_config(page_title="MLB Game Recap Generator", layout="wide")
+
 st.title("⚾ MLB Game Recap Generator")
 st.markdown("Select a team to generate a recap of their latest completed game, including script, images, video clips, and audio.")
 
