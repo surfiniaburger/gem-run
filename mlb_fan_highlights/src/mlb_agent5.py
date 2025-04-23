@@ -2194,7 +2194,7 @@ Instructions:
 
 Output ONLY the revised raw dialogue script, with each speaker's line on a new line.
 """
-
+# add reflection to image critics and video critic when needed
 def generate_node_refined(state: AgentState) -> Dict[str, Any]:
     """Generates or revises content as a dialogue script based on data, plan, and critique."""
     logger.info(f"--- Content Generation/Revision Node (Dialogue - Revision: {state.get('revision_number', 0)}) ---")
