@@ -17,7 +17,6 @@ from pydantic import BaseModel, Field
 from google.cloud import secretmanager
 from pydub import AudioSegment 
 
-
 # LangGraph and LangChain specific
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
@@ -66,7 +65,7 @@ VIDEO_GENERATION_PROMPT = "Subtle camera pan, slow motion effect, cinematic ligh
 VIDEO_GENERATION_ASPECT_RATIO = "16:9" # Should match image aspect ratio
 VIDEO_GENERATION_PERSON_ALLOW = "allow_adult" # Or "allow_all" / "block_adult" etc.
 VIDEO_GENERATION_SLEEP_SECONDS = 15 # Sleep between starting video generations
-VIDEO_POLLING_INTERVAL_SECONDS = 60 # How often to check if video operation is done
+VIDEO_POLLING_INTERVAL_SECONDS = 30 # How often to check if video operation is done
 VIDEO_GENERATION_QUOTA_SLEEP_SECONDS = 90 # Sleep after quota error starting generation
 VIDEO_GENERATION_ERROR_SLEEP_SECONDS = 20 # Sleep after other errors starting generation
 MAX_IMAGES_TO_ANIMATE = 3 # Limit how many images get turned into videos (per run)
@@ -79,7 +78,7 @@ MAX_PROMPTS_TO_ANIMATE = 3 # Limit how many prompts get turned into videos
 GCS_VIDEO_OUTPUT_PREFIX = "generated/videos/"
 
 # You might want to make these configurable
-IMAGE_GENERATION_SLEEP_SECONDS = 60 # Sleep between successful calls
+IMAGE_GENERATION_SLEEP_SECONDS = 35 # Sleep between successful calls
 IMAGE_GENERATION_ERROR_SLEEP_SECONDS = 15 # Sleep after a general error
 IMAGE_GENERATION_QUOTA_SLEEP_SECONDS = 70 # Longer sleep after hitting quota
 CLOUDFLARE_FALLBACK_SLEEP_SECONDS = 5     # Sleep after a Cloudflare attempt
@@ -2194,7 +2193,7 @@ Instructions:
 
 Output ONLY the revised raw dialogue script, with each speaker's line on a new line.
 """
-# add reflection to image critics and video critic when needed
+
 def generate_node_refined(state: AgentState) -> Dict[str, Any]:
     """Generates or revises content as a dialogue script based on data, plan, and critique."""
     logger.info(f"--- Content Generation/Revision Node (Dialogue - Revision: {state.get('revision_number', 0)}) ---")
@@ -2331,7 +2330,7 @@ workflow.add_edge("analyze_script_for_visual_prompts", "generate_visuals")
 workflow.add_edge("generate_visuals", "critique_visuals") # Always critique after generating
 
 # --- Add edge from video generation to final aggregation ---
-workflow.add_edge("generate_video_clips", "aggregate_final_output")
+workflow.add_edge("generate_video_clips", "generate_audio")
 
 
 # Add the conditional edge for the visual loop
@@ -2347,10 +2346,10 @@ workflow.add_conditional_edges(
 
 
 # NEW: Edge from the asset aggregation node to the NEW audio node
-workflow.add_edge("aggregate_final_output", "generate_audio")
+workflow.add_edge("generate_audio","aggregate_final_output")
 
 # NEW: Final edge from audio generation to END
-workflow.add_edge("generate_audio", END)
+workflow.add_edge("aggregate_final_output", END)
 memory = MemorySaver() # Optional: Add if chat history/memory is needed
 app = workflow.compile(checkpointer=memory)
 app = workflow.compile()
@@ -2430,6 +2429,34 @@ def get_latest_final_game_pk(team_id: int, season: int = 2024) -> Optional[int]:
          logger.warning(f"No recent *final* game ID found for team {team_id}, season {season}.")
 
     return latest_game_pk
+
+
+def load_player_metadata() -> Dict[int, str]:
+    """Loads player ID to player name mapping from BigQuery."""
+    logger.info("Loading player metadata into memory for lookups...")
+    lookup_dict = {} # Initialize as empty dict for this function scope
+    try:
+        # Ensure BQ client is available (should be initialized globally)
+        if 'bq_client' not in globals() or bq_client is None:
+             logger.error("BigQuery client not initialized. Cannot load player metadata.")
+             return {} # Return empty on critical error
+
+        player_lookup_query = f"SELECT player_id, player_name FROM `{GCP_PROJECT_ID}.{BQ_DATASET_ID}.{PLAYER_METADATA_TABLE_ID}`"
+        player_results_df = execute_bq_query(player_lookup_query) # Assumes execute_bq_query is defined above
+
+        if player_results_df is not None and not player_results_df.empty:
+            # Use .iterrows() to build the dictionary
+            lookup_dict = {int(row['player_id']): row['player_name']
+                           for index, row in player_results_df.iterrows()
+                           if pd.notna(row['player_id']) and pd.notna(row['player_name'])} # Added check for name too
+            logger.info(f"Loaded {len(lookup_dict)} player names into lookup dictionary.")
+        else:
+            logger.warning("Player metadata query failed or returned no results. Lookup dictionary will be empty.")
+    except Exception as meta_err:
+         logger.error(f"Failed to load player metadata: {meta_err}. Proceeding with empty lookup.", exc_info=True)
+         lookup_dict = {} # Ensure it's an empty dict on error
+    return lookup_dict
+
 
  # generate_node_refined
 # --- Updated Example Usage (at the end of mlb_agent_graph_refined.py) ---
