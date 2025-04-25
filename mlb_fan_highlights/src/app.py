@@ -155,6 +155,8 @@ def run_agent_and_stream_progress(agent_app, initial_agent_state):
     Stores the FINAL complete state in st.session_state.
     """
     latest_full_state = None # Variable to hold the most recent complete state dictionary
+    final_state_on_success = None
+    nodes_seen_in_stream = []
     # Clear previous final state and error message managed by the stream function
     st.session_state['final_state'] = None
     st.session_state['error_message'] = None # Stream function will set this on error
@@ -182,7 +184,9 @@ def run_agent_and_stream_progress(agent_app, initial_agent_state):
             if not step_update: # Handle potential empty updates if graph yields them
                 continue
             node_name = list(step_update.keys())[0]
+            nodes_seen_in_stream.append(node_name) # <-- Log node name
             latest_full_state = step_update[node_name] # Capture the full state dictionary
+            logger.info(f"STREAM UI: Received update from node: {node_name}") # <-- Add server log
 
             emoji = node_emojis.get(node_name, "⚙️") # Default emoji
             # Handle potential errors within the state update itself
@@ -242,18 +246,23 @@ def run_agent_and_stream_progress(agent_app, initial_agent_state):
 
         # After the loop finishes, store the VERY LAST complete state captured
         # Only store if the stream didn't end abruptly with an exception below
-        st.session_state['final_state'] = latest_full_state
-        logger.info("Agent stream finished successfully.")
+        # ---- After the loop completes WITHOUT exception ----
+        final_state_on_success = latest_full_state
+        st.session_state['final_state'] = final_state_on_success
+        logger.info(f"STREAM UI: Stream finished. Nodes seen: {nodes_seen_in_stream}") # <-- Log all nodes seen
+        logger.info(f"STREAM UI: Storing final state with keys: {list(st.session_state['final_state'].keys()) if st.session_state['final_state'] else 'None'}")
         yield f"\n{node_emojis['__end__']} **Agent execution complete! Processing results...**"
 
     except Exception as e:
-        logger.error(f"Error during agent streaming execution: {e}", exc_info=True)
-        st.session_state['error_message'] = f"Error during agent execution: {e}" # Store the exception message
-        yield f"\n❌ **Critical Error during stream:** {e}"
-        st.session_state['final_state'] = latest_full_state # Store partial state on error if available
-        # Make sure error state persists for display after rerun
-        st.session_state.run_complete = True # Mark as complete even on error to show message
-        st.rerun() # Rerun to display the error message now
+        # ---- If an exception occurs DURING the stream ----
+        logger.error(f"STREAM UI: Error during streaming: {e}", exc_info=True)
+        logger.warning(f"STREAM UI: Stream errored. Nodes seen before error: {nodes_seen_in_stream}") # <-- Log nodes seen before error
+        st.session_state['error_message'] = f"Critical Error during stream: {e}"
+        st.session_state['final_state'] = latest_full_state # Store partial state
+        logger.warning(f"STREAM UI: Storing partial state on error with keys: {list(st.session_state['final_state'].keys()) if st.session_state['final_state'] else 'None'}")
+        yield f"\n❌ **{st.session_state['error_message']}**"
+        st.session_state.run_complete = True
+        st.rerun()
 
 # --- Player Metadata Loading Function (Example - Adapt if defined elsewhere) ---
 # If load_player_metadata is NOT in mlb_agent5.py, define it here.

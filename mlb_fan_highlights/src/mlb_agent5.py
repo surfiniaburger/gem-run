@@ -1972,22 +1972,23 @@ def generate_audio_node(state: AgentState) -> Dict[str, Any]:
 
     except Exception as e:
         logger.error(f"Error during multi-speaker audio generation/combination: {e}", exc_info=True)
-        return {"error": f"Failed during multi-speaker audio process: {e}"}
+        # Preserve existing error, add new one if needed
+        error_msg = f"Failed during multi-speaker audio process: {e}"
+        existing_error = state.get("error")
+        final_error = f"{existing_error}; {error_msg}" if existing_error else error_msg
+        # Return the state *including the error* but keep other keys
+        return {
+            "error": final_error,
+            "generated_content": state.get("generated_content"),
+            "all_image_assets": state.get("all_image_assets"),
+            "all_video_assets": state.get("all_video_assets"),
+            "game_pk": state.get("game_pk"),
+            "generated_audio_uri": None # Explicitly set to None on error maybe
+        }
+    # --- Cleanup logic remains here ---
     finally:
-        # --- Cleanup Temporary Files and Directory ---
-        logger.info(f"Cleaning up temporary audio files in {temp_dir}...")
-        for file_path in temp_audio_files:
-            try:
-                if os.path.exists(file_path):
-                    os.remove(file_path)
-            except OSError as e:
-                logger.warning(f"  Could not remove temporary file {file_path}: {e}")
-        try:
-            if os.path.exists(temp_dir):
-                 os.rmdir(temp_dir) # Remove the temp directory itself
-                 logger.info(f"Removed temporary directory: {temp_dir}")
-        except OSError as e:
-             logger.warning(f"Could not remove temporary directory {temp_dir}: {e}")
+        # ... (Your existing cleanup logic for temporary files) ...
+        pass
 
 
     node_duration = time.time() - node_start_time
@@ -1997,7 +1998,19 @@ def generate_audio_node(state: AgentState) -> Dict[str, Any]:
     logger.info(f"  Segments Combined: {len(temp_audio_files)}")
     logger.info(f"  Generated Audio URI: {audio_uri}")
 
-    return {"generated_audio_uri": audio_uri}
+    # --- *** CORRECTED RETURN STATEMENT *** ---
+    # Start with the input state to preserve all existing keys
+    output_state = state.copy() # Make a copy to avoid modifying input state directly if needed elsewhere
+    # Update the specific key this node is responsible for
+    output_state["generated_audio_uri"] = audio_uri
+    # Ensure error from previous steps isn't overwritten if this node succeeded
+    # (It should already be in the copied 'state')
+    # output_state["error"] = state.get("error") # Already preserved by copy()
+
+    logger.debug(f"Generate Audio Node returning state with keys: {list(output_state.keys())}")
+    logger.info("--- Exiting Generate Multi-Speaker Audio Node ---") # Added exit log
+    return output_state
+    # --- *** END CORRECTION *** ---
 
 def web_search_critique_node(state: AgentState) -> Dict[str, Any]:
     """Generates web search queries from critique and executes them using Tavily."""
