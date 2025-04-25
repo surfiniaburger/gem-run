@@ -157,7 +157,6 @@ except Exception as e:
 
 
 # --- Streamlit App Configuration ---
-st.set_page_config(layout="wide") # Use wide layout
 st.title("⚾ MLB Game Recap Generator")
 
 # --- Session State Initialization ---
