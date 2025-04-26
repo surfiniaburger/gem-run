@@ -27,7 +27,6 @@ from moviepy import (
     CompositeVideoClip,
     concatenate_videoclips,
     clips_array      # If you use clips_array
-    # Add any other specific classes you might need from the top level
 )
 
 # You might also need specific effects imports (as used in the refactored code)
@@ -482,7 +481,7 @@ def call_vertex_embedding_agent(text_inputs: List[str]) -> List[Optional[List[fl
         logger.error(f"Error calling Vertex AI Embedding API: {e}", exc_info=True)
         return [None] * len(text_inputs)
 
-
+# exploring adk doc
 
 # General query execution with type checking
 def execute_filtered_query(table_name, column_name, filter_value, select_columns="*"):
