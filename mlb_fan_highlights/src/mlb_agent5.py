@@ -1866,7 +1866,7 @@ def generate_audio_node(state: AgentState) -> Dict[str, Any]:
     """Generates multi-speaker audio from the final dialogue script using TTS and pydub."""
     node_start_time = time.time()
     logger.info("--- Generate Multi-Speaker Audio Node ---")
-    final_script = state.get("generated_content")
+    final_script = state.get("draft")
     game_pk = state.get("game_pk", "unknown_game")
     existing_audio_uri = state.get("generated_audio_uri")
 
