@@ -2,7 +2,6 @@
 # --- Imports (combine necessary imports from previous agent script and ingestion script) ---
 import io
 import random
-import shutil
 from PIL import Image as PilImage
 import pandas as pd
 import json
@@ -41,8 +40,8 @@ from image_embedding_pipeline2 import search_similar_images_sdk, execute_bq_quer
 #import google.generativeai as genai # Use alias genai for clarity
 #from google.generativeai.types import GenerateVideosConfig, Image as GenAiImage 
 from google.genai import types as genai_types # Alias types to avoid conflict
-from google.cloud import texttospeech_v1 as texttospeech # Ensure this import is present
-
+from google.cloud import texttospeech # Ensure this import is present
+from google.cloud import speech
 
 # --- Add near other Vertex AI imports ---
 from vertexai.preview.vision_models import ImageGenerationModel
@@ -323,6 +322,7 @@ class AgentState(TypedDict):
     max_visual_revisions: int   # Max loops for visual generation (e.g., 2)
     generated_video_assets: Optional[List[Dict[str, Any]]]
     generated_audio_uri: Optional[str] # GCS URI for the final audio
+    word_timestamps: Optional[List[Dict[str, Any]]]
     error: Optional[str]
 
 def load_image_bytes_from_gcs(gcs_uri: str) -> Optional[Tuple[bytes, str]]:
@@ -1610,6 +1610,84 @@ def retrieve_images_node(state: AgentState) -> Dict[str, Any]:
 
     return {"retrieved_image_data": unique_image_data}
 
+# --- Define the new node function ---
+def transcribe_for_timestamps_node(state: AgentState) -> Dict[str, Any]:
+    """Transcribes the generated audio using STT to get word timestamps."""
+    logger.info("--- Transcribe for Timestamps Node ---")
+    audio_uri = state.get("generated_audio_uri")
+    language_code = "en-US" # Or make this dynamic if needed
+
+    if not audio_uri:
+        logger.warning("No generated audio URI found in state. Skipping transcription.")
+        return {"word_timestamps": None}
+
+    if not audio_uri.startswith("gs://"):
+         logger.error(f"Audio URI is not a GCS URI: {audio_uri}. Cannot use for STT.")
+         return {"error": "Invalid audio URI for STT.", "word_timestamps": None}
+
+    word_timestamps = []
+    try:
+        # Initialize STT client
+        stt_client = speech.SpeechClient() # Ensure credentials are set up (usually via environment)
+        logger.info(f"Initialized SpeechClient. Transcribing {audio_uri}...")
+
+        # Configure the request
+        # You might need to know the sample rate of your TTS output.
+        # MP3 encoding is handled by STT, but knowing sample rate helps.
+        # Common TTS rates are 24000 or 48000 Hz for WaveNet/Neural2, Chirp might differ. Check TTS docs/output.
+        # Let's assume 24000Hz for this example, ADJUST IF NEEDED.
+        sample_rate = 24000 # <--- IMPORTANT: Verify this for your TTS settings
+        config = speech.RecognitionConfig(
+            # encoding=speech.RecognitionConfig.AudioEncoding.MP3, # STT usually detects MP3 from URI/header
+            sample_rate_hertz=sample_rate, # Provide sample rate if known
+            language_code=language_code,
+            enable_word_time_offsets=True # The crucial setting
+            # enable_automatic_punctuation=True # Optional: might improve transcription
+        )
+
+        audio = speech.RecognitionAudio(uri=audio_uri)
+
+        # Use recognize for shorter audio (< 60s), long_running_recognize for longer
+        # Let's assume dialogue might exceed 60s, use long_running_recognize
+        logger.info("Starting long-running recognition operation...")
+        operation = stt_client.long_running_recognize(config=config, audio=audio)
+
+        # Wait for the operation to complete (adjust timeout as needed)
+        # You might want more robust polling in production
+        response = operation.result(timeout=300) # Wait up to 5 minutes
+
+        logger.info("STT Transcription complete. Extracting word timestamps...")
+        # Process results
+        for result in response.results:
+            # The first alternative is usually the best transliteration
+            if result.alternatives:
+                alternative = result.alternatives[0]
+                for word_info in alternative.words:
+                    word_timestamps.append({
+                        "word": word_info.word,
+                        # Convert google.protobuf.Duration to seconds string or float
+                        "start_time_s": word_info.start_time.total_seconds(),
+                        "end_time_s": word_info.end_time.total_seconds(),
+                         # Or keep the original Duration objects if preferred
+                         # "start_time": word_info.start_time,
+                         # "end_time": word_info.end_time,
+                    })
+
+        logger.info(f"Extracted timestamps for {len(word_timestamps)} words.")
+
+    except google_exceptions.NotFound:
+         logger.error(f"STT Error: Audio file not found at {audio_uri}")
+         return {"error": f"Audio not found at GCS URI: {audio_uri}", "word_timestamps": None}
+    except google_exceptions.InvalidArgument as e:
+        logger.error(f"STT Error: Invalid argument - check config (sample rate?): {e}")
+        return {"error": f"STT Invalid argument: {e}", "word_timestamps": None}
+    except Exception as e:
+        logger.error(f"Error during STT transcription: {e}", exc_info=True)
+        return {"error": f"Failed to transcribe audio for timestamps: {e}", "word_timestamps": None}
+
+    return {"word_timestamps": word_timestamps}
+
+
 
 def final_output_node(state: AgentState) -> Dict[str, Any]:
     """Copies the final draft and retrieved image data to final state fields."""
@@ -1867,7 +1945,7 @@ def generate_audio_node(state: AgentState) -> Dict[str, Any]:
     """Generates multi-speaker audio from the final dialogue script using TTS and pydub."""
     node_start_time = time.time()
     logger.info("--- Generate Multi-Speaker Audio Node ---")
-    final_script = state.get("generated_content")
+    final_script = state.get("draft")
     game_pk = state.get("game_pk", "unknown_game")
     existing_audio_uri = state.get("generated_audio_uri")
 
@@ -1880,9 +1958,9 @@ def generate_audio_node(state: AgentState) -> Dict[str, Any]:
         return {"error": "Missing pydub library or ffmpeg dependency."}
 
     # If audio already exists
-    if existing_audio_uri and state.get("word_timestamps"):
+    if existing_audio_uri:
         logger.info(f"Audio already generated: {existing_audio_uri}")
-        return {"generated_audio_uri": existing_audio_uri, "word_timestamps": state.get("word_timestamps")}
+        return {"generated_audio_uri": existing_audio_uri}
 
     if not final_script:
         logger.warning("No final script ('generated_content') found to synthesize audio.")
@@ -1896,27 +1974,26 @@ def generate_audio_node(state: AgentState) -> Dict[str, Any]:
 
     # --- Initialize TTS Client ---
     try:
-        # Use v1 client specifically, often better documented for timestamps
         tts_client = texttospeech.TextToSpeechClient()
-        logger.info("TextToSpeechClient (v1) initialized.")
+        logger.info("TextToSpeechClient initialized.")
     except Exception as e:
-        logger.error(f"Failed to initialize TextToSpeechClient (v1): {e}", exc_info=True)
+        logger.error(f"Failed to initialize TextToSpeechClient: {e}", exc_info=True)
         return {"error": "Failed to initialize TTS client."}
 
-    combined_audio_segments = [] # Store pydub segments directly
-    all_word_timestamps = []
-    current_time_offset_s = AUDIO_SILENCE_MS / 1000.0 # Start with initial silence
-
-    temp_dir = tempfile.mkdtemp()
+    temp_audio_files = []
+    audio_uri = None
+    temp_dir = tempfile.mkdtemp() # Create a temporary directory
     logger.info(f"Created temporary directory for audio parts: {temp_dir}")
 
     try:
-        logger.info(f"Generating {len(dialogue_lines)} audio segments with timestamps...")
+        # --- Generate Audio for Each Line ---
+        logger.info(f"Generating {len(dialogue_lines)} audio segments...")
         for count, line in enumerate(dialogue_lines):
+            # Choose the voice for the current line, alternating
             if count % 2 == 0:
                 current_voice_name = TTS_VOICE_NAME
                 host_num = 1
-            else:
+            else: # count % 2 == 1
                 current_voice_name = TTS_VOICE_NAME_ALT
                 host_num = 2
 
@@ -1927,59 +2004,41 @@ def generate_audio_node(state: AgentState) -> Dict[str, Any]:
             audio_config = texttospeech.AudioConfig(audio_encoding=AUDIO_ENCODING)
 
             try:
-                # *** Request Timestamps ***
                 response = tts_client.synthesize_speech(
-                    input=synthesis_input,
-                    voice=voice,
-                    audio_config=audio_config,
-                    # Add this parameter to get word-level timing
-                    enable_time_pointing=[texttospeech.SynthesizeSpeechRequest.TimepointType.WORD]
+                    input=synthesis_input, voice=voice, audio_config=audio_config
                 )
 
-                # Save audio segment temporarily
+                # Save the generated audio to a temporary file in the temp dir
                 temp_filename = os.path.join(temp_dir, f"part-{count}.mp3")
                 with open(temp_filename, "wb") as out:
                     out.write(response.audio_content)
-
-                # Load segment with pydub
-                segment = AudioSegment.from_mp3(temp_filename)
-                combined_audio_segments.append(segment)
-
-                # *** Process and Store Timestamps ***
-                if response.timepoints:
-                    logger.debug(f"    -> Received {len(response.timepoints)} timepoints for line {count+1}.")
-                    for point in response.timepoints:
-                        all_word_timestamps.append({
-                            "word": point.word,
-                            "start_time_s": current_time_offset_s + point.time_seconds
-                        })
-                    # Update time offset for the next segment
-                    current_time_offset_s += segment.duration_seconds + (AUDIO_SILENCE_MS / 1000.0)
-                else:
-                    logger.warning(f"    -> No timepoints received for line {count+1}. Timing accuracy might be affected.")
-                    # Still update offset based on duration if no timepoints
-                    current_time_offset_s += segment.duration_seconds + (AUDIO_SILENCE_MS / 1000.0)
-
-                os.remove(temp_filename) # Clean up temp file immediately
+                temp_audio_files.append(temp_filename)
+                # logger.debug(f"    -> Saved temporary file: {temp_filename}")
 
             except google_exceptions.GoogleAPIError as api_error:
                 logger.error(f"    TTS API Error for line {count+1}: {api_error}. Skipping segment.")
+                # Continue to next line, the segment will be missing
             except Exception as line_err:
-                logger.error(f"    Error generating/processing TTS for line {count+1}: {line_err}. Skipping segment.")
+                logger.error(f"    Error generating TTS for line {count+1}: {line_err}. Skipping segment.")
 
-        # --- Combine Audio Segments with Pydub ---
-        if not combined_audio_segments:
+        # --- Combine Audio Files with Pydub ---
+        if not temp_audio_files:
             logger.error("No audio segments were successfully generated.")
             return {"error": "Failed to generate any audio segments."}
 
-        logger.info(f"Combining {len(combined_audio_segments)} audio segments...")
-        # Start with silence, then add segments and silence between them
-        full_audio = AudioSegment.silent(duration=AUDIO_SILENCE_MS)
-        for segment in combined_audio_segments:
-            full_audio += segment + AudioSegment.silent(duration=AUDIO_SILENCE_MS)
+        logger.info(f"Combining {len(temp_audio_files)} audio segments...")
+        full_audio = AudioSegment.silent(duration=AUDIO_SILENCE_MS) # Start with silence
 
-        # --- Export Combined Audio ---
-        logger.info("Exporting combined audio...")
+        for i, file_path in enumerate(temp_audio_files):
+            try:
+                segment = AudioSegment.from_mp3(file_path)
+                full_audio += segment + AudioSegment.silent(duration=AUDIO_SILENCE_MS)
+                logger.debug(f"  Appended segment {i+1} from {os.path.basename(file_path)}")
+            except Exception as pydub_err:
+                logger.error(f"  Error processing segment {i+1} ({os.path.basename(file_path)}) with pydub: {pydub_err}. Skipping.")
+
+        # --- Export Combined Audio to Bytes ---
+        logger.info("Exporting combined audio to MP3 format in memory...")
         buffer = io.BytesIO()
         full_audio.export(buffer, format="mp3")
         audio_bytes = buffer.getvalue()
@@ -1994,10 +2053,17 @@ def generate_audio_node(state: AgentState) -> Dict[str, Any]:
         logger.error(f"Error during multi-speaker audio generation/combination: {e}", exc_info=True)
         return {"error": f"Failed during multi-speaker audio process: {e}"}
     finally:
-        # --- Cleanup Temporary Directory ---
+        # --- Cleanup Temporary Files and Directory ---
+        logger.info(f"Cleaning up temporary audio files in {temp_dir}...")
+        for file_path in temp_audio_files:
+            try:
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+            except OSError as e:
+                logger.warning(f"  Could not remove temporary file {file_path}: {e}")
         try:
             if os.path.exists(temp_dir):
-                 shutil.rmtree(temp_dir) # Use shutil to remove non-empty dir
+                 os.rmdir(temp_dir) # Remove the temp directory itself
                  logger.info(f"Removed temporary directory: {temp_dir}")
         except OSError as e:
              logger.warning(f"Could not remove temporary directory {temp_dir}: {e}")
@@ -2007,15 +2073,10 @@ def generate_audio_node(state: AgentState) -> Dict[str, Any]:
     logger.info(f"--- Multi-Speaker Audio Node Summary ---")
     logger.info(f"  Duration: {node_duration:.2f}s")
     logger.info(f"  Dialogue Lines Processed: {len(dialogue_lines)}")
-    logger.info(f"  Segments Combined: {len(combined_audio_segments)}")
-    logger.info(f"  Word Timestamps Captured: {len(all_word_timestamps)}")
+    logger.info(f"  Segments Combined: {len(temp_audio_files)}")
     logger.info(f"  Generated Audio URI: {audio_uri}")
 
-    # *** Return timestamps along with URI ***
-    return {
-        "generated_audio_uri": audio_uri,
-        "word_timestamps": all_word_timestamps # Store the collected timestamps
-    }
+    return {"generated_audio_uri": audio_uri}
 
 def web_search_critique_node(state: AgentState) -> Dict[str, Any]:
     """Generates web search queries from critique and executes them using Tavily."""
@@ -2112,6 +2173,7 @@ def aggregate_final_output_node(state: AgentState) -> Dict[str, Any]:
     retrieved_static_data = state.get("retrieved_image_data") or []
     generated_image_data = state.get("generated_visual_assets") or []
     generated_video_data = state.get("generated_video_assets") or [] # Get video data
+    word_timestamps = state.get("word_timestamps") 
 
     # *** ADD DEBUG LOGGING HERE ***
     logger.debug(f"Aggregate Node Received State Keys: {list(state.keys())}")
@@ -2131,7 +2193,9 @@ def aggregate_final_output_node(state: AgentState) -> Dict[str, Any]:
     output = {
         "generated_content": final_draft,
         "all_image_assets": all_image_assets, # Combined static and generated images
-        "all_video_assets": generated_video_data # List of generated videos
+        "all_video_assets": generated_video_data,
+        "generated_audio_uri": state.get("generated_audio_uri"), # Include audio URI
+        "word_timestamps": word_timestamps # List of generated videos
     }
 
     if state.get("error"):
@@ -2317,6 +2381,8 @@ workflow.add_node("critique_visuals", critique_visuals_node)
 workflow.add_node("generate_video_clips", generate_video_clips_node)
 workflow.add_node("aggregate_final_output", aggregate_final_output_node)
 workflow.add_node("generate_audio", generate_audio_node)
+workflow.add_node("transcribe_for_timestamps", transcribe_for_timestamps_node)
+
 
 #Set entry point
 workflow.set_entry_point("planner")
@@ -2350,6 +2416,8 @@ workflow.add_edge("generate_visuals", "critique_visuals") # Always critique afte
 # --- Add edge from video generation to final aggregation ---
 workflow.add_edge("generate_video_clips", "generate_audio")
 
+# Connect generate_audio -> transcribe_for_timestamps
+workflow.add_edge("generate_audio", "transcribe_for_timestamps")
 
 # Add the conditional edge for the visual loop
 workflow.add_conditional_edges(
@@ -2364,7 +2432,7 @@ workflow.add_conditional_edges(
 
 
 # NEW: Edge from the asset aggregation node to the NEW audio node
-workflow.add_edge("generate_audio","aggregate_final_output")
+workflow.add_edge("transcribe_for_timestamps","aggregate_final_output")
 
 # NEW: Final edge from audio generation to END
 workflow.add_edge("aggregate_final_output", END)
@@ -2544,6 +2612,7 @@ if __name__ == "__main__":
         "max_visual_revisions": 2, # Set the visual loop limit (user requested 2)
         "generated_video_assets": [],
         "generated_audio_uri": [],
+        "word_timestamps": None, 
         "error": None,
     }
 
