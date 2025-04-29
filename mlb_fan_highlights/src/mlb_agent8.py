@@ -315,8 +315,7 @@ class AgentState(TypedDict):
     revision_number: int       # Start at 0, increment with each generation attempt
     max_revisions: int         # Max refinement loops
     # --- NEW: Visual Generation Loop ---
-    #visual_generation_prompts: Optional[List[str]] # Prompts for Imagen/Veo
-    visual_prompt_details: Optional[List[Dict[str, Any]]] # NEW: Stores prompt + trigger sentences
+    visual_generation_prompts: Optional[List[str]] # Prompts for Imagen/Veo
     generated_visual_assets: Optional[List[Dict[str, Any]]] # Results from Imagen/Veo
     visual_critique: Optional[str] # Critique specifically for generated visuals
     visual_revision_number: int # Counter for visual generation loop
@@ -616,129 +615,98 @@ class RetrievalPlan(BaseModel):
     vector_searches: Optional[List[VectorSearch]] = Field(default_factory=list, description="List of queries for vector search.")
 
 
-# --- Near the top with other prompts ---
-
-# NEW Enhanced VISUAL_PROMPT_ANALYSIS_PROMPT
 VISUAL_PROMPT_ANALYSIS_PROMPT = """
-You are an assistant director analyzing an MLB game script to plan visual shots for Imagen 3 AND link them back to the script sentences that inspired them.
-Read the script carefully. Identify 3-5 key moments, scenes, or actions that need a generated visual.
+You are an assistant director analyzing an MLB game script to plan visual shots, specifically for the Imagen 3 text-to-image model which has filters against specific names.
+Read the script carefully. Your primary goal is to identify 3-5 key moments, scenes, or actions that need a generated visual.
 
 **Critical Instructions for Imagen Compatibility:**
 1.  **NO Player Names:** Absolutely **DO NOT** use any real player names (e.g., "Ohtani", "Judge"). Use generic descriptions like "an MLB player", "the batter", "the pitcher", "a fielder", "the runner".
 2.  **NO Team Names:** Absolutely **DO NOT** use specific MLB team names (e.g., "Dodgers", "Yankees").
-3.  **Uniform Descriptions:** Describe based on home/away or colors if mentioned, otherwise use generic "MLB uniform", "white home uniform", "colored away uniform" etc. as appropriate based on script context.
+3.  **Uniform Descriptions:**
+    *   If the script explicitly states a player is on the **home team**, describe their uniform generically as such (e.g., "a player in a white home uniform", "the batter in a home jersey"). Assume home uniforms are primarily white or light grey unless the script specifies otherwise.
+    *   If the script explicitly states a player is on the **away team**, describe their uniform generically as such (e.g., "a player in a colored away uniform", "the pitcher in a gray away jersey"). Assume away uniforms are colored or dark grey unless the script specifies otherwise.
+    *   If the script provides **specific color details** for a uniform (e.g., "wearing blue and orange"), use those details.
+    *   If the script **does not specify** home/away or give color details for the relevant player/action, use a neutral description like "an MLB player's uniform".
 
-**Output Requirements:**
-Your goal is to create a JSON list. Each item in the list will be an object representing one visual shot.
-For EACH visual shot object, you MUST include:
-1.  `prompt`: A string containing the descriptive Imagen-compatible prompt adhering to the rules above. Focus on action, emotion, setting.
-2.  `triggering_sentences`: A list of strings, where each string is the **exact sentence** from the original script that **directly inspired** or relates to this specific visual prompt. Include the full sentence, including any "Host 1:" or "Host 2:" prefix if present in the original script line.
+**Prompt Generation Guidelines:**
+*   For actions (like a home run, double play, strikeout), break them down into 2-4 distinct visual prompts representing the sequence (e.g., swing, ball flight, player running, tag/catch, celebration).
+*   For descriptive moments (e.g., stadium shot, manager looking tense), generate a single detailed prompt.
+*   Focus on creating descriptive prompts suitable for Imagen 3. Emphasize action, emotion, setting, and relevant details like uniform descriptions based on the rules above.
 
-**Example Input Script:**
-Host 1: What a shot by the home team batter! That ball is launched deep into the night sky!
-Host 2: Absolutely crushed! A towering fly ball heading for the left-field bleachers. That could be gone! He knew it off the bat.
-Host 1: And it IS! Home run! The crowd erupts as he starts his trot around the bases. What a moment for this team!
+**Example Input Script:** "The Dodgers' star player crushed a high fastball while playing at home, sending it deep into the right-field stands for a 3-run homer! The crowd went wild as he rounded the bases."
 
-**Example JSON Output:**
+**Example JSON Output (Reflecting New Rules):**
 [
-  {{
-    "prompt": "An MLB batter in a white home uniform watching the ball fly after a powerful swing, night game, stadium lights.",
-    "triggering_sentences": ["Host 2: Absolutely crushed!", "Host 2: He knew it off the bat."]
-  }},
-  {{
-    "prompt": "Baseball soaring high against a dark night sky, stadium lights illuminating its path towards distant left-field bleachers.",
-    "triggering_sentences": ["Host 1: What a shot by the home team batter! That ball is launched deep into the night sky!", "Host 2: A towering fly ball heading for the left-field bleachers."]
-  }},
-  {{
-    "prompt": "Wide shot of a baseball stadium crowd cheering wildly under bright lights, fans jumping, after a nighttime home run.",
-    "triggering_sentences": ["Host 1: And it IS! Home run! The crowd erupts as he starts his trot around the bases."]
-  }},
-  {{
-    "prompt": "An MLB player in a white home uniform jogging slowly between first and second base, looking towards the outfield during a home run trot.",
-    "triggering_sentences": ["Host 1: The crowd erupts as he starts his trot around the bases."]
-  }}
+  "An MLB batter in a white home uniform swinging a baseball bat powerfully, follow-through motion, intense focus, stadium background during daytime.",
+  "Baseball soaring high in the air against a blue sky, heading towards the right-field seats of a packed baseball stadium.",
+  "An MLB player in a white home uniform jogging around third base, smiling, pointing upwards, during a baseball game.",
+  "Wide shot of a baseball stadium crowd cheering ecstatically, fans on their feet, after a home run."
 ]
 
 **Script to Analyze:**
 {script}
 
-**Output Format:** Output ONLY the JSON list of objects as described above. Ensure the list contains 3-7 objects maximum unless the script is exceptionally long. Verify the JSON is valid.
+**Output Format:** Output ONLY a JSON list of prompt strings. Keep the list concise (maximum 5-7 prompts total unless the script is exceptionally long and detailed). Ensure every prompt adheres strictly to the NO Player Name and NO Team Name rules, and uses uniform descriptions as specified.
 **JSON Output:**
 """
 
 def analyze_script_for_visual_prompts_node(state: AgentState) -> Dict[str, Any]:
-    """
-    Analyzes the final script to generate prompts for Imagen/Veo
-    AND identifies the triggering script sentences for each prompt.
-    """
-    logger.info("--- Analyze Script for Visual Generation Prompts & Triggers Node ---")
+    """Analyzes the final script to generate prompts for Imagen/Veo."""
+    logger.info("--- Analyze Script for Visual Generation Prompts Node ---")
     final_script = state.get('draft')
 
     if not final_script:
         logger.warning("No final script found to analyze for visual prompts.")
-        # Return empty list for the new field
-        return {"visual_prompt_details": []}
+        return {"visual_generation_prompts": []}
 
-    if not imagen_model: # Check if model initialized (or Veo if that's primary)
-         logger.error("Image/Video generation model not available, cannot generate visual prompts.")
-         # Return empty list and error
-         return {"visual_prompt_details": [], "error": "Image/Video generation model not initialized."}
+    if not imagen_model: # Check if model initialized
+         logger.error("Imagen model not available, cannot generate visual prompts.")
+         return {"visual_generation_prompts": [], "error": "Imagen model not initialized."}
 
-    # Use the NEW prompt asking for JSON structure
+
     prompt = VISUAL_PROMPT_ANALYSIS_PROMPT.format(script=final_script)
-    visual_prompt_details = [] # Initialize as empty list
+    visual_prompts = []
 
     try:
-        logger.info("Generating visual generation prompts and trigger sentences based on script...")
+        logger.info("Generating visual generation prompts based on script...")
+        # Use the standard model for this analysis task
         response = model.invoke(prompt)
         llm_output_text = response.content
-        logger.debug(f"LLM Raw Output for Visual Prompts/Triggers:\n{llm_output_text}")
+        logger.debug(f"LLM Raw Output for Visual Prompts:\n{llm_output_text}")
 
-        # Parse the JSON list of dictionaries
+        # Parse JSON list (similar to analyze_script_for_images_node)
         try:
-            # Find JSON block (handles potential markdown formatting)
+            # Basic parsing, add more robust handling if needed
             json_match = re.search(r"```json\s*(\[.*?\])\s*```", llm_output_text, re.DOTALL | re.IGNORECASE)
             if json_match:
                 json_string = json_match.group(1)
             else:
-                # Look for the list directly if no markdown
                 list_match = re.search(r"(\[.*?\])", llm_output_text, re.DOTALL)
                 json_string = list_match.group(1) if list_match else llm_output_text.strip()
 
             parsed_list = json.loads(json_string)
-
-            # Validate the structure
-            if isinstance(parsed_list, list):
-                valid_details = []
-                for item in parsed_list:
-                    if isinstance(item, dict) and 'prompt' in item and 'triggering_sentences' in item and isinstance(item['prompt'], str) and isinstance(item['triggering_sentences'], list):
-                         # Optional: Further validation if sentences are strings
-                         if all(isinstance(s, str) for s in item['triggering_sentences']):
-                              valid_details.append(item)
-                         else:
-                              logger.warning(f"Skipping item due to non-string sentence in 'triggering_sentences': {item}")
-                    else:
-                        logger.warning(f"Skipping invalid item structure in parsed list: {item}")
-                visual_prompt_details = valid_details
-                logger.info(f"Parsed {len(visual_prompt_details)} valid visual prompt detail objects.")
+            if isinstance(parsed_list, list) and all(isinstance(item, str) for item in parsed_list):
+                visual_prompts = parsed_list
+                logger.info(f"Parsed {len(visual_prompts)} visual generation prompts.")
             else:
-                logger.error("LLM output for visual prompts/triggers was not a valid JSON list.")
-                visual_prompt_details = []
+                logger.error("LLM output for visual prompts was not a valid JSON list of strings.")
+                visual_prompts = []
 
         except (json.JSONDecodeError, AttributeError, TypeError) as parse_error:
-            logger.error(f"Failed to parse LLM output into visual prompt details list: {parse_error}. Raw output: {llm_output_text}")
-            visual_prompt_details = []
+            logger.error(f"Failed to parse LLM output into visual prompt list: {parse_error}. Raw output: {llm_output_text}")
+            visual_prompts = []
 
     except Exception as e:
-        logger.error(f"Error analyzing script for visual prompts/triggers: {e}", exc_info=True)
-        visual_prompt_details = []
+        logger.error(f"Error analyzing script for visual prompts: {e}", exc_info=True)
+        visual_prompts = []
 
     # Initialize visual revision number here before the first generation attempt
     return {
-        "visual_prompt_details": visual_prompt_details, # Store the list of dicts
-        "visual_revision_number": 0,
+        "visual_generation_prompts": visual_prompts,
+        "visual_revision_number": 0, # Start counter at 0 before first generation
         "generated_visual_assets": [] # Ensure it's an empty list initially
-    }
+        }
+
 
 
 # Helper function to save PIL image to GCS (adapt if needed)
@@ -773,7 +741,7 @@ def generate_video_clips_node(state: AgentState) -> Dict[str, Any]:
     node_start_time = time.time()
     logger.info("--- Generate Video Clips Node (Text-to-Video) ---")
     # --- Use the prompts generated for images as input for videos ---
-    prompt_details_list = state.get("visual_prompt_details") or [] # Read the list of dicts
+    video_prompts = state.get("visual_generation_prompts") or []
     current_videos = state.get("generated_video_assets") or []
 
     global genai_client # Use the specific genai client for Veo
@@ -781,16 +749,16 @@ def generate_video_clips_node(state: AgentState) -> Dict[str, Any]:
         logger.warning("google-genai client not initialized, skipping video generation.")
         return {"generated_video_assets": current_videos}
 
-    if not prompt_details_list :
+    if not video_prompts:
         logger.info("No visual generation prompts found to generate videos from.")
         return {"generated_video_assets": current_videos}
 
     # --- Select prompts to turn into videos ---
     # Simple selection: Take the first MAX_PROMPTS_TO_ANIMATE
-    details_to_animate = prompt_details_list[:MAX_PROMPTS_TO_ANIMATE]
-    logger.info(f"Selected {len(details_to_animate)} prompts to generate videos for (max: {MAX_PROMPTS_TO_ANIMATE}).")
+    prompts_to_animate = video_prompts[:MAX_PROMPTS_TO_ANIMATE]
+    logger.info(f"Selected {len(prompts_to_animate)} prompts to generate videos for (max: {MAX_PROMPTS_TO_ANIMATE}).")
 
-    if not details_to_animate:
+    if not prompts_to_animate:
         logger.info("No prompts selected for video generation.")
         return {"generated_video_assets": current_videos}
 
@@ -799,23 +767,17 @@ def generate_video_clips_node(state: AgentState) -> Dict[str, Any]:
     game_pk = state.get("game_pk", "unknown_game")
     timestamp = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
 
-    # --- CORRECTED Loop ---
-    for i, prompt_details in enumerate(details_to_animate): # Iterate through detail objects
-        # --- Extract prompt text ---
-        actual_prompt_string = prompt_details.get("prompt")
-        if not actual_prompt_string or not isinstance(actual_prompt_string, str):
-            logger.warning(f"Skipping video generation for item {i+1} due to missing or invalid 'prompt' string.")
-            continue
-
-        # --- Use actual_prompt_string for logging and API call ---
-        logger.info(f"Attempting text-to-video generation {i+1}/{len(details_to_animate)} for prompt: '{actual_prompt_string[:80]}...'")
-        operation_lro = None
-        operation_name_str = None
-
+    for i, prompt_text in enumerate(prompts_to_animate):
+        logger.info(f"Attempting text-to-video generation {i+1}/{len(prompts_to_animate)} for prompt: '{prompt_text[:80]}...'")
+        operation_lro = None # Variable to hold the LRO object
+        operation_name_str = None # Variable to hold the operation name string
+        # --- Prepare Veo API call ---
         try:
-            prompt_slug = re.sub(r'\W+', '_', actual_prompt_string[:30]).strip('_') # Use correct string
+            # Create unique output URI for the video
+            prompt_slug = re.sub(r'\W+', '_', prompt_text[:30]).strip('_') # Slug from prompt
             video_blob_name = f"{GCS_VIDEO_OUTPUT_PREFIX}game_{game_pk}/vid_{prompt_slug}_{timestamp}_{i:02d}.mp4"
             output_video_gcs_uri = f"gs://{GCS_BUCKET_GENERATED_VIDEOS}/{video_blob_name}"
+
             # Prepare config using genai module directly
             veo_config = genai_types.GenerateVideosConfig(
                 output_gcs_uri=output_video_gcs_uri,
@@ -830,7 +792,7 @@ def generate_video_clips_node(state: AgentState) -> Dict[str, Any]:
             logger.info(f"Starting Veo text-to-video operation...")
             operation_lro = genai_client.models.generate_videos(
                 model=VERTEX_VEO_MODEL_ID,
-                prompt=actual_prompt_string, # Use the text prompt directly
+                prompt=prompt_text, # Use the text prompt directly
                 # REMOVED: image=veo_image_input,
                 config=veo_config,
             )
@@ -862,9 +824,9 @@ def generate_video_clips_node(state: AgentState) -> Dict[str, Any]:
             if current_op_state and current_op_state.done and not current_op_state.error:
                 if current_op_state.response:
                     video_uri = current_op_state.result.generated_videos[0].video.uri
-                    logger.info(f"Veo text-to-video successful for prompt '{actual_prompt_string[:80]}...'. Operation: {operation_name_for_log}, URI: {video_uri} (Polling took {polling_duration:.2f}s)")
+                    logger.info(f"Veo text-to-video successful for prompt '{prompt_text[:80]}...'. Operation: {operation_name_for_log}, URI: {video_uri} (Polling took {polling_duration:.2f}s)")
                     newly_generated_videos.append({
-                         "prompt_details": prompt_details,
+                         "source_prompt": prompt_text,
                          "video_uri": video_uri,
                          "model_used": VERTEX_VEO_MODEL_ID,
                          "type": "generated_video"
@@ -873,30 +835,30 @@ def generate_video_clips_node(state: AgentState) -> Dict[str, Any]:
                     logger.warning(f"Veo operation {operation_name_for_log} finished successfully but has no response/result object.")
             elif current_op_state and current_op_state.error:
                  error_details = current_op_state.error
-                 logger.error(f"Veo operation {operation_name_for_log} finished WITH FAILED status for prompt '{actual_prompt_string[:80]}...'. Error: {error_details}. (Polling took {polling_duration:.2f}s)")
+                 logger.error(f"Veo operation {operation_name_for_log} finished WITH FAILED status for prompt '{prompt_text[:80]}...'. Error: {error_details}. (Polling took {polling_duration:.2f}s)")
             elif current_op_state is None: # Polling loop broke
-                logger.error(f"Veo operation FAILED during polling for prompt '{actual_prompt_string[:80]}...'.")
+                logger.error(f"Veo operation FAILED during polling for prompt '{prompt_text[:80]}...'.")
             else: # Final state is unexpected
                  done_status = getattr(current_op_state, 'done', 'N/A')
                  error_status = getattr(current_op_state, 'error', 'N/A')
-                 logger.warning(f"Veo operation {operation_name_for_log} finished in unexpected state (Done: {done_status}, Error: {error_status}) for prompt '{actual_prompt_string[:80]}...'")
+                 logger.warning(f"Veo operation {operation_name_for_log} finished in unexpected state (Done: {done_status}, Error: {error_status}) for prompt '{prompt_text[:80]}...'")
 
 
             logger.debug(f"Sleeping {VIDEO_GENERATION_SLEEP_SECONDS}s before starting next video generation.")
             time.sleep(VIDEO_GENERATION_SLEEP_SECONDS)
 
         except google_exceptions.ResourceExhausted as quota_error:
-            logger.error(f"Veo Quota Exceeded starting text-to-video generation for prompt '{actual_prompt_string[:80]}...': {quota_error}. Sleeping {VIDEO_GENERATION_QUOTA_SLEEP_SECONDS}s.")
+            logger.error(f"Veo Quota Exceeded starting text-to-video generation for prompt '{prompt_text[:80]}...': {quota_error}. Sleeping {VIDEO_GENERATION_QUOTA_SLEEP_SECONDS}s.")
             time.sleep(VIDEO_GENERATION_QUOTA_SLEEP_SECONDS)
             # Skip to next prompt
 
         except google_exceptions.FailedPrecondition as fp_error:
              # Catch potential permission/allowlist errors specifically
-             logger.error(f"Veo Failed Precondition starting text-to-video for prompt '{actual_prompt_string[:80]}...': {fp_error}. Check project permissions/allowlists.")
+             logger.error(f"Veo Failed Precondition starting text-to-video for prompt '{prompt_text[:80]}...': {fp_error}. Check project permissions/allowlists.")
              time.sleep(VIDEO_GENERATION_ERROR_SLEEP_SECONDS)
 
         except Exception as e:
-            logger.error(f"Unexpected error during Veo text-to-video setup/start for prompt '{actual_prompt_string[:80]}...': {e}", exc_info=True)
+            logger.error(f"Unexpected error during Veo text-to-video setup/start for prompt '{prompt_text[:80]}...': {e}", exc_info=True)
             logger.debug(f"Sleeping {VIDEO_GENERATION_ERROR_SLEEP_SECONDS}s after error.")
             time.sleep(VIDEO_GENERATION_ERROR_SLEEP_SECONDS)
             # Skip to next prompt
@@ -906,7 +868,7 @@ def generate_video_clips_node(state: AgentState) -> Dict[str, Any]:
     node_duration = time.time() - node_start_time
     logger.info(f"--- Video Clips Node (Text-to-Video) Summary ---")
     logger.info(f"  Duration: {node_duration:.2f}s")
-    logger.info(f"  Prompts attempted: {len(details_to_animate)}")
+    logger.info(f"  Prompts attempted: {len(prompts_to_animate)}")
     logger.info(f"  Videos successfully generated: {len(newly_generated_videos)}")
     logger.info(f"  Total video assets now: {len(all_video_assets)}")
 
@@ -976,32 +938,32 @@ def generate_image_cloudflare(prompt: str, width: int = 768, height: int = 768, 
 # --- End Cloudflare helper function ---
 # (Make sure imports are present: time, random, io, requests, google_exceptions, Image from PIL)
 
-# Corrected generate_visuals_node
 
 def generate_visuals_node(state: AgentState) -> Dict[str, Any]:
     """
-    Generates images using the configured Imagen model, reading prompts
-    from visual_prompt_details and storing details with the asset.
+    Generates images using the configured Imagen model with appropriate sleep,
+    error handling, and Cloudflare fallback.
     """
     node_start_time = time.time()
     logger.info(f"--- Generate Visuals Node (Revision: {state.get('visual_revision_number', 0)}) ---")
-    # --- Read from visual_prompt_details ---
-    prompt_details_list = state.get("visual_prompt_details") or [] # This is the LIST of dicts
+    prompts = state.get("visual_generation_prompts")
     current_assets = state.get("generated_visual_assets") or []
 
-    if not prompt_details_list:
-        logger.warning("No visual prompt details provided.")
-        return {"generated_visual_assets": current_assets}
+    if not prompts:
+        logger.warning("No visual generation prompts provided.")
+        return {"generated_visual_assets": current_assets} # Return existing assets
 
     # --- Check if primary Imagen model is available ---
-    global imagen_model # Ensure it's accessible
+    global imagen_model
     primary_model_available = False
     if 'imagen_model' in globals() and imagen_model is not None:
         primary_model_available = True
     else:
         logger.error(f"Primary Imagen model ({VERTEX_IMAGEN_MODEL}) not initialized.")
+        # Check if fallback is possible
         if not cloudflare_account_id or not cloudflare_api_token:
              logger.error("Imagen model unavailable AND Cloudflare fallback disabled. Cannot generate visuals.")
+             # Return error to potentially stop the loop gracefully
              return {
                  "generated_visual_assets": current_assets,
                  "error": "Primary image generation model unavailable and fallback disabled."
@@ -1019,8 +981,12 @@ def generate_visuals_node(state: AgentState) -> Dict[str, Any]:
         "aspect_ratio": IMAGE_GENERATION_ASPECT_RATIO,
         "add_watermark": IMAGE_GENERATION_WATERMARK,
     }
+    # Conditionally add seed and negative prompt
     if IMAGE_GENERATION_SEED is not None and not IMAGE_GENERATION_WATERMARK:
-        generation_params["seed"] = IMAGE_GENERATION_SEED
+        generation_params["seed"] = IMAGE_GENERATION_SEED # Or use random.randint(0, 2**31 - 1) per call if SEED is None
+    elif IMAGE_GENERATION_WATERMARK:
+        logger.warning("Watermark is enabled, seed parameter will be ignored by Imagen.")
+
     if IMAGE_GENERATION_NEGATIVE_PROMPT:
         generation_params["negative_prompt"] = IMAGE_GENERATION_NEGATIVE_PROMPT
 
@@ -1029,35 +995,17 @@ def generate_visuals_node(state: AgentState) -> Dict[str, Any]:
     fallback_attempts = 0
     fallback_successes = 0
 
-    # --- CORRECTED Loop through prompt detail OBJECTS ---
-    num_prompts_to_process = len(prompt_details_list)
-    # Iterate through the list, getting the dictionary object each time
-    for i, prompt_details in enumerate(prompt_details_list):
-        # --- Extract the actual prompt string from the dictionary ---
-        actual_prompt_string = prompt_details.get("prompt")
-
-        # --- Check if prompt string is valid ---
-        if not actual_prompt_string or not isinstance(actual_prompt_string, str):
-            logger.warning(f"Skipping item {i+1} due to missing or invalid 'prompt' string in details: {prompt_details}")
-            failed_generations += 1 # Count as failed if prompt is bad
-            continue
-
-        # --- CORRECTED Check if already generated ---
-        # Compare the current prompt string to the prompt string stored within existing assets
-        prompt_already_generated = False
-        for asset in current_assets:
-            # Check if the asset has the prompt_details structure and compare the prompt strings
-            if asset.get("prompt_details", {}).get("prompt") == actual_prompt_string:
-                prompt_already_generated = True
-                break # Found a match, no need to check further
-
-        if prompt_already_generated:
-             # Use the extracted actual_prompt_string for logging
-             logger.info(f"Skipping prompt already generated in a previous revision: '{actual_prompt_string[:80]}...'")
+    # --- Loop through prompts ---
+    num_prompts_to_process = len(prompts)
+    for i, prompt_text in enumerate(prompts):
+        # Skip if already generated in a previous visual revision loop for this task run
+        # Note: This check assumes prompts don't change between visual revisions.
+        # A more robust check might involve comparing image URIs if prompts could be regenerated.
+        if any(asset.get("prompt_origin") == prompt_text for asset in current_assets):
+             logger.info(f"Skipping prompt already generated in a previous revision: '{prompt_text[:80]}...'")
              continue
 
-        # --- Use the extracted actual_prompt_string for logging ---
-        logger.info(f"Processing visual prompt {i+1}/{num_prompts_to_process}: '{actual_prompt_string[:80]}...'")
+        logger.info(f"Processing visual prompt {i+1}/{num_prompts_to_process}: '{prompt_text[:80]}...'")
 
         imagen_succeeded = False
         gcs_uri = None
@@ -1068,72 +1016,115 @@ def generate_visuals_node(state: AgentState) -> Dict[str, Any]:
         # --- Attempt 1: Configured Imagen Model ---
         if primary_model_available:
             try:
+                # Use a random seed per image if main SEED is None and watermark is off
                 current_seed = generation_params.get("seed")
                 if current_seed is None and not IMAGE_GENERATION_WATERMARK:
-                    current_seed = random.randint(1, 2**31 - 1)
+                    current_seed = random.randint(1, 2**31 - 1) # Generate random seed
                     logger.debug(f"Using random seed for this prompt: {current_seed}")
                 else:
-                    current_seed = generation_params.get("seed")
+                     current_seed = generation_params.get("seed") # Use configured seed or None if watermark on
 
                 logger.info(f"Attempting Imagen generation ({VERTEX_IMAGEN_MODEL})...")
-                # *** Use the extracted actual_prompt_string ***
                 response = imagen_model.generate_images(
-                    prompt=actual_prompt_string, # Pass the correct string
-                    seed=current_seed,
-                    **{k:v for k,v in generation_params.items() if k != 'seed'}
+                    prompt=prompt_text,
+                    seed=current_seed, # Pass the determined seed
+                    **{k:v for k,v in generation_params.items() if k != 'seed'} # Pass other params except seed
                 )
                 prompt_duration = time.time() - prompt_start_time
                 logger.info(f"Imagen API call completed in {prompt_duration:.2f} seconds.")
 
-                # Check Response
-                if response and response.images:
-                     img_candidate = response.images[0]._pil_image
-                     if isinstance(img_candidate, PilImage.Image):
+                # --- Check Response ---
+                # Updated check based on SDK structure
+                if response and response.images: # Check if response and images list exist
+                     # Directly access the PIL image via the intended property if available
+                     # Assuming response.images[0] gives an object with a ._pil_image attribute
+                     # Or potentially just response.images[0] IS the PIL image? Need to confirm SDK structure.
+                     # Let's assume the ._pil_image attribute for now based on previous context.
+                     img_candidate = response.images[0]._pil_image # Access internal attribute
+
+                     if isinstance(img_candidate, PilImage.Image): # Check if it's a valid PIL Image
                         pil_image_object = img_candidate
                         model_used = VERTEX_IMAGEN_MODEL
                         imagen_succeeded = True
                         successful_generations += 1
                         logger.info(f" --> Imagen generation successful.")
                      else:
-                        logger.warning(f"Imagen response for prompt {i+1} did not contain a valid PIL Image.")
+                        logger.warning(f"Imagen response for prompt {i+1} did not contain a valid PIL Image object.")
                         failed_generations += 1
                 else:
                     safety_ratings = getattr(response, 'safety_ratings', 'N/A')
-                    logger.warning(f"Imagen returned no image(s) for prompt {i+1}. Safety Ratings: {safety_ratings}")
-                    failed_generations += 1
+                    logger.warning(f"Imagen returned no image(s) for prompt {i+1}. Possible safety filter? Ratings: {safety_ratings}")
+                    failed_generations += 1 # Count as failed if no image returned
 
-                logger.info(f"Sleeping {IMAGE_GENERATION_SLEEP_SECONDS}s after Imagen attempt.")
+                # --- Sleep AFTER Imagen Success or known failure (but NOT Quota Error) ---
+                # Use the configured long sleep time
+                logger.info(f"Sleeping {IMAGE_GENERATION_SLEEP_SECONDS}s after successful Imagen attempt.")
                 time.sleep(IMAGE_GENERATION_SLEEP_SECONDS)
+
 
             except google_exceptions.ResourceExhausted as quota_error:
                 prompt_duration = time.time() - prompt_start_time
-                logger.error(f"Imagen Quota Exceeded for prompt {i+1} ('{actual_prompt_string[:50]}...') after {prompt_duration:.2f}s: {quota_error}. Sleeping {IMAGE_GENERATION_QUOTA_SLEEP_SECONDS}s.")
+                logger.error(f"Imagen Quota Exceeded for prompt {i+1} after {prompt_duration:.2f}s: {quota_error}. Sleeping {IMAGE_GENERATION_QUOTA_SLEEP_SECONDS}s.")
                 failed_generations += 1
                 time.sleep(IMAGE_GENERATION_QUOTA_SLEEP_SECONDS)
-                continue # Skip to next prompt detail
+                # DO NOT attempt fallback immediately after quota error. Skip to next prompt.
+                continue
 
             except google_exceptions.InvalidArgument as arg_error:
-                 prompt_duration = time.time() - prompt_start_time
-                 logger.error(f"Imagen Invalid Argument for prompt {i+1} ('{actual_prompt_string[:50]}...') after {prompt_duration:.2f}s: {arg_error}. Will attempt fallback.")
-                 failed_generations += 1
-                 time.sleep(IMAGE_GENERATION_ERROR_SLEEP_SECONDS)
+                prompt_duration = time.time() - prompt_start_time
+                logger.error(f"Imagen Invalid Argument for prompt {i+1} after {prompt_duration:.2f}s: {arg_error}. Will attempt fallback.")
+                failed_generations += 1
+                time.sleep(IMAGE_GENERATION_ERROR_SLEEP_SECONDS) # Shorter sleep before fallback
 
             except Exception as e:
                 prompt_duration = time.time() - prompt_start_time
-                logger.error(f"Unexpected Imagen Error for prompt {i+1} ('{actual_prompt_string[:50]}...') after {prompt_duration:.2f}s: {e}", exc_info=True)
-                logger.warning("Will attempt fallback.")
+                logger.error(f"Unexpected Imagen Error for prompt {i+1} after {prompt_duration:.2f}s: {e}", exc_info=True)
+                logger.warning("Will attempt fallback due to unexpected Imagen error.")
                 failed_generations += 1
-                time.sleep(IMAGE_GENERATION_ERROR_SLEEP_SECONDS)
+                time.sleep(IMAGE_GENERATION_ERROR_SLEEP_SECONDS) # Shorter sleep before fallback
+
         else:
-             logger.info(f"Primary Imagen model not loaded, proceeding directly to fallback for prompt {i+1}.")
+            # If primary model wasn't loaded, log it and proceed to fallback
+            logger.info(f"Primary Imagen model not loaded, proceeding directly to fallback for prompt {i+1}.")
 
 
-        # --- Attempt 2: Cloudflare Fallback ---
-        if not imagen_succeeded and cloudflare_account_id and cloudflare_api_token:
+        # --- Attempt 2: Cloudflare Fallback (if Imagen failed for reasons OTHER than quota) ---
+        if not imagen_succeeded and primary_model_available: # Only fallback if Imagen was tried and failed (non-quota)
              fallback_attempts += 1
              logger.info("Attempting Cloudflare fallback...")
-             # *** Use the extracted actual_prompt_string ***
-             cloudflare_image_bytes = generate_image_cloudflare(actual_prompt_string) # Pass the correct string
+             cloudflare_image_bytes = generate_image_cloudflare(prompt_text) # Use helper
+
+             if cloudflare_image_bytes:
+                 try:
+                     fallback_image = PilImage.open(BytesIO(cloudflare_image_bytes))
+                     if isinstance(fallback_image, PilImage.Image): # Verify conversion
+                         pil_image_object = fallback_image
+                         model_used = CLOUDFLARE_FALLBACK_MODEL # Note the fallback model used
+                         fallback_successes += 1
+                         # Overwrite failed generation count since fallback worked
+                         failed_generations -= 1 # Decrement failure count
+                         successful_generations +=1 # Increment success count
+                         logger.info(f" --> Cloudflare fallback successful.")
+                     else:
+                         logger.warning(f"Could not convert Cloudflare response to valid PIL Image for prompt {i+1}.")
+                         # Failed generations count remains incremented from Imagen failure
+
+                 except Exception as conversion_err:
+                     logger.error(f"Error converting Cloudflare image bytes to PIL Image: {conversion_err}", exc_info=True)
+                     # Failed generations count remains incremented
+             else:
+                 logger.warning(f" --> Cloudflare fallback also failed for prompt {i+1}.")
+                 # Failed generations count remains incremented
+
+             # Sleep after fallback attempt (success or fail)
+             logger.debug(f"Sleeping {CLOUDFLARE_FALLBACK_SLEEP_SECONDS}s after fallback attempt.")
+             time.sleep(CLOUDFLARE_FALLBACK_SLEEP_SECONDS)
+
+        elif not primary_model_available: # Case where Imagen wasn't available from the start
+             fallback_attempts += 1
+             logger.info("Attempting Cloudflare fallback (primary model was unavailable)...")
+             # (Duplicate Cloudflare logic for clarity - could be refactored)
+             cloudflare_image_bytes = generate_image_cloudflare(prompt_text)
              if cloudflare_image_bytes:
                  try:
                      fallback_image = PilImage.open(BytesIO(cloudflare_image_bytes))
@@ -1141,51 +1132,58 @@ def generate_visuals_node(state: AgentState) -> Dict[str, Any]:
                          pil_image_object = fallback_image
                          model_used = CLOUDFLARE_FALLBACK_MODEL
                          fallback_successes += 1
-                         failed_generations -= 1
-                         successful_generations += 1
+                         successful_generations +=1 # Count as success
                          logger.info(f" --> Cloudflare fallback successful.")
                      else:
                          logger.warning(f"Could not convert Cloudflare response to valid PIL Image.")
+                         failed_generations += 1 # Count as failure if conversion fails
                  except Exception as conversion_err:
-                     logger.error(f"Error converting Cloudflare image bytes: {conversion_err}", exc_info=True)
+                     logger.error(f"Error converting Cloudflare image bytes to PIL Image: {conversion_err}", exc_info=True)
+                     failed_generations += 1
              else:
-                 logger.warning(f" --> Cloudflare fallback also failed for prompt {i+1}.")
+                 logger.warning(f" --> Cloudflare fallback also failed.")
+                 failed_generations += 1
 
              logger.debug(f"Sleeping {CLOUDFLARE_FALLBACK_SLEEP_SECONDS}s after fallback attempt.")
              time.sleep(CLOUDFLARE_FALLBACK_SLEEP_SECONDS)
 
-        # --- Save the resulting image ---
+
+        # --- Save the resulting image (if generation succeeded with either model) ---
         if pil_image_object and model_used:
             try:
                 rev_num = state.get('visual_revision_number', 0)
-                # Use the extracted actual_prompt_string for the slug
-                prompt_slug = re.sub(r'\W+', '_', actual_prompt_string[:30]).strip('_')
-                blob_name = f"generated/game_{game_pk}/img_{timestamp}_rev{rev_num}_{i+1:02d}_{prompt_slug}.jpg"
+                # Use a more descriptive blob name
+                prompt_slug = re.sub(r'\W+', '_', prompt_text[:30]).strip('_') # Basic slug from prompt
+                blob_name = f"generated/game_{game_pk}/img_{timestamp}_rev{rev_num}_{i+1:02d}_{prompt_slug}.jpg" # Use JPEG
+
+                # Use the helper function to save
                 gcs_uri = save_image_to_gcs(pil_image_object, GCS_BUCKET_GENERATED_ASSETS, blob_name)
 
                 if gcs_uri:
-                    # *** STORE THE original prompt_details DICTIONARY ***
                     newly_generated_assets.append({
-                        "prompt_details": prompt_details, # Store the whole object from the list
+                        "prompt_origin": prompt_text,
                         "image_uri": gcs_uri,
                         "model_used": model_used,
                         "type": "generated_image",
-                        "revision": rev_num
+                        "revision": rev_num # Store revision number with the asset
                     })
+                    # Success already counted when pil_image_object was set
                 else:
-                     logger.warning(f"Failed to save generated image to GCS for prompt {i+1}.")
+                     logger.warning(f"Failed to save generated image to GCS for prompt {i+1} (model: {model_used}).")
+                     # If saving fails, we should probably decrement success and increment failure
                      successful_generations -= 1
                      failed_generations += 1
 
             except Exception as save_err:
                  logger.error(f"Failed to save image from {model_used} for prompt {i+1} to GCS: {save_err}", exc_info=True)
-                 if model_used == VERTEX_IMAGEN_MODEL or model_used == CLOUDFLARE_FALLBACK_MODEL:
-                    successful_generations -= 1
+                 successful_generations -= 1
                  failed_generations += 1
+        # No else needed here, failure count is handled within the try/except blocks
+
 
     # --- Node Summary ---
     all_generated_assets = current_assets + newly_generated_assets
-    current_revision = state.get('visual_revision_number', 0)
+    current_revision = state.get('visual_revision_number', 0) # Revision number before incrementing
     node_duration = time.time() - node_start_time
     logger.info(f"--- Visuals Node (Rev: {current_revision}) Summary ---")
     logger.info(f"  Duration: {node_duration:.2f}s")
@@ -1198,71 +1196,67 @@ def generate_visuals_node(state: AgentState) -> Dict[str, Any]:
 
     output_state = {
         "generated_visual_assets": all_generated_assets,
+         # Increment revision number *before* returning from the node
         "visual_revision_number": current_revision + 1
     }
+    # Optional: Check if ALL prompts failed despite retries/fallbacks
+    # if successful_generations == 0 and num_prompts_to_process > 0:
+    #    logger.error("All visual generation prompts failed.")
+    #    output_state["error"] = "Failed to generate any visual assets for the provided prompts."
 
     return output_state
 
 
-# Helper function (optional but good practice for critique node)
-def format_asset_for_critique(asset):
-    if asset.get('type') == 'generated_image' or asset.get('type') == 'generated_video':
-        prompt_details = asset.get('prompt_details', {})
-        prompt = prompt_details.get('prompt', 'N/A')
-        uri = asset.get('image_uri') or asset.get('video_uri', 'N/A')
-        trigger = prompt_details.get('triggering_sentences', ['N/A'])
-        return f"- Prompt: '{prompt[:80]}...' (Trigger: '{', '.join(trigger)}') -> URI: {uri}"
-    else:
-        # Handle static assets if they are included in critique
-        return f"- Static Asset: {asset.get('image_uri', 'N/A')} (Origin: {asset.get('search_term_origin', 'N/A')})"
-
-
+# Remember to have the corrected save_image_to_gcs function available
+# def save_image_to_gcs(image: Image.Image, bucket_name: str, blob_name: str) -> Optional[str]: ...
 VISUAL_CRITIQUE_PROMPT = """
-You are a demanding visual producer reviewing generated images/videos for an MLB highlight segment.
+You are a demanding visual producer reviewing generated images for an MLB highlight segment.
 The script is:
 --- SCRIPT ---
 {script}
 --- END SCRIPT ---
 
-The following visual assets were generated or retrieved:
---- VISUAL ASSETS (by original prompt or search term) ---
-{generated_assets_summary}
---- END VISUAL ASSETS ---
+The following images were generated based on specific prompts:
+--- GENERATED IMAGES (by original prompt) ---
+{generated_images_summary}
+--- END GENERATED IMAGES ---
 
-Critique the generated visuals (images/videos):
-1.  **Coverage & Relevance:** Do the visuals adequately cover the key moments described in the script, considering the *triggering sentences* noted for generated assets? Are there obvious gaps? Does each generated asset reasonably match its intended prompt and the script moment?
-2.  **Quality/Action:** Are the images/videos clear? Do they convey the intended action or mood (even if static)? Judge relevance and basic quality.
-3.  **Suggestions:** If improvements are needed, suggest *specific* new prompts or modifications focused on script coverage gaps. What's missing? (e.g., "Need a visual for the sentence 'Host 2: The pitcher looks frustrated...' showing a pitcher's reaction", "Generate a shot focusing on the runner sliding").
+Critique the generated images:
+1.  **Coverage:** Do the images adequately cover the key moments described in the script? Are there obvious gaps?
+2.  **Relevance:** Does each image reasonably match its intended prompt and the corresponding script moment?
+3.  **Quality/Action:** Are the images clear? Do they convey the intended action or mood (even if static)? (Note: Don't expect perfect photorealism, but judge relevance).
+4.  **Suggestions:** If improvements are needed, suggest *specific* new prompts or modifications. What's missing? (e.g., "Need an image of the runner sliding into second base", "Generate a shot focusing on the pitcher's frustrated reaction after the homer").
 
-If the current set of visuals is sufficient and adequately covers the script, respond ONLY with "Visuals look sufficient."
+If the current set of images is sufficient and adequately covers the script, respond ONLY with "Visuals look sufficient."
 Otherwise, provide concise, bullet-point feedback focusing on gaps and specific prompts needed for the *next* generation round.
 """
 
 def critique_visuals_node(state: AgentState) -> Dict[str, Any]:
-    """Critiques the generated visual assets, considering trigger sentences."""
+    """Critiques the generated visual assets."""
     logger.info("--- Critique Visuals Node ---")
     script = state.get("draft")
-    # Combine generated images and videos for critique if desired, or just critique images
-    generated_images = state.get("generated_visual_assets") or []
-    generated_videos = state.get("generated_video_assets") or []
-    # Let's critique both together for now
-    all_generated_assets = generated_images + generated_videos
+    generated_assets = state.get("generated_visual_assets")
 
-    if not script or not all_generated_assets:
+    if not script or not generated_assets:
         logger.warning("Script or generated visuals missing, cannot critique.")
-        return {"visual_critique": "Visuals look sufficient."} # Default if nothing to critique
+        # If visuals are missing, maybe request generation? Or just mark as sufficient?
+        # Let's assume if assets are missing, we can't proceed meaningfully.
+        return {"visual_critique": "Visuals look sufficient."} # Default to sufficient if no assets generated
 
-    # Create a summary using the helper
-    summary_lines = [format_asset_for_critique(asset) for asset in all_generated_assets]
-    generated_assets_summary = "\n".join(summary_lines)
+    # Create a summary for the prompt
+    summary_lines = []
+    for asset in generated_assets:
+         summary_lines.append(f"- Prompt: '{asset.get('prompt_origin', 'N/A')[:80]}...' -> URI: {asset.get('image_uri', 'N/A')}")
+    generated_images_summary = "\n".join(summary_lines)
 
     prompt = VISUAL_CRITIQUE_PROMPT.format(
         script=script,
-        generated_assets_summary=generated_assets_summary
+        generated_images_summary=generated_images_summary
     )
 
     try:
          logger.info("Generating critique for visual assets...")
+         # Use the standard model
          response = model.invoke(prompt)
          critique = response.content.strip()
          logger.info(f"Visual Critique: {critique}")
@@ -1270,8 +1264,8 @@ def critique_visuals_node(state: AgentState) -> Dict[str, Any]:
 
     except Exception as e:
          logger.error(f"Error generating visual critique: {e}", exc_info=True)
+         # Default to sufficient on error to avoid infinite loop
          return {"visual_critique": "Visuals look sufficient.", "error": "Failed to generate visual critique."}
-    
 
 def should_continue_visuals(state: AgentState) -> str:
     """Determines whether to regenerate visuals or finalize."""
@@ -2611,8 +2605,7 @@ if __name__ == "__main__":
         "all_image_assets": [],
         "all_video_assets": [],
         # --- Visual Generation Fields ---
-        # "visual_generation_prompts": [],
-        "visual_prompt_details": [],
+        "visual_generation_prompts": [],
         "generated_visual_assets": [], # Initialize as empty list
         "visual_critique": None,
         "visual_revision_number": 0,
