@@ -605,6 +605,10 @@ def get_narrative_context_vector_search(query_text: str, game_pk: Optional[int] 
         return []
 
 
+
+
+
+
 # --- Refined Retriever Logic ---
 # Define Pydantic models for structured LLM output for planning retrieval
 class BQQuery(BaseModel):
@@ -1532,275 +1536,453 @@ def upload_blob(local_file_path: str, gcs_uri: str):
         return None
 
 
-# --- NEW Node Definition ---
+# --- Helper: LLM Call for Timeline Generation ---
+# Define Pydantic model for the timeline structure
+class VisualSegment(BaseModel):
+    start_time_s: float = Field(..., description="Start time of the visual segment in seconds.")
+    end_time_s: float = Field(..., description="End time of the visual segment in seconds.")
+    visual_uri: str = Field(..., description="GCS URI of the visual asset to display for this segment.")
+    rationale: Optional[str] = Field(None, description="Brief explanation for choosing this visual.")
+
+class VisualTimeline(BaseModel):
+    timeline: List[VisualSegment] = Field(..., description="List of timed visual segments covering the script.")
+
+VISUAL_TIMELINE_PROMPT = """
+You are a video editor creating a timeline for an MLB highlight recap. Your goal is to match visual assets to the spoken dialogue based on timing and content.
+
+Dialogue Script:
+--- SCRIPT START ---
+{script}
+--- SCRIPT END ---
+
+Word Timestamps (List of {{'word': str, 'start_time_s': float, 'end_time_s': float}}): # <-- Escaped braces
+--- TIMESTAMPS START ---
+{timestamps_json}
+--- TIMESTAMPS END ---
+
+Available Visual Assets (List of {{'uri': str, 'type': str, 'metadata': str/dict}}): # <-- Escaped braces
+--- ASSETS START ---
+{assets_json}
+--- ASSETS END ---
+
+Default Visual URI (use if no specific asset matches): {default_visual_uri}
+
+Instructions:
+1.  Analyze the script and timestamps to identify logical segments of the dialogue (e.g., discussion of a specific player, a key play, general analysis).
+2.  For each segment, determine its start and end time in seconds using the word timestamps.
+3.  From the 'Available Visual Assets', select the *most relevant* visual asset URI for that dialogue segment.
+    *   Prioritize specific headshots (type='headshot') or logos (type='logo') when players or teams are explicitly mentioned. Match using 'metadata' (player/team name).
+    *   Use generated videos (type='generated_video') or images (type='generated_image') for descriptions of actions or general scenes. Match based on the 'metadata' (which contains the source prompt for generated assets).
+    *   If multiple assets seem relevant, choose the one whose metadata best matches the dialogue content in the time segment.
+    *   If *no* specific asset is relevant for a segment, use the 'Default Visual URI'.
+4.  Ensure the timeline covers the *entire* duration of the script based on the timestamps. Segments should be contiguous (end time of one matches start time of the next).
+5.  Output ONLY a valid JSON object conforming to the 'VisualTimeline' schema, containing a 'timeline' list of 'VisualSegment' objects.
+
+JSON Output (VisualTimeline schema):
+"""
+
+def generate_visual_timeline_llm(
+    script: str,
+    word_timestamps: List[Dict[str, Any]],
+    all_visual_assets: List[Dict[str, Any]],
+    default_visual_uri: str,
+    model_name: str = "gemini-2.0-flash" # Allow model selection
+    ) -> Optional[List[Dict[str, Any]]]:
+    """Calls LLM to generate the visual-to-audio timeline."""
+    logger.info("Generating visual timeline using LLM...")
+    if not script or not word_timestamps or not all_visual_assets:
+        logger.error("Missing script, timestamps, or assets for timeline generation.")
+        return None
+
+    # Prepare inputs for the prompt
+    try:
+        # Truncate timestamps if too long for prompt limits (optional)
+        max_timestamps = 500 # Example limit
+        timestamps_json = json.dumps(word_timestamps[:max_timestamps], indent=2)
+        if len(word_timestamps) > max_timestamps:
+             logger.warning(f"Truncated timestamps list from {len(word_timestamps)} to {max_timestamps} for LLM prompt.")
+
+        # Simplify asset list for the prompt
+        assets_for_prompt = []
+        for asset in all_visual_assets:
+            uri = asset.get("image_uri") or asset.get("video_uri")
+            asset_type = asset.get("type", "unknown")
+            metadata = ""
+            if asset_type in ["headshot", "logo"]:
+                metadata = asset.get("entity_name", "")
+            elif asset_type in ["generated_image", "generated_video"]:
+                metadata = asset.get("prompt_origin") or asset.get("source_prompt", "")
+
+            if uri: # Only include assets with a URI
+                 assets_for_prompt.append({
+                    "uri": uri,
+                    "type": asset_type,
+                    "metadata": str(metadata)[:150] # Keep metadata concise
+                })
+
+        # Truncate assets if too long (optional)
+        max_assets = 50 # Example limit
+        assets_json = json.dumps(assets_for_prompt[:max_assets], indent=2)
+        if len(assets_for_prompt) > max_assets:
+             logger.warning(f"Truncated assets list from {len(assets_for_prompt)} to {max_assets} for LLM prompt.")
+
+        prompt = VISUAL_TIMELINE_PROMPT.format(
+            script=script[:8000], # Limit script length if necessary
+            timestamps_json=timestamps_json,
+            assets_json=assets_json,
+            default_visual_uri=default_visual_uri
+        )
+    except Exception as e:
+        logger.error(f"Error preparing data for LLM timeline prompt: {e}", exc_info=True)
+        return None
+
+    # Initialize the specific LLM for this task
+    try:
+        # Assuming 'structured_output_model' is initialized globally, or initialize here
+        # Use a model capable of structured output, like Gemini 1.5 Flash or Pro
+        timeline_model = ChatVertexAI(model_name=model_name, project=GCP_PROJECT_ID, location=GCP_LOCATION, temperature=0.1)
+        # Bind the Pydantic schema
+        structured_llm = timeline_model.with_structured_output(VisualTimeline)
+        logger.info(f"Calling LLM ({model_name}) for structured timeline output...")
+        response_timeline: VisualTimeline = structured_llm.invoke(prompt)
+
+        if response_timeline and isinstance(response_timeline, VisualTimeline) and response_timeline.timeline:
+            # Convert Pydantic models back to dicts for easier use downstream
+            timeline_dicts = [segment.dict() for segment in response_timeline.timeline]
+            logger.info(f"LLM successfully generated a timeline with {len(timeline_dicts)} segments.")
+            # Basic validation (optional)
+            if not timeline_dicts:
+                 logger.warning("LLM returned an empty timeline list.")
+                 return None
+            # Check if first start time is near 0 and segments are mostly contiguous
+            # ... (add more validation if needed) ...
+            return timeline_dicts
+        else:
+            logger.error("LLM did not return a valid VisualTimeline object or the timeline was empty.")
+            return None
+
+    except Exception as e:
+        logger.error(f"Error calling LLM or parsing timeline response: {e}", exc_info=True)
+        return None
+
+
+# --- OVERHAULED assemble_video_node ---
 def assemble_video_node(state: AgentState) -> Dict[str, Any]:
     """
-    Assembles the final video using MoviePy from generated assets by
-    concatenating visuals and adding the main audio track.
+    Assembles the final video using MoviePy, synchronizing visuals
+    to audio based on word timestamps via an LLM-generated timeline.
     """
     node_start_time = time.time()
-    logger.info("--- Assemble Video Node (Using Concatenation + Audio Attachment) ---")
+    logger.info("--- Assemble Video Node (Timestamp Synchronization) ---")
 
     # 1. Get required assets from state
     audio_uri = state.get("generated_audio_uri")
+    word_timestamps = state.get("word_timestamps") or []
     all_image_assets = state.get("all_image_assets") or []
     all_video_assets = state.get("all_video_assets") or []
-    # word_timestamps = state.get("word_timestamps") or [] # Not used in simple logic yet
+    script = state.get("generated_content") # Need the script text
     game_pk = state.get("game_pk", "unknown_game")
 
-    # Configuration
-    output_gcs_bucket = "mlb_final_videos" # Define your final output bucket
-    output_video_prefix = "final_recap/"
-    target_width = 1280
-    target_height = 720
-    target_fps = 24 # Standard FPS
+    # Combine all visual assets for the LLM
+    all_visual_assets = all_image_assets + all_video_assets
+
+    # --- Configuration ---
+    TARGET_WIDTH = 1280
+    TARGET_HEIGHT = 720
+    TARGET_FPS = 24
+    OUTPUT_GCS_BUCKET = "mlb_final_videos" # Ensure this bucket exists
+    OUTPUT_VIDEO_PREFIX = "final_recap_synced/"
+    VERTEX_LLM_MODEL_FOR_MAPPING = "gemini-2.0-flash" # Or gemini-1.5-pro-001 for complex cases
+    # *** IMPORTANT: Set a real default image URI in your GCS bucket ***
+    DEFAULT_VISUAL_GCS_URI = "gs://mlb_logos/Major_League_Baseball_MLB_transparent_logo.png" # Example default
 
     # Basic checks
-    if not audio_uri:
-        return {"error": "Missing generated audio URI for video assembly."}
-    available_visual_assets = all_image_assets + all_video_assets
-    if not available_visual_assets:
-         return {"error": "Missing visual assets (images/videos) for video assembly."}
+    if not audio_uri: return {"error": "Missing generated audio URI."}
+    if not word_timestamps: return {"error": "Missing word timestamps for synchronization."}
+    if not all_visual_assets: return {"error": "Missing visual assets."}
+    if not script: return {"error": "Missing dialogue script text."}
+    if not DEFAULT_VISUAL_GCS_URI or not DEFAULT_VISUAL_GCS_URI.startswith("gs://"):
+         return {"error": "Invalid or missing DEFAULT_VISUAL_GCS_URI configuration."}
 
-    # 2. Create Temporary Directory & Initialize Lists
-    temp_dir = tempfile.mkdtemp(prefix="video_assembly_")
-    logger.info(f"Created temporary directory for video assembly: {temp_dir}")
+    # --- Initialize ---
+    temp_dir = tempfile.mkdtemp(prefix="video_assembly_sync_")
+    logger.info(f"Created temporary directory: {temp_dir}")
     local_files_to_clean = []
-    processed_visual_clips = [] # List to hold successfully processed MoviePy clips
+    processed_moviepy_clips = [] # List to hold MoviePy clips with start times
+    opened_video_sources = [] # Keep track of VideoFileClip sources to close
     main_audio_clip = None
     final_video_no_audio = None
     final_video = None
     final_video_gcs_uri = None
 
     try:
-        # 3. Download and Load Main Audio
+        # 2. Download and Load Main Audio
         logger.info(f"Downloading main audio: {audio_uri}")
         local_audio_path = download_gcs_blob(audio_uri, temp_dir)
-        if not local_audio_path:
-            raise ValueError(f"Failed to download audio file: {audio_uri}")
+        if not local_audio_path: raise ValueError(f"Failed to download audio: {audio_uri}")
         local_files_to_clean.append(local_audio_path)
-
         main_audio_clip = AudioFileClip(local_audio_path)
         total_audio_duration = main_audio_clip.duration
         logger.info(f"Loaded audio. Duration: {total_audio_duration:.2f} seconds.")
-        if total_audio_duration <= 0:
-            raise ValueError("Main audio clip has zero or negative duration.")
+        if total_audio_duration <= 0: raise ValueError("Audio clip has zero duration.")
 
-        # 4. Prepare Visual Assets (Sequencing Logic Here)
-        # --- Using simple equal duration split (Placeholder Logic) ---
-        num_visuals = len(available_visual_assets)
-        duration_per_visual = total_audio_duration / num_visuals
-        logger.info(f"Using simple equal duration split for {num_visuals} visuals.")
-        logger.info(f"Target duration per visual: {duration_per_visual:.2f}s")
+        # 3. Generate the Visual Timeline using LLM
+        visual_timeline = generate_visual_timeline_llm(
+            script=script,
+            word_timestamps=word_timestamps,
+            all_visual_assets=all_visual_assets,
+            default_visual_uri=DEFAULT_VISUAL_GCS_URI,
+            model_name=VERTEX_LLM_MODEL_FOR_MAPPING
+        )
 
-        if duration_per_visual <= 0.01: # Set a minimum practical duration
-            logger.warning(f"Calculated duration per visual ({duration_per_visual:.3f}s) is very short. Clamping to 0.1s.")
-            duration_per_visual = 0.1
+        if not visual_timeline:
+            # Fallback: Use default visual for the entire duration if timeline fails
+            logger.error("Failed to generate visual timeline. Falling back to default visual.")
+            visual_timeline = [{
+                "start_time_s": 0.0,
+                "end_time_s": total_audio_duration,
+                "visual_uri": DEFAULT_VISUAL_GCS_URI,
+                "rationale": "Fallback due to timeline generation error."
+            }]
+            # return {"error": "Failed to generate visual timeline from LLM."} # Alternative: stop here
 
-        random.shuffle(available_visual_assets) # Keep random order for now
+        # --- Download Default Visual (needed for fallback/gaps) ---
+        logger.info(f"Downloading default visual: {DEFAULT_VISUAL_GCS_URI}")
+        local_default_visual_path = download_gcs_blob(DEFAULT_VISUAL_GCS_URI, temp_dir)
+        if not local_default_visual_path: raise ValueError("Failed to download default visual.")
+        local_files_to_clean.append(local_default_visual_path)
+        # ---
 
-        # --- Loop through and process each visual asset ---
-        for i, asset in enumerate(available_visual_assets):
-            asset_uri = asset.get("image_uri") or asset.get("video_uri")
-            asset_type = asset.get("type", "unknown") # Get asset type hint
+        # 4. Process the Timeline and Create MoviePy Clips
+        logger.info(f"Processing {len(visual_timeline)} timeline segments...")
+        last_segment_end_time = 0.0
 
-            if not asset_uri:
-                logger.warning(f"Skipping asset entry {i+1} without URI: {asset}")
+        # --- Download all unique visual URIs first (optimization) ---
+        unique_uris = set(item['visual_uri'] for item in visual_timeline if item.get('visual_uri') != DEFAULT_VISUAL_GCS_URI)
+        local_path_map = {DEFAULT_VISUAL_GCS_URI: local_default_visual_path} # Start with default
+        logger.info(f"Downloading {len(unique_uris)} unique visual assets...")
+        for uri in unique_uris:
+            if uri and uri.startswith("gs://"):
+                 local_path = download_gcs_blob(uri, temp_dir)
+                 if local_path:
+                     local_path_map[uri] = local_path
+                     local_files_to_clean.append(local_path)
+                 else:
+                     logger.warning(f"Failed to download asset {uri}. Will use default.")
+            else:
+                logger.warning(f"Invalid URI found in timeline: {uri}. Will use default.")
+        logger.info("Asset download complete.")
+        # --- End Download Optimization ---
+
+
+        for i, segment in enumerate(visual_timeline):
+            start_time = segment.get('start_time_s', 0.0)
+            end_time = segment.get('end_time_s', 0.0)
+            visual_uri = segment.get('visual_uri')
+            rationale = segment.get('rationale', 'N/A')
+
+            # Use default if URI is invalid or missing from map (download failed)
+            if not visual_uri or visual_uri not in local_path_map:
+                logger.warning(f"Segment {i+1} ({start_time:.2f}-{end_time:.2f}s): URI '{visual_uri}' invalid or download failed. Using default. Rationale: {rationale}")
+                visual_uri = DEFAULT_VISUAL_GCS_URI # Fallback to default URI
+
+            local_visual_path = local_path_map[visual_uri] # Get local path from map
+
+            # --- Handle Potential Gaps ---
+            if start_time > last_segment_end_time + 0.1: # Allow small tolerance
+                gap_duration = start_time - last_segment_end_time
+                logger.warning(f"Filling gap between {last_segment_end_time:.2f}s and {start_time:.2f}s ({gap_duration:.2f}s) with default visual.")
+                try:
+                    gap_clip = (ImageClip(local_default_visual_path)
+                                .with_duration(gap_duration)
+                                .with_start(last_segment_end_time)
+                                .resized(height=TARGET_HEIGHT)
+                                )
+                    processed_moviepy_clips.append(gap_clip)
+                except Exception as gap_err:
+                     logger.error(f"Failed to create gap filler clip: {gap_err}")
+
+            # --- Create Clip for Current Segment ---
+            segment_duration = end_time - start_time
+            if segment_duration <= 0.01:
+                logger.warning(f"Segment {i+1} ({start_time:.2f}-{end_time:.2f}s) duration {segment_duration:.3f}s too short. Skipping.")
+                last_segment_end_time = max(last_segment_end_time, end_time) # Still update end time
                 continue
 
-            logger.info(f"Processing asset {i+1}/{num_visuals}: Type '{asset_type}', URI: {asset_uri}")
-            local_visual_path = download_gcs_blob(asset_uri, temp_dir)
-            if not local_visual_path:
-                logger.warning(f" -> Failed to download. Skipping.")
-                continue
-            local_files_to_clean.append(local_visual_path)
-
-            clip_to_add = None # Holds the final processed clip for this asset
-            temp_video_clip = None # Specific handle for VideoFileClip needing closing
-
+            logger.info(f"  Segment {i+1}: {start_time:.2f}s - {end_time:.2f}s ({segment_duration:.2f}s) -> {os.path.basename(local_visual_path)} (Rationale: {rationale})")
+            clip_to_add = None
             try:
-                # --- Create MoviePy Clip based on type ---
-                if asset_type == "generated_video" or asset_uri.lower().endswith((".mp4", ".mov", ".avi")):
-                    temp_video_clip = VideoFileClip(local_visual_path)
-                    # Ensure subclip duration doesn't exceed original or calculated duration
-                    actual_duration_to_use = min(temp_video_clip.duration, duration_per_visual)
-                    if actual_duration_to_use <= 0.01: # Check threshold
-                        logger.warning(f" -> Video subclip duration ({actual_duration_to_use:.3f}s) too short. Skipping.")
-                        temp_video_clip.close() # Close the opened clip
-                        continue
+                # Create MoviePy Clip based on file type
+                is_video = local_visual_path.lower().endswith((".mp4", ".mov", ".avi"))
+
+                if is_video:
+                    source_video_clip = VideoFileClip(local_visual_path)
+                    opened_video_sources.append(source_video_clip) # Track for closing
+                    # Clip duration is the *minimum* of the segment needed and the video's actual length
+                    actual_duration = min(source_video_clip.duration, segment_duration)
+                    if actual_duration < segment_duration:
+                         logger.warning(f"    Video clip ({source_video_clip.duration:.2f}s) is shorter than timeline segment ({segment_duration:.2f}s). Using actual video duration.")
+                    if actual_duration <= 0.01: # Check if subclip duration is valid
+                          logger.warning(f"    Video subclip duration ({actual_duration:.3f}s) too short. Skipping.")
+                          continue # Skip processing this segment
                     # Create the subclip
-                    clip_to_add = temp_video_clip.subclipped(0, actual_duration_to_use)
-                    logger.debug(f" -> Created VideoFileClip subclip, duration: {clip_to_add.duration:.2f}s")
-                    
+                    clip_to_add = source_video_clip.subclip(0, actual_duration)
 
-                elif asset_type in ["generated_image", "headshot", "logo"] or asset_uri.lower().endswith((".png", ".jpg", ".jpeg")):
-                    if duration_per_visual <= 0.01: # Check threshold
-                         logger.warning(f" -> Image duration ({duration_per_visual:.3f}s) too short. Skipping.")
-                         continue
-                    # Use with_duration for images
-                    clip_to_add = ImageClip(local_visual_path).with_duration(duration_per_visual)
-                    # Handle potential transparency in PNGs (important for 'compose' concatenation)
-                    if asset_uri.lower().endswith(".png"):
-                        clip_to_add = clip_to_add.with_is_mask(False) # Ensure it's not treated as only a mask
-                        if clip_to_add.mask is None: # If alpha channel exists but no mask object
-                             #clip_to_add = clip_to_add.make_loopable() # Sometimes helps with alpha handling
-                             logger.debug(" -> Set PNG ImageClip mask from alpha channel.")
 
-                    logger.debug(f" -> Created ImageClip, duration: {clip_to_add.duration:.2f}s")
+                else: # Assume image
+                    clip_to_add = ImageClip(local_visual_path).with_duration(segment_duration)
+                    # Handle potential transparency
+                    if local_visual_path.lower().endswith(".png"):
+                        clip_to_add = clip_to_add.with_is_mask(False) # Prevent treating as mask
 
-                else:
-                    logger.warning(f" -> Unknown asset type or extension. Skipping.")
-                    continue
-
-                # --- Resize ---
+                # Resize and Set Start Time
                 if clip_to_add:
-                     logger.debug(f" -> Resizing clip to {target_width}x{target_height}")
-                     # Use height=target_height for aspect ratio preservation, or specify both
-                     clip_to_add = clip_to_add.resized(height=target_height)
-                     # Alternatively, force size: clip_to_add = clip_to_add.resize((target_width, target_height))
-                     logger.debug(f" -> Resized.")
+                     clip_to_add = clip_to_add.resized(height=TARGET_HEIGHT).with_start(start_time)
+                     # Crucial: Explicitly set duration for the final clip added
+                     # For videos, subclip duration might be less than segment_duration
+                     clip_to_add = clip_to_add.with_duration(clip_to_add.duration) # Use its own duration after subclip/set_duration
 
-                     # --- Append to list ---
-                     processed_visual_clips.append(clip_to_add)
-                     logger.info(f" -> Successfully processed and added clip {i+1} ({os.path.basename(asset_uri)})")
-                else:
-                    logger.warning(f" -> Clip object was None after processing. Skipping append.")
-
-                     # *** NOW safe to close the ORIGINAL video clip if it exists ***
-                    if temp_video_clip:
-                         try:
-                             temp_video_clip.close()
-                             logger.debug(f" -> Closed original video clip source for {os.path.basename(asset_uri)}")
-                         except Exception as close_err:
-                             logger.warning(f" -> Non-critical error closing original video clip source: {close_err}")
-
-                    else:
-                     logger.warning(f" -> Clip object was None after processing type. Skipping append.")
-                     # Also close the temp_video_clip if it exists and we skipped
-                     if temp_video_clip:
-                         try: temp_video_clip.close()
-                         except Exception: pass
+                     processed_moviepy_clips.append(clip_to_add)
 
             except Exception as clip_err:
-                 logger.error(f" -> Error processing asset {asset_uri}: {clip_err}", exc_info=True)
-                 # Ensure clips are closed if an error occurs during processing
-                 if temp_video_clip:
-                     try: temp_video_clip.close()
-                     except Exception as close_err: logger.debug(f"Error closing temp_video_clip: {close_err}")
-                 if clip_to_add:
-                     try: clip_to_add.close()
-                     except Exception as close_err: logger.debug(f"Error closing clip_to_add: {close_err}")
-                 # Continue to the next asset in the main loop
+                 logger.error(f"    Error processing asset {local_visual_path} for segment {i+1}: {clip_err}", exc_info=True)
+                 # Optionally add default visual clip as fallback for this segment's duration
+                 try:
+                      fallback_clip = (ImageClip(local_default_visual_path)
+                                     .with_duration(segment_duration)
+                                     .with_start(start_time)
+                                     .resized(height=TARGET_HEIGHT)
+                                    )
+                      processed_moviepy_clips.append(fallback_clip)
+                      logger.warning("    Added default visual as fallback for failed segment.")
+                 except Exception as fallback_err:
+                      logger.error(f"    Failed to create fallback default clip: {fallback_err}")
 
-        # --- End of Asset Processing Loop ---
+            last_segment_end_time = max(last_segment_end_time, end_time) # Track the timeline coverage
 
-        # 5. Check if any visual clips were successfully processed
-        if not processed_visual_clips:
+
+        # --- Handle Potential Gap at the End ---
+        if total_audio_duration > last_segment_end_time + 0.1:
+             gap_duration = total_audio_duration - last_segment_end_time
+             logger.warning(f"Filling final gap from {last_segment_end_time:.2f}s to {total_audio_duration:.2f}s ({gap_duration:.2f}s) with default visual.")
+             try:
+                 gap_clip = (ImageClip(local_default_visual_path)
+                            .with_duration(gap_duration)
+                            .with_start(last_segment_end_time)
+                            .resized(height=TARGET_HEIGHT)
+                            )
+                 processed_moviepy_clips.append(gap_clip)
+             except Exception as gap_err:
+                 logger.error(f"Failed to create final gap filler clip: {gap_err}")
+
+
+        # 5. Check if any clips were successfully prepared
+        if not processed_moviepy_clips:
             raise ValueError("No visual clips could be prepared for the final video.")
-        logger.info(f"Successfully processed {len(processed_visual_clips)} visual assets into clips.")
+        logger.info(f"Prepared {len(processed_moviepy_clips)} MoviePy clips for composition.")
 
-        # 6. Concatenate Visual Clips
-        logger.info(f"Concatenating {len(processed_visual_clips)} visual clips...")
-        # Using compose method handles transparency better if PNGs are used.
-        # Consider transition=fx.crossfadein(0.5) ? Requires equal sizes.
-        final_video_no_audio = concatenate_videoclips(processed_visual_clips, method="compose", padding=-0.01) # Small overlap might help transitions
-        logger.info("Concatenation complete.")
+        # 6. Compose Visual Clips using CompositeVideoClip
+        logger.info("Composing video using CompositeVideoClip...")
+        final_video_no_audio = CompositeVideoClip(processed_moviepy_clips, size=(TARGET_WIDTH, TARGET_HEIGHT))
+        logger.info("Composition complete.")
 
-        # 7. Attach Audio Track
+        # 7. Attach Audio Track and Set Exact Duration
         logger.info("Attaching main audio track...")
         final_video = final_video_no_audio.with_audio(main_audio_clip)
-        # Optional: Ensure final video duration exactly matches audio?
-        # final_video = final_video.with_duration(total_audio_duration)
-        logger.info("Audio attached.")
+        logger.info(f"Setting final video duration explicitly to audio duration: {total_audio_duration:.2f}s")
+        final_video = final_video.with_duration(total_audio_duration) # Ensure matching duration
+        logger.info("Audio attached and duration set.")
 
         # 8. Write Final Video to File
         timestamp = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
-        local_output_filename = os.path.join(temp_dir, f"final_game_{game_pk}_recap_{timestamp}.mp4")
-        logger.info(f"Writing final video to local file: {local_output_filename}...")
+        local_output_filename = os.path.join(temp_dir, f"final_game_{game_pk}_recap_synced_{timestamp}.mp4")
+        logger.info(f"Writing final synced video to local file: {local_output_filename}...")
 
         final_video.write_videofile(
             local_output_filename,
-            fps=target_fps,
-            codec="libx264",       # Good quality H.264
-            audio_codec="aac",     # Standard audio codec
-            temp_audiofile=os.path.join(temp_dir, f'temp-audio_{timestamp}.m4a'), # Explicit temp audio file
+            fps=TARGET_FPS,
+            codec="libx264",
+            audio_codec="aac",
+            temp_audiofile=os.path.join(temp_dir, f'temp-audio-synced_{timestamp}.m4a'),
             remove_temp=True,
-            preset="medium",       # Balance quality/speed. 'faster' or 'fast' for speed.
-            threads=4,             # Adjust based on system
-            logger='bar'           # Show progress bar
+            preset="medium", # Faster: 'fast' or 'superfast'. Slower: 'slow'
+            threads=4,       # Adjust based on system
+            logger='bar'
         )
-        logger.info(f"Local video file written successfully: {local_output_filename}")
-        local_files_to_clean.append(local_output_filename)
+        logger.info(f"Local synced video file written: {local_output_filename}")
+        local_files_to_clean.append(local_output_filename) # Add final video for cleanup
 
-        # 9. Upload Final Video to GCS (with error check)
-        final_video_blob_name = f"{output_video_prefix}game_{game_pk}/final_recap_{timestamp}.mp4"
-        final_video_gcs_uri_potential = f"gs://{output_gcs_bucket}/{final_video_blob_name}"
-        logger.info(f"Attempting upload of final video to {final_video_gcs_uri_potential}...")
-        try:
-            # Assuming upload_blob returns the URI on success, None on failure
-            uploaded_uri = upload_blob(local_output_filename, final_video_gcs_uri_potential)
-            if uploaded_uri:
-                final_video_gcs_uri = uploaded_uri # Assign the confirmed URI
-                logger.info("Upload successful.")
-            else:
-                # Error already logged within upload_blob if modified, or raise here
-                logger.error(f"Upload failed. Check previous logs. Video saved locally at {local_output_filename}")
-                # Keep final_video_gcs_uri as None
-        except Exception as upload_err:
-             logger.error(f"Exception during upload step: {upload_err}", exc_info=True)
+        # 9. Upload Final Video to GCS
+        final_video_blob_name = f"{OUTPUT_VIDEO_PREFIX}game_{game_pk}/final_recap_synced_{timestamp}.mp4"
+        final_video_gcs_uri_potential = f"gs://{OUTPUT_GCS_BUCKET}/{final_video_blob_name}"
+        logger.info(f"Uploading final synced video to {final_video_gcs_uri_potential}...")
+        uploaded_uri = upload_blob(local_output_filename, final_video_gcs_uri_potential)
+        if uploaded_uri:
+            final_video_gcs_uri = uploaded_uri
+            logger.info("Upload successful.")
+        else:
+            logger.error(f"Upload failed. Video saved locally at {local_output_filename}")
 
     except Exception as e:
-        logger.error(f"ERROR during video assembly pipeline: {e}", exc_info=True)
-        # Ensure lists/objects exist for finally block even if error happened early
-        if 'processed_visual_clips' not in locals(): processed_visual_clips = []
+        logger.error(f"ERROR during timestamp-synced video assembly: {e}", exc_info=True)
+        # Ensure lists/objects exist for finally block
+        if 'processed_moviepy_clips' not in locals(): processed_moviepy_clips = []
         if 'main_audio_clip' not in locals(): main_audio_clip = None
         if 'final_video_no_audio' not in locals(): final_video_no_audio = None
         if 'final_video' not in locals(): final_video = None
-        return {"error": f"Failed during video assembly: {e}"}
+        if 'opened_video_sources' not in locals(): opened_video_sources = []
+        return {"error": f"Failed during synced video assembly: {e}"}
 
     finally:
         # 10. Cleanup Resources
         logger.info("Closing MoviePy clips and cleaning up temporary files...")
         if main_audio_clip:
-            try: main_audio_clip.close()
-            except Exception as e: logger.debug(f"Error closing main_audio_clip: {e}")
-        if final_video_no_audio:
-            try: final_video_no_audio.close()
-            except Exception as e: logger.debug(f"Error closing final_video_no_audio: {e}")
-        if final_video:
-            try: final_video.close()
-            except Exception as e: logger.debug(f"Error closing final_video: {e}")
-
-        # Close all clips held in the list
-        for clip_to_close in processed_visual_clips:
+            try: main_audio_clip.close() 
+            except Exception as e: 
+                logger.debug(f"Non-critical error closing main_audio_clip: {e}")
+                pass
+        if final_video_no_audio: 
+            try: final_video_no_audio.close() 
+            except Exception as e: 
+                logger.debug(f"Non-critical error closing final_video_no_audio: {e}")
+                pass
+        if final_video: 
+            try: final_video.close() 
+            except Exception as e:
+                logger.debug(f"Non-critical error closing final_video: {e}") 
+                pass
+        # Close all clips used in composition
+        for clip_to_close in processed_moviepy_clips:
             if clip_to_close:
-                try: clip_to_close.close()
-                except Exception as e: logger.debug(f"Error closing processed clip: {e}")
+                 try: clip_to_close.close() 
+                 except Exception as e:
+                     logger.debug(f"Non-critical error closing processed clip: {e}") 
+                     pass
+        # Close all original VideoFileClip sources that were opened
+        for source_clip in opened_video_sources:
+             if source_clip: 
+                try: source_clip.close() 
+                except Exception as e: logger.debug(f"Non-critical error closing source video clip: {e}")
 
         # Delete local files
         for file_path in local_files_to_clean:
             try:
-                if os.path.exists(file_path):
-                    os.remove(file_path)
-                    logger.debug(f"Removed temp file: {file_path}")
-            except OSError as e:
-                logger.warning(f"Could not remove temporary file {file_path}: {e}")
+                if os.path.exists(file_path): os.remove(file_path)
+            except OSError as e: logger.warning(f"Could not remove temp file {file_path}: {e}")
         # Delete temp directory
         try:
-            if os.path.exists(temp_dir):
-                 os.rmdir(temp_dir)
-                 logger.info(f"Removed temporary directory: {temp_dir}")
-        except OSError as e:
-             logger.warning(f"Could not remove temporary directory {temp_dir}: {e}")
+            if os.path.exists(temp_dir): os.rmdir(temp_dir)
+        except OSError as e: logger.warning(f"Could not remove temp directory {temp_dir}: {e}")
+        logger.info("Cleanup finished.")
+
 
     node_duration = time.time() - node_start_time
-    logger.info(f"--- Assemble Video Node Summary ---")
+    logger.info(f"--- Assemble Video Node (Timestamp Sync) Summary ---")
     logger.info(f"  Duration: {node_duration:.2f}s")
-    logger.info(f"  Final Video URI: {final_video_gcs_uri}")
+    logger.info(f"  Final Synced Video URI: {final_video_gcs_uri}")
 
     # Return the URI of the final assembled video
-    return {"final_video_uri": final_video_gcs_uri}
-
+    return {"final_video_uri": final_video_gcs_uri} # Use a distinct key if needed
 
 
 # --- Helper function needed ---
