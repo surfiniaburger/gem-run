@@ -1012,9 +1012,9 @@ def generate_visuals_node(state: AgentState) -> Dict[str, Any]:
         # Skip if already generated in a previous visual revision loop for this task run
         # Note: This check assumes prompts don't change between visual revisions.
         # A more robust check might involve comparing image URIs if prompts could be regenerated.
-        if any(asset.get("prompt_origin") == prompt_text for asset in current_assets):
-             logger.info(f"Skipping prompt already generated in a previous revision: '{prompt_text[:80]}...'")
-             continue
+        # if any(asset.get("prompt_origin") == prompt_text for asset in current_assets):
+        #      logger.info(f"Skipping prompt already generated in a previous revision: '{prompt_text[:80]}...'")
+        #      continue
 
         logger.info(f"Processing visual prompt {i+1}/{num_prompts_to_process}: '{prompt_text[:80]}...'")
 
@@ -1218,28 +1218,115 @@ def generate_visuals_node(state: AgentState) -> Dict[str, Any]:
     return output_state
 
 
+# --- Pydantic Model for Parsing New Prompts from Critique ---
+class NewVisualPrompts(BaseModel):
+    """Holds a list of new visual generation prompts extracted from critique."""
+    new_prompts: List[str] = Field(..., description="List of specific visual generation prompts suggested by the critique.")
+
+# --- Prompt for LLM to Extract New Prompts ---
+EXTRACT_NEW_PROMPTS_PROMPT = """
+You are an assistant director refining visual plans for an MLB highlight video, aware of strict limitations on the primary image generation model (Imagen 3).
+
+**Imagen 3 Rules (Strictly Enforce):**
+1.  **NO Player Names:** Use generic descriptions ("an MLB player", "the batter", "the pitcher", "a fielder", "the runner").
+2.  **NO Team Names:** Do NOT use specific MLB team names.
+3.  **Uniform Descriptions:** Describe uniforms generically based on home/away context if known ("white home uniform", "colored away uniform"), or neutrally ("an MLB player's uniform").
+
+**Critique of Previous Visuals:**
+--- CRITIQUE START ---
+{critique}
+--- CRITIQUE END ---
+
+**Task:**
+Analyze the critique. Identify the core *visual concepts* that are missing or need improvement (e.g., a specific player pitching, a home run celebration, a player sliding, crowd reaction).
+Generate a list of **NEW prompts** that capture these concepts BUT strictly adhere to the Imagen 3 rules above. Translate specific player/team mentions in the critique into compliant generic descriptions. Focus on action, setting, and emotion.
+
+Example Critique Mention: "Need a clear image of Marte's 443-foot home run."
+Example SAFE Prompt Output: "An MLB batter in a white home uniform hitting a long home run to dead center field, powerful follow-through swing, daytime baseball game."
+
+Example Critique Mention: "Need Tatis Jr. Strikeout"
+Example SAFE Prompt Output: "An MLB batter in a colored away uniform striking out swinging, showing frustration at the plate."
+
+Output ONLY a JSON object conforming to the 'NewVisualPrompts' schema, containing a 'new_prompts' list of the *new, safe-for-Imagen* prompt strings. Generate 3-5 new prompts targeting the main issues in the critique.
+
+JSON Output (NewVisualPrompts schema):
+"""
+
+# --- New Node Function ---
+def prepare_new_visual_prompts_node(state: AgentState) -> Dict[str, Any]:
+    """Parses critique to extract new prompts for the next visual generation attempt."""
+    logger.info("--- Prepare New Visual Prompts Node ---")
+    critique = state.get("visual_critique")
+
+    if not critique or "sufficient" in critique.lower():
+        logger.info("Critique is positive or missing, no new prompts to prepare. Keeping existing prompts.")
+        # No change needed, generate_visuals will use existing prompts (likely empty if loop just started)
+        # Or, we could potentially clear prompts here if we *only* want to generate based on critique?
+        # Let's return an empty list to ensure only critique-driven prompts are used in the next step.
+        return {"visual_generation_prompts": []}
+
+    prompt = EXTRACT_NEW_PROMPTS_PROMPT.format(critique=critique)
+    new_prompts_list = []
+
+    try:
+        logger.info("Extracting new visual prompts suggested by critique using LLM...")
+        # Use a model capable of structured output
+        # Ensure 'structured_output_model' is initialized (e.g., gemini-1.5-flash-001)
+        if 'structured_output_model' not in globals() or structured_output_model is None:
+             raise ValueError("Structured output model not initialized.")
+
+        structured_llm = structured_output_model.with_structured_output(NewVisualPrompts)
+        response: NewVisualPrompts = structured_llm.invoke(prompt)
+
+        if response and isinstance(response, NewVisualPrompts) and response.new_prompts:
+            new_prompts_list = response.new_prompts
+            logger.info(f"Extracted {len(new_prompts_list)} new prompts from critique.")
+            # Example: Handle potential model mistakes where it includes labels
+            cleaned_prompts = []
+            for p in new_prompts_list:
+                # Remove common leading list markers or quotes if the LLM adds them
+                p_cleaned = re.sub(r"^\s*[\*\-\"\']+\s*", "", p).strip()
+                if p_cleaned:
+                     cleaned_prompts.append(p_cleaned)
+            new_prompts_list = cleaned_prompts
+            logger.info(f"Cleaned prompts list: {new_prompts_list}")
+
+        else:
+            logger.warning("LLM did not return a valid list of new prompts or the list was empty.")
+            new_prompts_list = []
+
+    except Exception as e:
+        logger.error(f"Error parsing new prompts from critique: {e}", exc_info=True)
+        new_prompts_list = [] # Default to empty list on error
+
+    # CRITICAL: Update the state with the NEW prompts for the *next* generation run
+    return {"visual_generation_prompts": new_prompts_list}
+
+
 # Remember to have the corrected save_image_to_gcs function available
 # def save_image_to_gcs(image: Image.Image, bucket_name: str, blob_name: str) -> Optional[str]: ...
 VISUAL_CRITIQUE_PROMPT = """
-You are a demanding visual producer reviewing generated images for an MLB highlight segment.
-The script is:
+You are a demanding visual producer reviewing generated images for an MLB highlight segment, aware of the primary generator's limitations (no specific player/team names).
+
+**Generator Limitations:** The primary model (Imagen 3) cannot generate images with specific player names or team logos. It uses generic descriptions (e.g., "home team batter").
+
+Script:
 --- SCRIPT ---
 {script}
 --- END SCRIPT ---
 
-The following images were generated based on specific prompts:
---- GENERATED IMAGES (by original prompt) ---
+Generated Images (by original generic prompt):
+--- GENERATED IMAGES ---
 {generated_images_summary}
 --- END GENERATED IMAGES ---
 
-Critique the generated images:
-1.  **Coverage:** Do the images adequately cover the key moments described in the script? Are there obvious gaps?
-2.  **Relevance:** Does each image reasonably match its intended prompt and the corresponding script moment?
-3.  **Quality/Action:** Are the images clear? Do they convey the intended action or mood (even if static)? (Note: Don't expect perfect photorealism, but judge relevance).
-4.  **Suggestions:** If improvements are needed, suggest *specific* new prompts or modifications. What's missing? (e.g., "Need an image of the runner sliding into second base", "Generate a shot focusing on the pitcher's frustrated reaction after the homer").
+Critique the generated images based on:
+1.  **Coverage & Relevance:** Do the generic images reasonably cover the key *actions* and *scenes* described in the script moments? Are there obvious *action* gaps (e.g., missing a slide, a catch, a specific type of hit)?
+2.  **Quality/Action/Composition:** Are the images clear? Do they convey the intended action, mood, or composition effectively, even if generic?
+3.  **Suggestions for Improvement (Action/Scene Focused):** If improvements are needed, suggest **specific new prompts** focusing on missing *actions* or improving the *composition/mood* of scenes. **Crucially, ensure your suggested prompts follow the generator limitations: NO specific player names, NO specific team names.** Use descriptive generic terms (e.g., "Close up on batter's focused face during swing", "Wide angle of player sliding into second base, dust kicking up", "Pitcher walking off mound dejectedly after giving up run").
 
-If the current set of images is sufficient and adequately covers the script, respond ONLY with "Visuals look sufficient."
-Otherwise, provide concise, bullet-point feedback focusing on gaps and specific prompts needed for the *next* generation round.
+If the current set of generic images is sufficient for the actions/scenes, respond ONLY with "Visuals look sufficient."
+Otherwise, provide concise, bullet-point feedback and **specific, generator-safe prompt suggestions** for the *next* round.
 """
 
 def critique_visuals_node(state: AgentState) -> Dict[str, Any]:
@@ -1496,7 +1583,7 @@ def analyze_script_for_images_node(state: AgentState) -> Dict[str, Any]:
 def download_gcs_blob(gcs_uri: str, local_dir: str) -> Optional[str]:
     """Downloads a blob from GCS to a local directory, returning the local path."""
     global storage_client
-    if not gcs_uri or not gcs_uri.startswith("gs://"):
+    if not gcs_uri or not gcs_uri.startswith("gs://") or '/' not in gcs_uri.replace("gs://", ""):
         logger.error(f"Invalid GCS URI for download: {gcs_uri}")
         return None
     if not storage_client:
@@ -1536,6 +1623,105 @@ def upload_blob(local_file_path: str, gcs_uri: str):
         return None
 
 
+# --- New Node Function ---
+def generate_veo_prompts_node(state: AgentState) -> Dict[str, Any]:
+    """Generates dynamic prompts specifically for Veo based on script and visual concepts."""
+    logger.info("--- Generate Veo Prompts Node ---")
+    script = state.get("generated_content") or state.get("draft") # Use final script
+    # Use the prompts from the *last* successful image generation round as concepts
+    image_prompt_concepts = state.get("visual_generation_prompts") or []
+
+    if not script:
+        logger.error("Script is missing, cannot generate Veo prompts.")
+        return {"error": "Missing script for Veo prompt generation.", "veo_generation_prompts": []}
+    if not image_prompt_concepts:
+        logger.warning("No image prompt concepts found. Veo prompts might be less targeted.")
+        # Proceed, but the LLM will rely more heavily on just the script
+
+    # Prepare concepts for the prompt
+    try:
+        # Limit number of concepts passed to LLM if needed
+        max_concepts = 10
+        concepts_json = json.dumps(image_prompt_concepts[:max_concepts])
+        if len(image_prompt_concepts) > max_concepts:
+            logger.warning(f"Truncated image concepts from {len(image_prompt_concepts)} to {max_concepts} for Veo prompt generation.")
+    except Exception as e:
+        logger.error(f"Error converting image concepts to JSON: {e}")
+        concepts_json = "[]" # Default to empty list
+
+    prompt = GENERATE_VEO_PROMPTS_FROM_CONCEPTS_PROMPT.format(
+        script=script[:8000], # Limit script length if needed
+        image_prompt_concepts_json=concepts_json
+    )
+
+    veo_prompts_list = []
+    try:
+        logger.info("Generating Veo-specific prompts using LLM...")
+        # Ensure 'structured_output_model' is initialized
+        if 'structured_output_model' not in globals() or structured_output_model is None:
+             raise ValueError("Structured output model not initialized.")
+
+        structured_llm = structured_output_model.with_structured_output(VeoPrompts)
+        response: VeoPrompts = structured_llm.invoke(prompt)
+
+        if response and isinstance(response, VeoPrompts) and response.veo_prompts:
+            # Clean prompts
+            cleaned_prompts = []
+            for p in response.veo_prompts:
+                p_cleaned = re.sub(r"^\s*[\*\-\"\']+\s*", "", p).strip()
+                if p_cleaned:
+                     cleaned_prompts.append(p_cleaned)
+            veo_prompts_list = cleaned_prompts
+            logger.info(f"Generated {len(veo_prompts_list)} Veo-specific prompts.")
+            logger.info(f"Veo Prompts: {veo_prompts_list}")
+        else:
+            logger.warning("LLM did not return a valid list of Veo prompts or the list was empty.")
+            veo_prompts_list = []
+
+    except Exception as e:
+        logger.error(f"Error generating Veo prompts: {e}", exc_info=True)
+        veo_prompts_list = []
+
+    # Store the Veo-specific prompts in a new state key
+    return {"veo_generation_prompts": veo_prompts_list}
+generate_video_clips_node
+# --- Pydantic Model for Veo Prompts ---
+class VeoPrompts(BaseModel):
+    """Holds a list of prompts specifically generated for Veo text-to-video."""
+    veo_prompts: List[str] = Field(..., description="List of dynamic, action-oriented prompts for Veo video generation.")
+
+# --- Prompt for LLM to Generate Veo-Specific Prompts ---
+GENERATE_VEO_PROMPTS_FROM_CONCEPTS_PROMPT = """
+You are a creative video director planning dynamic shots for an MLB highlight reel using the Veo text-to-video model. You are aware of safety limitations (no specific names/teams).
+
+**Final Dialogue Script Context:**
+--- SCRIPT START ---
+{script}
+--- SCRIPT END ---
+
+**Key Visual Concepts (from previous image prompt generation):**
+--- CONCEPTS START ---
+{image_prompt_concepts_json}
+--- CONCEPTS END ---
+
+**Task:**
+Based on the script context and the key visual concepts, generate 3-5 NEW prompts specifically for **Veo text-to-video**. These prompts should describe **dynamic action, motion, camera movement, and compelling scenes** suitable for video clips. Use the visual concepts as inspiration for *what* scenes to depict dynamically.
+
+**Veo Prompt Guidelines:**
+1.  **Focus on Action/Motion:** Describe the movement (e.g., "player sliding into base", "ball flying rapidly", "pitcher's windup motion", "crowd cheering energetically", "slow motion replay of a catch").
+2.  **Suggest Camera Work (Optional):** You can suggest camera angles or movements (e.g., "Close up shot...", "Wide angle view...", "Slow pan across the dugout...", "Tracking shot following the runner...").
+3.  **Adhere to Safety Rules:**
+    *   **NO Player Names:** Use generic descriptions ("an MLB player", "the batter", "the pitcher", "a fielder", "the runner").
+    *   **NO Team Names:** Do NOT use specific MLB team names.
+    *   **Uniforms:** Describe generically ("white home uniform", "colored away uniform", "an MLB player's uniform").
+    *   **Avoid Problematic Content:** Be mindful of prompts that might trigger safety filters (e.g., overly aggressive actions, overly negative depictions if they have caused issues before. Focus on the sporting action).
+4.  **Concise & Descriptive:** Make prompts clear and evocative for the video model.
+
+Output ONLY a JSON object conforming to the 'VeoPrompts' schema, containing a 'veo_prompts' list of strings.
+
+JSON Output (VeoPrompts schema):
+"""
+
 # --- Helper: LLM Call for Timeline Generation ---
 # Define Pydantic model for the timeline structure
 class VisualSegment(BaseModel):
@@ -1548,19 +1734,19 @@ class VisualTimeline(BaseModel):
     timeline: List[VisualSegment] = Field(..., description="List of timed visual segments covering the script.")
 
 VISUAL_TIMELINE_PROMPT = """
-You are a video editor creating a timeline for an MLB highlight recap. Your goal is to match visual assets to the spoken dialogue based on timing and content.
+You are a video editor creating a timeline for an MLB highlight recap. Your goal is to match visual assets (images AND videos) to the spoken dialogue based on timing and content.
 
 Dialogue Script:
 --- SCRIPT START ---
 {script}
 --- SCRIPT END ---
 
-Word Timestamps (List of {{'word': str, 'start_time_s': float, 'end_time_s': float}}): # <-- Escaped braces
+Word Timestamps (List of {{'word': str, 'start_time_s': float, 'end_time_s': float}}):
 --- TIMESTAMPS START ---
 {timestamps_json}
 --- TIMESTAMPS END ---
 
-Available Visual Assets (List of {{'uri': str, 'type': str, 'metadata': str/dict}}): # <-- Escaped braces
+Available Visual Assets (List of {{'uri': str, 'type': str, 'metadata': str/dict}}):
 --- ASSETS START ---
 {assets_json}
 --- ASSETS END ---
@@ -1568,15 +1754,20 @@ Available Visual Assets (List of {{'uri': str, 'type': str, 'metadata': str/dict
 Default Visual URI (use if no specific asset matches): {default_visual_uri}
 
 Instructions:
-1.  Analyze the script and timestamps to identify logical segments of the dialogue (e.g., discussion of a specific player, a key play, general analysis).
-2.  For each segment, determine its start and end time in seconds using the word timestamps.
-3.  From the 'Available Visual Assets', select the *most relevant* visual asset URI for that dialogue segment.
-    *   Prioritize specific headshots (type='headshot') or logos (type='logo') when players or teams are explicitly mentioned. Match using 'metadata' (player/team name).
-    *   Use generated videos (type='generated_video') or images (type='generated_image') for descriptions of actions or general scenes. Match based on the 'metadata' (which contains the source prompt for generated assets).
-    *   If multiple assets seem relevant, choose the one whose metadata best matches the dialogue content in the time segment.
-    *   If *no* specific asset is relevant for a segment, use the 'Default Visual URI'.
-4.  Ensure the timeline covers the *entire* duration of the script based on the timestamps. Segments should be contiguous (end time of one matches start time of the next).
-5.  Output ONLY a valid JSON object conforming to the 'VisualTimeline' schema, containing a 'timeline' list of 'VisualSegment' objects.
+1.  Analyze the script and timestamps to identify logical segments of dialogue. Determine segment start/end times.
+2.  From 'Available Visual Assets', select the *most relevant* asset URI for each segment.
+    *   **Prioritize Action with Video:** If a dialogue segment describes **clear action, motion, or a dynamic scene** (like a swing, a running play, a strikeout sequence, crowd reaction) AND a relevant **'generated_video'** asset is available (match metadata/prompt), **strongly prefer using the video URI**.
+    *   **Prioritize Specificity with Statics:** Use specific headshots ('headshot') or logos ('logo') when players/teams are explicitly named.
+    *   **Use Generated Images:** Use 'generated_image' assets for general descriptions, mood setting, or actions where no relevant video exists.
+    *   **Choose Best Match:** If multiple assets fit, select the one whose metadata best matches the dialogue content.
+    *   **Default Fallback:** If *no* specific asset is relevant, use the 'Default Visual URI'.
+3.  Ensure the timeline covers the *entire* script duration contiguously.
+4.  Output ONLY a valid JSON object conforming to the 'VisualTimeline' schema.
+
+**Example Segment Matching:**
+- Dialogue: "...and he connects, a high fly ball deep to left..." -> Prefer 'generated_video' of a hit/ball flight if available, otherwise 'generated_image'.
+- Dialogue: "...and that strikeout was huge for Ryne Nelson..." -> Prefer 'headshot' of Ryne Nelson.
+- Dialogue: "...the crowd went absolutely wild..." -> Prefer 'generated_video' of crowd reaction if available, otherwise 'generated_image'.
 
 JSON Output (VisualTimeline schema):
 """
@@ -1826,7 +2017,7 @@ def assemble_video_node(state: AgentState) -> Dict[str, Any]:
                           logger.warning(f"    Video subclip duration ({actual_duration:.3f}s) too short. Skipping.")
                           continue # Skip processing this segment
                     # Create the subclip
-                    clip_to_add = source_video_clip.subclip(0, actual_duration)
+                    clip_to_add = source_video_clip.subclipped(0, actual_duration)
 
 
                 else: # Assume image
@@ -2877,10 +3068,11 @@ workflow.add_node("research_critique", research_critique_node)
 workflow.add_node("analyze_script_for_images", analyze_script_for_images_node) # NEW
 workflow.add_node("web_search_context", web_search_critique_node)
 workflow.add_node("retrieve_images", retrieve_images_node) # NEW
-workflow.add_node("final_output", final_output_node)
+#workflow.add_node("final_output", final_output_node)
 workflow.add_node("analyze_script_for_visual_prompts", analyze_script_for_visual_prompts_node)
 workflow.add_node("generate_visuals", generate_visuals_node)
 workflow.add_node("critique_visuals", critique_visuals_node)
+workflow.add_node("prepare_new_visual_prompts", prepare_new_visual_prompts_node)
 workflow.add_node("generate_video_clips", generate_video_clips_node)
 workflow.add_node("aggregate_final_output", aggregate_final_output_node)
 workflow.add_node("generate_audio", generate_audio_node)
@@ -2916,6 +3108,7 @@ workflow.add_edge("retrieve_images", "analyze_script_for_visual_prompts")
 # --- Add Edges for the NEW Visual Generation Loop ---
 workflow.add_edge("analyze_script_for_visual_prompts", "generate_visuals")
 workflow.add_edge("generate_visuals", "critique_visuals") # Always critique after generating
+workflow.add_edge("prepare_new_visual_prompts", "generate_visuals")
 
 # --- Add edge from video generation to final aggregation ---
 workflow.add_edge("generate_video_clips", "generate_audio")
@@ -2928,9 +3121,10 @@ workflow.add_conditional_edges(
     "critique_visuals",       # Node providing the condition basis
     should_continue_visuals,  # Function to decide path
     {
-        "generate_visuals": "generate_visuals",         # Loop back to generate more
-        # NEW Path: If images are sufficient, generate VIDEOS
-        "aggregate_final_output": "generate_video_clips"
+        # If critique suggests more needed, go PREPARE NEW PROMPTS
+        "generate_visuals": "prepare_new_visual_prompts",        
+
+        "aggregate_final_output": "generate_video_clips" # Changed exit path name to match logic
     }
 )
 
@@ -3055,7 +3249,7 @@ if __name__ == "__main__":
 
     # --- Dynamic Game PK ---
     # Choose a default team ID to find the latest game for (e.g., Rangers = 140)
-    default_team_id_for_latest = 109
+    default_team_id_for_latest = 138
     latest_game_pk = get_latest_final_game_pk(default_team_id_for_latest)
 
     if not latest_game_pk:
