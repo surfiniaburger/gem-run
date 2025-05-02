@@ -87,7 +87,7 @@ except Exception as e:
 
 
 # --- Streamlit App Configuration ---
-st.set_page_config(layout="wide") # Use wide layout for better display
+# Use wide layout for better display
 st.title("⚾ MLB Game Recap Video Generator")
 st.markdown("Select a team to generate a video recap of their latest completed game.")
 
