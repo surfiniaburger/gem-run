@@ -46,3 +46,4 @@ langgraph >= 0.3.21
 bs4 >= 0.0.2
 pybaseball >= 2.2.7
 tavily-python >= 0.5.4
+google-cloud-speech>=2.23.0

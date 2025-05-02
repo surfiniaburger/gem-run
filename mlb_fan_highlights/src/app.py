@@ -14,39 +14,32 @@ from google.oauth2 import service_account
 
 # --- Import necessary components from your NEW agent script ---
 # *** Make sure this points to your latest agent script file ***
-AGENT_SCRIPT_NAME = "mlb_agentx"
 try:
-    # Import dynamically based on the script name
-    agent_module = __import__(AGENT_SCRIPT_NAME)
-    app = agent_module.app  # The compiled LangGraph app
-    TEAMS = agent_module.TEAMS
-    get_latest_final_game_pk = agent_module.get_latest_final_game_pk
-    # Assuming load_player_metadata is defined in the agent script now
-    load_player_metadata = agent_module.load_player_metadata
-    logger = agent_module.logger # Use the logger from the agent
-    GCP_PROJECT_ID = agent_module.GCP_PROJECT_ID
+    from mlb_agentx import (
+        app,  # The compiled LangGraph app
+        TEAMS,
+        get_latest_final_game_pk,
+        load_player_metadata,
+        # Define load_player_metadata if it exists in your agent script,
+        # otherwise load it here or remove if not needed for initial state
+        # load_player_metadata, # Example import if defined in agent
+        logger, GCP_PROJECT_ID # Use the same logger setup if desired
+    )
     # Configure logger for Streamlit if it wasn't configured in the imported script
     if not logger.handlers:
         logging.basicConfig(level=logging.INFO, format='%(asctime)s - Streamlit - %(levelname)s - %(message)s')
         logger = logging.getLogger(__name__) # Define logger if not imported
 
-    logger.info(f"Successfully imported components from '{AGENT_SCRIPT_NAME}.py'")
-
 except ImportError as e:
-    st.error(f"❌ Failed to import necessary components from '{AGENT_SCRIPT_NAME}.py'. "
+    st.error(f"Failed to import necessary components from 'mlb_agent5.py'. "
              f"Ensure the file exists and is in the correct path. Error: {e}")
-    logger.critical(f"ImportError for {AGENT_SCRIPT_NAME}.py: {e}", exc_info=True)
     st.stop() # Stop the app if imports fail
-except AttributeError as ae:
-     st.error(f"❌ Missing expected component in '{AGENT_SCRIPT_NAME}.py'. "
-             f"Ensure 'app', 'TEAMS', 'get_latest_final_game_pk', 'load_player_metadata', 'logger', 'GCP_PROJECT_ID' are defined. Error: {ae}")
-     logger.critical(f"AttributeError importing from {AGENT_SCRIPT_NAME}.py: {ae}", exc_info=True)
-     st.stop()
 except NameError as ne:
     # Handle if logger wasn't defined/imported
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - Streamlit - %(levelname)s - %(message)s')
     logger = logging.getLogger(__name__)
     logger.warning(f"Caught NameError during import (likely 'logger'): {ne}. Initialized logger.")
+
 
 # --- Configuration ---
 SERVICE_ACCOUNT_SECRET_ID = "streamlit-gcs-sa-key" # <-- **REPLACE** with your Secret ID for the SA key JSON
@@ -606,4 +599,3 @@ with col2:
 # --- Footer or additional info ---
 st.sidebar.markdown("---")
 st.sidebar.markdown("Powered by LangGraph & Google Cloud Vertex AI")
-st.sidebar.markdown(f"Agent Script: `{AGENT_SCRIPT_NAME}.py`")
