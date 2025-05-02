@@ -1,7 +1,7 @@
 # roadmap.py
 import streamlit as st
 
-st.set_page_config(page_title="Project Roadmap", layout="wide")
+
 
 st.title("🗺️ AI Highlights Agent: Project Roadmap")
 

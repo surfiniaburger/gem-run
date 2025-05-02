@@ -5,7 +5,7 @@ import logging
 from datetime import datetime, timedelta, UTC
 import time
 from typing import Optional, Dict, Any, List
-import os
+import os 
 # --- GCS Client & Credentials ---
 from google.cloud import storage
 from google.api_core import exceptions as google_exceptions
@@ -39,7 +39,6 @@ except NameError as ne:
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - Streamlit - %(levelname)s - %(message)s')
     logger = logging.getLogger(__name__)
     logger.warning(f"Caught NameError during import (likely 'logger'): {ne}. Initialized logger.")
-
 
 # --- Configuration ---
 SERVICE_ACCOUNT_SECRET_ID = "streamlit-gcs-sa-key" # <-- **REPLACE** with your Secret ID for the SA key JSON
@@ -88,7 +87,7 @@ except Exception as e:
 
 
 # --- Streamlit App Configuration ---
-#st.set_page_config(layout="wide") # Use wide layout for better display
+st.set_page_config(layout="wide") # Use wide layout for better display
 st.title("⚾ MLB Game Recap Video Generator")
 st.markdown("Select a team to generate a video recap of their latest completed game.")
 
@@ -150,20 +149,18 @@ def generate_signed_url(gcs_uri: str, expiration_minutes: int = 30) -> Optional[
         return None
 
 
-# --- Agent Streaming Function (Updated) ---
+# --- Agent Streaming Function ---
 def run_agent_and_stream_progress(agent_app, initial_agent_state):
     """
     Runs the agent using app.stream() and yields formatted progress strings.
-    Stores the FINAL complete state in st.session_state. Handles potential
-    non-dict update from the final node in 'updates' stream mode.
+    Stores the FINAL complete state in st.session_state.
     """
     latest_full_state = None # Variable to hold the most recent complete state dictionary
-    last_node_output = None # Store the raw output of the last node if it wasn't a dict state
-    final_state_stored = False
+    final_state_on_success = None
     nodes_seen_in_stream = []
-    # Clear previous final state and error message
+    # Clear previous final state and error message managed by the stream function
     st.session_state['final_state'] = None
-    st.session_state['error_message'] = None
+    st.session_state['error_message'] = None # Stream function will set this on error
 
     # Updated node emojis including new steps
     node_emojis = {
@@ -172,16 +169,16 @@ def run_agent_and_stream_progress(agent_app, initial_agent_state):
         "analyze_script_for_images": "🖼️", "retrieve_images": "🏞️",
         "analyze_script_for_visual_prompts": "🎬", "generate_visuals": "✨",
         "critique_visuals": "🧐", "prepare_new_visual_prompts": "📝",
-        "generate_video_clips": "🎞️",
+        "generate_video_clips": "🎞️", # Using film reel
         "generate_audio": "🔊",
-        "transcribe_for_timestamps": "⏱️",
+        "transcribe_for_timestamps": "⏱️", # NEW: Stopwatch
         "aggregate_final_output": "📦",
-        "assemble_video": "🛠️",
+        "assemble_video": "🛠️", # NEW: Hammer and Wrench for assembly
         "__end__": "🏁"
     }
 
     try:
-        recursion_limit = 50 # Or get from config/state if needed
+        recursion_limit = 50 # Increased limit for the deeper graph
         logger.info(f"Starting agent stream with recursion limit: {recursion_limit}...")
         # Use app.stream which yields updates for each node completion
         stream = agent_app.stream(initial_agent_state, {"recursion_limit": recursion_limit}, stream_mode="updates")
@@ -189,118 +186,114 @@ def run_agent_and_stream_progress(agent_app, initial_agent_state):
         yield "🚀 **Agent execution started...** (This may take several minutes)\n\n---\n" # Initial message
 
         for step_update in stream:
-            if not step_update or not isinstance(step_update, dict):
-                logger.debug(f"Stream yielded empty or non-dict update: {step_update}, skipping display for this step.")
-                # Store the non-dict value if it might be the last node's output
-                if nodes_seen_in_stream and nodes_seen_in_stream[-1] == 'assemble_video': # Check if previous node was the expected last one
-                     last_node_output = step_update
-                     logger.warning(f"Captured potential non-dict output from final node ({nodes_seen_in_stream[-1]}): {last_node_output}")
-                continue # Skip processing this update further
+            # step_update is a dictionary like {'node_name': full_state_after_node}
+            if not step_update or not isinstance(step_update, dict): # Handle potential empty updates
+                logger.debug("Stream yielded empty or non-dict update, skipping.")
+                continue
 
+            # --- Safely extract node name and state ---
             try:
                  node_name = list(step_update.keys())[0]
-                 potential_new_state = step_update[node_name]
-            except (IndexError, KeyError, TypeError) as ex:
-                 logger.error(f"Error parsing stream update dict: {step_update}. Error: {ex}")
+                 latest_full_state = step_update[node_name] # Capture the full state dictionary
+                 if not isinstance(latest_full_state, dict):
+                      logger.warning(f"Received non-dict state for node '{node_name}', using previous state if available.")
+                      # Keep the previous state if the current one is invalid
+                      latest_full_state = latest_full_state if latest_full_state else {}
+                      # Decide how to proceed - maybe yield a warning? For now, log and continue.
+            except (IndexError, TypeError) as ex:
+                 logger.error(f"Error parsing stream update: {step_update}. Error: {ex}")
                  continue # Skip this update if structure is wrong
+            # --- End Safe Extraction ---
 
-            # --- State Update Logic ---
-            if isinstance(potential_new_state, dict):
-                # If it's a dict, assume it's the full state and update
-                latest_full_state = potential_new_state
-                node_error = latest_full_state.get("error") # Check for error IN the state
-                logger.info(f"STREAM UI: Received state update from node: {node_name}")
-                nodes_seen_in_stream.append(node_name) # Log node name here
-                last_node_output = None # Reset last node output since we got a full state
-            else:
-                # This case should be less likely now with the initial check, but log defensively
-                logger.warning(f"Received non-dict state value for node '{node_name}'. Value: {potential_new_state}. Keeping previous state.")
-                # Keep the previous latest_full_state.
-                node_error = None # Can't get error from non-dict state
-                # We don't know the node name for sure if the key was missing, use last known if needed
-                node_name = nodes_seen_in_stream[-1] if nodes_seen_in_stream else "unknown"
+            nodes_seen_in_stream.append(node_name) # Log node name
+            logger.info(f"STREAM UI: Received update from node: {node_name}")
 
+            emoji = node_emojis.get(node_name, "⚙️") # Default emoji
+            node_error = latest_full_state.get("error") # Check for error IN the state
 
-            # --- Display Progress ---
-            emoji = node_emojis.get(node_name, "⚙️")
             status_message = f"{emoji} **{node_name.replace('_', ' ').title()}**"
-
             if node_error:
                  status_message += f" reported error: `{str(node_error)[:100]}...`"
                  logger.warning(f"Node '{node_name}' reported error in stream state: {node_error}")
-                 st.session_state['error_message'] = f"Error reported in node '{node_name}': {node_error}" # Flag error but continue stream
+                 # Set the main error message if a node reports one, allowing loop to continue
+                 # but flagging the issue
+                 st.session_state['error_message'] = f"Error in node '{node_name}': {node_error}"
+                 # Don't immediately break; the graph might handle the error or proceed
             else:
                  status_message += " finished."
 
-            # Optional: Add specific details for key nodes
-            if latest_full_state: # Check if we have a valid state dict
-                if node_name == "generate": status_message += f" (Script Rev {latest_full_state.get('revision_number', 0)})"
-                elif node_name == "generate_visuals": status_message += f" (Visuals Rev {max(0, latest_full_state.get('visual_revision_number', 1) - 1)} generated)"
-                elif node_name == "retrieve_data": status_message += f" (Context: {len(latest_full_state.get('narrative_context',[]))}, Structured: {len(latest_full_state.get('structured_data',[]))})"
-                elif node_name == "retrieve_images": status_message += f" (Found {len(latest_full_state.get('retrieved_image_data',[]))} static assets)"
-                elif node_name == "generate_visuals": status_message += f" (Now {len(latest_full_state.get('generated_visual_assets',[]))} gen images)"
-                elif node_name == "generate_video_clips": status_message += f" (Now {len(latest_full_state.get('generated_video_assets',[]))} gen videos)"
-                elif node_name == "generate_audio": status_message += " (Audio file ready)" if latest_full_state.get("generated_audio_uri") else ""
-                elif node_name == "transcribe_for_timestamps": status_message += f" (Found {len(latest_full_state.get('word_timestamps',[]))} timestamps)" if latest_full_state.get("word_timestamps") else " (No timestamps?)"
-                elif node_name == "assemble_video": status_message += " (Final video created!)" if latest_full_state.get("final_video_uri") else " (Video assembly done)"
+            # Optional: Add specific details for key nodes based on state
+            if node_name == "generate":
+                status_message += f" (Script Revision {latest_full_state.get('revision_number', 0)})" # Rev # starts at 0
+            elif node_name == "generate_visuals":
+                vis_rev = latest_full_state.get('visual_revision_number', 0) # generate_visuals increments *before* returning
+                status_message += f" (Visuals Revision {max(0, vis_rev - 1)} generated)" # Show rev that just finished
+            elif node_name == "retrieve_data":
+                 narrative_ctx = latest_full_state.get('narrative_context')
+                 ctx_len = len(narrative_ctx) if isinstance(narrative_ctx, list) else 0
+                 struct_data = latest_full_state.get('structured_data')
+                 struct_len = len(struct_data) if isinstance(struct_data, list) else 0
+                 status_message += f" (Context: {ctx_len}, Structured: {struct_len})"
+            elif node_name == "retrieve_images":
+                 retrieved_images = latest_full_state.get('retrieved_image_data')
+                 img_len = len(retrieved_images) if isinstance(retrieved_images, list) else 0
+                 status_message += f" (Found {img_len} static assets)"
+            elif node_name == "generate_visuals":
+                 gen_visuals = latest_full_state.get('generated_visual_assets')
+                 vis_len = len(gen_visuals) if isinstance(gen_visuals, list) else 0
+                 status_message += f" (Now {vis_len} total generated images)"
+            elif node_name == "generate_video_clips":
+                 gen_videos = latest_full_state.get('generated_video_assets')
+                 vid_len = len(gen_videos) if isinstance(gen_videos, list) else 0
+                 status_message += f" (Now {vid_len} total generated videos)"
+            elif node_name == "generate_audio":
+                if latest_full_state.get("generated_audio_uri"):
+                    status_message += " (Audio file ready)"
+            elif node_name == "transcribe_for_timestamps":
+                 timestamps = latest_full_state.get("word_timestamps")
+                 ts_len = len(timestamps) if isinstance(timestamps, list) else 0
+                 if ts_len > 0:
+                    status_message += f" (Found {ts_len} word timestamps)"
+                 else:
+                     status_message += " (Timestamp generation issue?)"
+            elif node_name == "assemble_video":
+                 if latest_full_state.get("final_video_uri"):
+                     status_message += " (Final video created!)"
+                 else:
+                     status_message += " (Video assembly in progress...)"
 
             yield status_message + "\n\n---\n" # Add divider for clarity
             # time.sleep(0.1) # Optional small delay
 
-        # ---- After the loop ----
-        # At this point, the stream has finished.
-        # latest_full_state holds the state from the *last successfully processed dictionary update*.
-        # last_node_output might hold the raw return from the very last node if it wasn't a dict.
-
-        if latest_full_state:
-             # --- Attempt to Patch Final State if Necessary ---
-             # If the last node seen was assemble_video, but final_video_uri isn't in the state,
-             # AND we captured a non-dict output for the last node that looks like its return value...
-             last_known_node = nodes_seen_in_stream[-1] if nodes_seen_in_stream else None
-             if (last_known_node == 'assemble_video' and
-                 'final_video_uri' not in latest_full_state and
-                 isinstance(last_node_output, dict) and
-                 'final_video_uri' in last_node_output):
-
-                 logger.warning("Attempting to patch final state with captured output from assemble_video.")
-                 latest_full_state['final_video_uri'] = last_node_output['final_video_uri']
-                 # Also potentially patch other keys if the node returns more
-
-             # --- Store the (potentially patched) final state ---
-             st.session_state['final_state'] = latest_full_state
-             final_state_stored = True
-             logger.info(f"STREAM UI: Stream finished. Nodes seen: {nodes_seen_in_stream}")
-             logger.info(f"STREAM UI: Storing final state with keys: {list(st.session_state['final_state'].keys())}")
-             # Check if the crucial final output is present AFTER patching
-             if 'final_video_uri' not in st.session_state['final_state']:
-                  logger.error("STREAM UI: Final state stored, but 'final_video_uri' is still missing!")
-                  st.session_state['error_message'] = "Agent finished, but final video URI is missing in the captured state. Assembly might have failed silently or stream ended unexpectedly."
-                  yield f"\n⚠️ **Agent finished, but final video URI is missing in the captured state. Check logs.**"
-             else:
-                  yield f"\n{node_emojis['__end__']} **Agent execution complete! Processing final video...**"
-
+        # ---- After the loop completes WITHOUT raising an exception ----
+        final_state_on_success = latest_full_state # The state after the last node finished
+        st.session_state['final_state'] = final_state_on_success # Store the complete final state
+        logger.info(f"STREAM UI: Stream finished successfully. Nodes seen: {nodes_seen_in_stream}")
+        if st.session_state['final_state']:
+            logger.info(f"STREAM UI: Storing final state with keys: {list(st.session_state['final_state'].keys())}")
+            yield f"\n{node_emojis['__end__']} **Agent execution complete! Processing final video...**"
         else:
-             # This means no successful dictionary state updates were processed at all
-             logger.error("STREAM UI: Stream finished but no valid state was captured!")
-             st.session_state['error_message'] = "Execution finished, but no valid agent state was captured. Check logs."
-             yield f"\n❌ **Execution finished, but no valid agent state was captured. Check logs.**"
+             logger.error("STREAM UI: Stream finished but final state is missing!")
+             st.session_state['error_message'] = "Execution finished, but final state is missing. Check logs."
+             yield f"\n⚠️ **Execution finished, but final state is missing. Check logs.**"
 
 
     except Exception as e:
-        # ---- If a critical exception occurs DURING the stream execution ----
+        # ---- If an exception occurs DURING the stream execution (e.g., network error, internal LangGraph error) ----
         logger.error(f"STREAM UI: Critical error during agent stream: {e}", exc_info=True)
         logger.warning(f"STREAM UI: Stream errored. Nodes seen before error: {nodes_seen_in_stream}")
         # Store the partial state captured just before the error
-        st.session_state['final_state'] = latest_full_state # Store whatever we had last
+        st.session_state['final_state'] = latest_full_state
         # Store the critical error message
         st.session_state['error_message'] = f"Critical Error during agent execution: {e}"
         logger.warning(f"STREAM UI: Storing partial state on error with keys: {list(st.session_state['final_state'].keys()) if st.session_state['final_state'] else 'None'}")
         yield f"\n❌ **{st.session_state['error_message']}**"
 
-    # This block always runs after the try/except completes
+    # This block always runs after the try/except completes (success or failure)
     finally:
         st.session_state.run_complete = True
-        # No st.rerun() needed here; Streamlit handles the rerun after button logic completes.
+        # No need to rerun here, the display logic runs based on run_complete=True
+
 
 # --- UI Layout ---
 col1, col2 = st.columns([1, 3]) # Left column for controls, right for output

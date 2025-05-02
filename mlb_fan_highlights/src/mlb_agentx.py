@@ -330,6 +330,7 @@ class AgentState(TypedDict):
     generated_video_assets: Optional[List[Dict[str, Any]]]
     generated_audio_uri: Optional[str] # GCS URI for the final audio
     word_timestamps: Optional[List[Dict[str, Any]]]
+    final_video_uri: Optional[str] # Use a distinct key if needed
     error: Optional[str]
 
 def load_image_bytes_from_gcs(gcs_uri: str) -> Optional[Tuple[bytes, str]]:
@@ -2869,6 +2870,8 @@ def aggregate_final_output_node(state: AgentState) -> Dict[str, Any]:
     generated_video_data = state.get("generated_video_assets") or [] # Get video data
     word_timestamps = state.get("word_timestamps") 
 
+    
+
     # *** ADD DEBUG LOGGING HERE ***
     logger.debug(f"Aggregate Node Received State Keys: {list(state.keys())}")
     logger.debug(f"Aggregate Node - Type of generated_video_assets: {type(generated_video_data)}")
@@ -3310,7 +3313,8 @@ if __name__ == "__main__":
         "max_visual_revisions": 2, # Set the visual loop limit (user requested 2)
         "generated_video_assets": [],
         "generated_audio_uri": [],
-        "word_timestamps": None, 
+        "word_timestamps": None,
+        "final_video_uri": [],
         "error": None,
     }
 
