@@ -3186,7 +3186,7 @@ def call_mlb_api(url: str) -> Dict:
         logger.error(f"Error calling MLB API {url}: {e}")
         return {}
 
-def get_latest_final_game_pk(team_id: int, season: int = 2024) -> Optional[int]:
+def get_latest_final_game_pk(team_id: int, season: int = 2025) -> Optional[int]:
     """Fetches the most recent *final* game ID for a specific team."""
     url = f'https://statsapi.mlb.com/api/v1/schedule?sportId=1&season={season}&teamId={team_id}&fields=dates,games,gamePk,officialDate,status,detailedState'
     logger.info(f"Fetching latest game for team {team_id}...")
