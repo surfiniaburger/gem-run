@@ -3186,7 +3186,7 @@ def call_mlb_api(url: str) -> Dict:
         logger.error(f"Error calling MLB API {url}: {e}")
         return {}
 
-def get_latest_final_game_pk(team_id: int, season: int = 2024) -> Optional[int]:
+def get_latest_final_game_pk(team_id: int, season: int = 2025) -> Optional[int]:
     """Fetches the most recent *final* game ID for a specific team."""
     url = f'https://statsapi.mlb.com/api/v1/schedule?sportId=1&season={season}&teamId={team_id}&fields=dates,games,gamePk,officialDate,status,detailedState'
     logger.info(f"Fetching latest game for team {team_id}...")
@@ -3252,7 +3252,7 @@ if __name__ == "__main__":
 
     # --- Dynamic Game PK ---
     # Choose a default team ID to find the latest game for (e.g., Rangers = 140)
-    default_team_id_for_latest = 138
+    default_team_id_for_latest = 108
     latest_game_pk = get_latest_final_game_pk(default_team_id_for_latest)
 
     if not latest_game_pk:
