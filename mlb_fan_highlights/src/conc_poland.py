@@ -42,7 +42,7 @@ VERTEX_LLM_RPM = 180 # Requests per minute (example for gemini-1.5-flash)
 VERTEX_EMB_RPM = 1400 # Requests per minute (example for text-embedding-005)
 
 # How many recent games to process per team
-NUM_GAMES_PER_TEAM = 10 # Set low for testing, increase for production
+NUM_GAMES_PER_TEAM = 1 # Set low for testing, increase for production
 
 # Team configurations (shortened for brevity)
 TEAMS = {
@@ -296,7 +296,7 @@ def upload_to_bigquery(df: pd.DataFrame, table_id: str, schema: List[bigquery.Sc
 
 # --- Core Processing Functions ---
 
-def get_recent_game_ids(team_id: int, season: int = 2024, num_games: int = 10) -> List[int]:
+def get_recent_game_ids(team_id: int, season: int = 2025, num_games: int = 2) -> List[int]:
     """Fetch recent game IDs for a specified team and season"""
     url = f'https://statsapi.mlb.com/api/v1/schedule?sportId=1&season={season}&teamId={team_id}&fields=dates,games,gamePk,officialDate,status,detailedState'
     schedule_data = call_mlb_api(url)
