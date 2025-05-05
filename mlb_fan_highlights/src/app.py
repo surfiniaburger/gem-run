@@ -15,7 +15,7 @@ from google.oauth2 import service_account
 # --- Import necessary components from your NEW agent script ---
 # *** Make sure this points to your latest agent script file ***
 try:
-    from mlb_agentx import (
+    from mlb_agentz import (
         app,  # The compiled LangGraph app
         TEAMS,
         get_latest_final_game_pk,
