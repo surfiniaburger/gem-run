@@ -2422,6 +2422,7 @@ def assemble_video_node(state: AgentState) -> Dict[str, Any]:
     return {"final_video_uri": final_video_gcs_uri} # Use a distinct key if needed
 
 
+
 # --- Helper function needed ---
 def parse_player_name_from_query(search_term: str) -> Optional[str]:
     """Extracts player name from a search query like 'Player Name headshot'."""
@@ -2450,14 +2451,15 @@ def check_gcs_blob_exists(bucket_name: str, blob_name: str) -> bool:
 # from image_embedding_pipeline2 import search_similar_images_sdk # Assuming this is imported or defined
 
 # --- Revised retrieve_images_node (Uses Vector Search for Both) ---
+# --- Revised retrieve_images_node ---
 def retrieve_images_node(state: AgentState) -> Dict[str, Any]:
     """
-    Retrieves images using VECTOR SEARCH for both logos and headshots.
+    Retrieves images: Uses DIRECT LOOKUP for headshots based on Player ID,
+    and VECTOR SEARCH for logos.
     """
-    logger.info("--- Retrieve Images Node (Vector Search for All) ---")
-    image_searches_to_run = state.get("image_search_queries") or []
-    # player_lookup_dict is no longer needed for lookup *within this node*
-    # but might still be useful elsewhere (e.g., adding names to generated text).
+    logger.info("--- Retrieve Images Node (Direct Headshot Lookup + Vector Logo Search) ---")
+    image_searches_to_run = state.get("image_search_queries")
+    player_lookup_dict = state.get("player_lookup_dict") or {}
 
     final_retrieved_images = [] # Store final selected images
 
@@ -2465,8 +2467,11 @@ def retrieve_images_node(state: AgentState) -> Dict[str, Any]:
         logger.info("No image search queries provided.")
         return {"retrieved_image_data": []}
 
+    # Create name -> ID lookup (case-insensitive)
+    name_to_id_lookup = {name.lower(): pid for pid, name in player_lookup_dict.items()}
+
     processed_image_queries = set()
-    logger.info(f"Processing {len(image_searches_to_run)} image search queries via Vector Search...")
+    logger.info(f"Processing {len(image_searches_to_run)} image search queries...")
 
     for search_term in image_searches_to_run:
         if not isinstance(search_term, str) or not search_term.strip() or search_term in processed_image_queries:
@@ -2474,49 +2479,82 @@ def retrieve_images_node(state: AgentState) -> Dict[str, Any]:
         processed_image_queries.add(search_term)
 
         selected_image_data = None # To hold the data for the selected image
-        image_type_filter = None   # Determine filter type
 
-        # --- Determine Query Type and Filter ---
+        # --- Determine Query Type ---
         if "logo" in search_term.lower():
-            image_type_filter = "logo"
-            logger.info(f"Searching for logo: '{search_term}'")
+            # --- Logo Logic: Use Vector Search ---
+            logger.info(f"Searching logo for '{search_term}' using Vector Search...")
+            try:
+                logo_candidates = search_similar_images_sdk(
+                    query_text=search_term,
+                    top_k=1
+                )
+                if logo_candidates:
+                    selected_image_data = logo_candidates[0] # Take the top result
+                    selected_image_data['search_term_origin'] = search_term
+                    logger.info(f" -> Found logo: {selected_image_data.get('image_uri')}")
+                else:
+                    logger.warning(f"Vector search found no logo for '{search_term}'.")
+            except Exception as search_err:
+                logger.error(f"Error during logo vector search for '{search_term}': {search_err}", exc_info=True)
+            # --- End Logo Logic ---
+
         elif "headshot" in search_term.lower() or "player" in search_term.lower():
-            image_type_filter = "headshot"
-            logger.info(f"Searching for headshot: '{search_term}'")
+            # --- Headshot Logic: Use Direct Lookup ---
+            target_player_name = parse_player_name_from_query(search_term)
+
+            if not target_player_name:
+                logger.warning(f"Could not parse target player name from headshot query: '{search_term}'. Skipping.")
+                continue # Skip if name cannot be parsed
+
+            if not player_lookup_dict:
+                 logger.warning(f"Player lookup empty, cannot perform direct lookup for '{target_player_name}'. Skipping.")
+                 continue # Skip if lookup failed
+
+            target_player_id = name_to_id_lookup.get(target_player_name.lower())
+
+            if target_player_id:
+                logger.info(f"Attempting direct lookup for '{target_player_name}' (ID: {target_player_id})...")
+                # Construct the expected URI (ensure GCS bucket/prefix config vars are correct)
+                # Assuming filename format headshot_{player_id}.jpg
+                expected_blob_name = f"{GCS_PREFIX_HEADSHOTS}headshot_{target_player_id}.jpg"
+                expected_uri = f"gs://{GCS_BUCKET_HEADSHOTS}/{expected_blob_name}"
+
+                # Optional: Verify blob exists
+                if check_gcs_blob_exists(GCS_BUCKET_HEADSHOTS, expected_blob_name):
+                    logger.info(f"   --> Found and verified headshot via direct lookup: {expected_uri}")
+                    # Create the result dictionary directly
+                    selected_image_data = {
+                        "image_uri": expected_uri,
+                        "image_type": "headshot",
+                        "entity_id": str(target_player_id), # Store ID as string
+                        "entity_name": player_lookup_dict.get(target_player_id, target_player_name), # Get name from original dict
+                        "distance": 0.0, # Indicate perfect match from lookup
+                        "search_term_origin": search_term
+                    }
+                else:
+                    logger.warning(f"   Direct lookup failed: Expected blob '{expected_blob_name}' not found in GCS for '{target_player_name}'.")
+                    # Consider fallback? For now, we add nothing if direct lookup fails verification.
+
+            else:
+                # If the target player name wasn't in our metadata lookup
+                logger.warning(f"Could not find player ID for name '{target_player_name}' in lookup table. Cannot retrieve headshot for '{search_term}'.")
+            # --- End Headshot Logic ---
         else:
             logger.warning(f"Unrecognized image search type for query: '{search_term}'. Skipping.")
-            continue
-
-        # --- Perform Vector Search ---
-        try:
-            search_results = search_similar_images_sdk(
-                query_text=search_term,
-                top_k=1, # Usually want the single best match
-               
-            )
-            if search_results:
-                # Take the top result
-                selected_image_data = search_results[0]
-                # Add the original search term for context if needed later
-                selected_image_data['search_term_origin'] = search_term
-                logger.info(f" -> Found via vector search: {selected_image_data.get('image_uri')} (Type: {image_type_filter}, Dist: {selected_image_data.get('distance'):.4f})")
-            else:
-                logger.warning(f"Vector search found no results for '{search_term}' (Type: {image_type_filter}).")
-
-        except Exception as search_err:
-            logger.error(f"Error during vector search for '{search_term}' (Type: {image_type_filter}): {search_err}", exc_info=True)
-        # --- End Vector Search ---
 
         # Add the selected image data (if any) to the final list
         if selected_image_data:
             final_retrieved_images.append(selected_image_data)
 
-        time.sleep(0.3) # Small pause between searches (optional)
+        time.sleep(0.2) # Small pause between processing each search term
 
-    # No need to deduplicate based on URI here, as vector search should handle finding the best match.
-    logger.info(f"Retrieved {len(final_retrieved_images)} image metadata records via vector search.")
+    # Deduplicate final list (less likely needed with direct lookup but safe)
+    unique_image_data = list({img['image_uri']: img for img in final_retrieved_images}.values())
+    logger.info(f"Retrieved {len(unique_image_data)} unique image metadata records (Direct lookup for headshots).")
 
-    return {"retrieved_image_data": final_retrieved_images}
+    return {"retrieved_image_data": unique_image_data}
+
 
 # --- Define the new node function ---
 def transcribe_for_timestamps_node(state: AgentState) -> Dict[str, Any]:
@@ -3480,7 +3518,7 @@ if __name__ == "__main__":
 
     # --- Dynamic Game PK ---
     # Choose a default team ID to find the latest game for (e.g., Rangers = 140)
-    default_team_id_for_latest = 112
+    default_team_id_for_latest = 138
     latest_game_pk = get_latest_final_game_pk(default_team_id_for_latest)
 
     if not latest_game_pk:
@@ -3501,7 +3539,26 @@ if __name__ == "__main__":
 
     max_loops = 2
 
+    # --- *** MOVED: Load Player Metadata BEFORE Initial State *** ---
+    logger.info("Loading player metadata into memory for lookups...")
+    player_lookup_dict = {} # Initialize as empty dict
+    try:
+        # Ensure necessary tables exist first (optional, but good practice)
+        # setup_player_metadata_table() # Uncomment if needed
 
+        player_lookup_query = f"SELECT player_id, player_name FROM `{GCP_PROJECT_ID}.{BQ_DATASET_ID}.{PLAYER_METADATA_TABLE_ID}`"
+        player_results_df = execute_bq_query(player_lookup_query) # Get DataFrame
+
+        if player_results_df is not None and not player_results_df.empty:
+            # Use .iterrows() to build the dictionary
+            player_lookup_dict = {int(row['player_id']): row['player_name'] for index, row in player_results_df.iterrows() if pd.notna(row['player_id'])}
+            logger.info(f"Loaded {len(player_lookup_dict)} player names into lookup dictionary.")
+        else:
+            logger.warning("Player metadata query failed or returned no results. Lookup dictionary is empty.")
+    except Exception as meta_err:
+         logger.error(f"Failed to load player metadata: {meta_err}. Proceeding with empty lookup.", exc_info=True)
+         player_lookup_dict = {} # Ensure it's an empty dict on error
+    # --- *** END MOVED BLOCK *** ---
 
     initial_state = {
         "task": task,
@@ -3511,6 +3568,7 @@ if __name__ == "__main__":
         "plan": None,
         "structured_data": None,
         "narrative_context": [],
+        "player_lookup_dict": player_lookup_dict,
         "image_search_queries":None, 
         "retrieved_image_data":None,        
         "draft": None,
