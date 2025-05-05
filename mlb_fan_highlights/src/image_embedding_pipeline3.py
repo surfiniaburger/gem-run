@@ -1,3 +1,5 @@
+# image_embedding_pipeline_name_only.py
+
 import logging
 import time
 import re
@@ -8,23 +10,21 @@ from datetime import datetime, timezone
 from ratelimit import limits, sleep_and_retry
 
 from google.cloud import bigquery
-from google.cloud import storage # Added GCS client
+from google.cloud import storage
 from google.api_core.exceptions import NotFound, BadRequest, Conflict, PreconditionFailed
-from google.api_core.retry import Retry # Added for SDK calls
+from google.api_core.retry import Retry
 
 # --- Vertex AI Imports ---
 import vertexai
-from vertexai.vision_models import Image, MultiModalEmbeddingModel # Corrected import location
+from vertexai.vision_models import Image, MultiModalEmbeddingModel
 # --- End Vertex AI Imports ---
 
-# --- Import roster fetching function (or copy it here) ---
-# Assuming you have the roster fetching logic available
-# Example: from headshot_downloader import call_mlb_roster_api, TEAMS
-# --- Placeholder for Roster Fetching ---
-# (Copy or import relevant parts from your headshot_downloader.py)
+# --- Placeholder for Roster Fetching (IF NEEDED - not strictly needed for embedding name-only files) ---
+# If you still want the metadata table for other reasons, keep this section.
+# Otherwise, you could remove roster fetching and player metadata table logic.
 ROSTER_URL_TEMPLATE = "https://statsapi.mlb.com/api/v1/teams/{team_id}/roster?season={season}"
 MLB_API_SEASON = 2024 # Or adjust as needed
-TEAMS = {
+TEAMS = { # Your TEAMS dictionary
     'rangers': 140, 'angels': 108, 'astros': 117, 'rays': 139, 'blue_jays': 141,
     'yankees': 147, 'orioles': 110, 'red_sox': 111, 'twins': 142, 'white_sox': 145,
     'guardians': 114, 'tigers': 116, 'royals': 118, 'padres': 135, 'giants': 137,
@@ -54,22 +54,20 @@ logger = logging.getLogger(__name__)
 
 # --- Configuration ---
 GCP_PROJECT_ID = "silver-455021"
-GCP_LOCATION = "us-central1" # Location for Vertex AI initialization
-BQ_DATASET_LOCATION = "US" # Actual location of your BQ dataset
+GCP_LOCATION = "us-central1"
+BQ_DATASET_LOCATION = "US"
 BQ_DATASET_ID = "mlb_rag_data_2024"
 
 # GCS Configuration
-GCS_BUCKET_LOGOS = "mlb_logos"
-GCS_PREFIX_LOGOS = "" # e.g., "logos/" if logos are in a subfolder
-GCS_BUCKET_HEADSHOTS = "mlb-headshots"
-GCS_PREFIX_HEADSHOTS = "headshots/" # e.g., "headshots/"
+GCS_BUCKET_LOGOS = "mlb_logos" # Assumes logos remain the same
+GCS_PREFIX_LOGOS = ""
+GCS_BUCKET_HEADSHOTS = "mlb-headshots-name-only" # <--- POINT TO THE NEW BUCKET/FOLDER
+GCS_PREFIX_HEADSHOTS = "headshots/"
 
 # BigQuery Table/Index Names
-# OBJECT_TABLE_ID = "mlb_images_object_table" # Not needed for this approach
-# EMBEDDING_MODEL_ID = "mlb_multimodal_embedding_model" # Not needed for this approach
-EMBEDDING_TABLE_ID = "mlb_image_embeddings_sdk" # Use a new table name to avoid conflicts
-PLAYER_METADATA_TABLE_ID = "mlb_player_metadata"
-VECTOR_INDEX_ID = "mlb_image_embeddings_sdk_idx" # Index name matches new table
+EMBEDDING_TABLE_ID = "mlb_image_embeddings_sdk_name_only" # <--- New BQ Table
+PLAYER_METADATA_TABLE_ID = "mlb_player_metadata_name_only" # <--- (Optional) New Metadata Table
+VECTOR_INDEX_ID = "mlb_image_embeddings_sdk_name_only_idx" # <--- New Index
 
 # Vertex AI Model Configuration
 VERTEX_MULTIMODAL_MODEL_NAME = "multimodalembedding@001"
@@ -77,7 +75,6 @@ EMBEDDING_DIMENSIONALITY = 1408
 
 # SDK Call Settings
 SDK_RETRY_CONFIG = Retry(initial=1.0, maximum=10.0, multiplier=2.0, deadline=60.0)
-SDK_BATCH_SIZE = 10 # How many images to process before uploading a batch to BQ
 
 # --- Initialize Clients ---
 try:
@@ -91,9 +88,8 @@ except Exception as e:
     exit(1)
 
 # --- Helper Function to Execute BQ Queries ---
-# (Keep the execute_bq_query function as defined previously for schema checks, index, search)
 def execute_bq_query(sql: str, job_config: Optional[bigquery.QueryJobConfig] = None) -> Optional[bigquery.table.RowIterator]:
-    """Executes a BigQuery query and handles common errors."""
+    # ... (implementation remains the same)
     try:
         logger.info(f"Executing BQ Query: {sql[:300]}...")
         query_job = bq_client.query(sql, job_config=job_config)
@@ -124,15 +120,15 @@ def execute_bq_query(sql: str, job_config: Optional[bigquery.QueryJobConfig] = N
         logger.error(f"Query: {sql}")
         raise
 
-# --- Setup Functions (Simplified for SDK approach) ---
+
+# --- Setup Functions ---
 
 def setup_embedding_table_sdk():
-    """Creates the target table for storing SDK-generated embeddings."""
-    # *** Uses the new table name ***
+    """Creates the target table for storing SDK-generated embeddings (name-only format)."""
     full_table_id = f"{GCP_PROJECT_ID}.{BQ_DATASET_ID}.{EMBEDDING_TABLE_ID}"
     logger.info(f"Ensuring Embedding Table {full_table_id} exists for SDK results...")
 
-    # Delete existing table first to ensure schema is correct (optional, but safer for dev)
+    # Consider deleting existing table if schema changes or for clean tests
     try:
         logger.warning(f"Attempting to delete existing table {full_table_id}...")
         bq_client.delete_table(full_table_id, not_found_ok=True)
@@ -140,31 +136,35 @@ def setup_embedding_table_sdk():
     except Exception as e:
         logger.error(f"Error attempting to delete table {full_table_id} (continuing to create): {e}", exc_info=True)
 
-    # Define schema
     schema = [
-        bigquery.SchemaField("image_uri", "STRING", mode="REQUIRED", description="GCS URI of the image"),
-        bigquery.SchemaField("image_type", "STRING", mode="NULLABLE", description="Type of image: 'logo' or 'headshot'"),
-        bigquery.SchemaField("entity_id", "STRING", mode="NULLABLE", description="Team ID/Name (from logo name) or Player ID (from headshot name)"),
-        bigquery.SchemaField("entity_name", "STRING", mode="NULLABLE", description="Player Name (from metadata table) or Team Name (parsed)"),
-        bigquery.SchemaField("embedding", "FLOAT64", mode="REPEATED", description=f"Multimodal embedding vector ({EMBEDDING_DIMENSIONALITY} dimensions)"),
+        bigquery.SchemaField("image_uri", "STRING", mode="REQUIRED"),
+        bigquery.SchemaField("image_type", "STRING", mode="NULLABLE"), # 'logo' or 'headshot'
+        # Entity ID and Name will store the sanitized name for BOTH logos and headshots
+        bigquery.SchemaField("entity_id", "STRING", mode="NULLABLE", description="Sanitized Team Name (logo) or Player Name (headshot)"),
+        bigquery.SchemaField("entity_name", "STRING", mode="NULLABLE", description="Sanitized Team Name (logo) or Player Name (headshot)"),
+        bigquery.SchemaField("embedding", "FLOAT64", mode="REPEATED"),
         bigquery.SchemaField("last_updated", "TIMESTAMP", mode="NULLABLE"),
     ]
     table = bigquery.Table(full_table_id, schema=schema)
-    table.description = "Stores multimodal embeddings (SDK generated) for MLB logos and player headshots"
+    table.description = "Stores multimodal embeddings (SDK generated) using sanitized names as IDs for logos and headshots"
 
     try:
         bq_client.create_table(table)
         logger.info(f"Table {full_table_id} created with the latest schema.")
     except Conflict:
-         logger.info(f"Table {full_table_id} already exists (delete might have failed?).")
+         logger.info(f"Table {full_table_id} already exists.")
     except Exception as e:
         logger.error(f"Failed to create embedding table {full_table_id}: {e}", exc_info=True)
         raise
 
-# --- Player Metadata Functions (Keep as before) ---
+# --- Player Metadata Functions (OPTIONAL based on need) ---
+# If you no longer need the player_id -> player_name mapping in BQ for this pipeline,
+# you can comment out or remove setup_player_metadata_table and populate_player_metadata.
+# Keep them if they serve other purposes.
+
 def setup_player_metadata_table():
-    """Creates the table to store player ID and name mappings."""
-    # (Keep implementation from previous version)
+    """(Optional) Creates the table to store player ID and name mappings."""
+    # ... (Implementation remains the same, using PLAYER_METADATA_TABLE_ID) ...
     full_table_id = f"{GCP_PROJECT_ID}.{BQ_DATASET_ID}.{PLAYER_METADATA_TABLE_ID}"
     logger.info(f"Ensuring Player Metadata Table {full_table_id} exists...")
     schema = [
@@ -181,9 +181,10 @@ def setup_player_metadata_table():
         logger.error(f"Failed to create or ensure player metadata table {full_table_id}: {e}", exc_info=True)
         raise
 
+
 def populate_player_metadata():
-    """Fetches all rosters and upserts player ID/Name into the metadata table."""
-    # (Keep implementation from previous version, using MERGE)
+    """(Optional) Fetches all rosters and upserts player ID/Name into the metadata table."""
+    # ... (Implementation remains the same, using PLAYER_METADATA_TABLE_ID) ...
     logger.info("Fetching all team rosters to update player metadata...")
     all_players_data = []
     for team_name, team_id in TEAMS.items():
@@ -198,7 +199,7 @@ def populate_player_metadata():
                     all_players_data.append({'player_id': player_id, 'player_name': player_name})
         else:
             logger.warning(f"Could not retrieve or parse roster for team {team_id}.")
-        time.sleep(0.2)
+        time.sleep(0.2) # Be nice to API
 
     if not all_players_data:
         logger.error("No player data fetched. Cannot populate player metadata table.")
@@ -253,10 +254,9 @@ def populate_player_metadata():
 # --- SDK Embedding Generation and Loading ---
 
 def get_existing_uris(target_table_id: str) -> Set[str]:
-    """Fetches all existing image URIs from the target embedding table."""
+    # ... (implementation remains the same)
     uris = set()
     try:
-        # Ensure the table exists before querying
         bq_client.get_table(target_table_id)
         query = f"SELECT DISTINCT image_uri FROM `{target_table_id}` WHERE image_uri IS NOT NULL"
         results = execute_bq_query(query)
@@ -270,15 +270,17 @@ def get_existing_uris(target_table_id: str) -> Set[str]:
         logger.error(f"Error fetching existing URIs: {e}. Proceeding without exclusion.", exc_info=True)
     return uris
 
-def generate_embeddings_sdk(gcs_bucket_name: str, gcs_prefix: str, image_type: str, player_lookup: Dict[int, str], existing_uris: Set[str]) -> List[Dict]:
+
+# In image_embedding_pipeline_name_only.py
+
+def generate_embeddings_sdk(gcs_bucket_name: str, gcs_prefix: str, image_type: str, existing_uris: Set[str]) -> List[Dict]:
     """
-    Lists images in GCS, generates embeddings using Vertex AI SDK, parses metadata,
-    and returns a list of dictionaries ready for DataFrame creation.
-    Corrects regex patterns for entity ID parsing.
+    Lists images in GCS, generates embeddings using Vertex AI SDK, parses metadata
+    using sanitized NAME as entity_id/entity_name for both logos and headshots.
+    Uses robust regex for parsing sanitized names.
     """
     results_list = []
     bucket = storage_client.bucket(gcs_bucket_name)
-    # Ensure prefix ends with / if it's meant to be a folder, or handle cases where it might be empty
     if gcs_prefix and not gcs_prefix.endswith('/'):
         gcs_prefix += '/'
     blobs = storage_client.list_blobs(bucket, prefix=gcs_prefix)
@@ -293,86 +295,71 @@ def generate_embeddings_sdk(gcs_bucket_name: str, gcs_prefix: str, image_type: s
         count += 1
         image_uri = f"gs://{gcs_bucket_name}/{blob.name}"
 
-        if image_uri in existing_uris:
-            continue
-        if blob.name.endswith('/'): # Skip directories explicitly listed
-             continue
+        # --- Skips remain the same ---
+        if image_uri in existing_uris: continue
+        if blob.name.endswith('/'): continue
         if not blob.content_type or not blob.content_type.startswith("image/"):
              logger.warning(f"Skipping non-image file: {image_uri} (Content-Type: {blob.content_type})")
              continue
 
-        # Use relative path for regex matching if prefix exists
         relative_path = blob.name[len(gcs_prefix):] if gcs_prefix else blob.name
-
         logger.info(f"Processing image {processed_count + 1}: {image_uri} (Relative: {relative_path})")
 
         try:
+            # --- Embedding generation remains the same ---
             vertex_image = Image.load_from_file(image_uri)
             response = multimodal_embedding_model.get_embeddings(
-                image=vertex_image,
-                contextual_text=None,
-                dimension=EMBEDDING_DIMENSIONALITY,
+                image=vertex_image, contextual_text=None, dimension=EMBEDDING_DIMENSIONALITY
             )
             embedding_list = response.image_embedding
 
-            # Parse Metadata using relative_path
-            parsed_entity_id_str = None
-            entity_name = None
+            # --- Parse Metadata using NAME only ---
+            parsed_entity_id_name = None
+
             if image_type == 'logo':
-                # *** CORRECTED REGEX (no leading /) ***
-                # Try ID first (less likely for logos, but check)
-                id_match = re.search(r'(\d+).*\.(png|jpg|jpeg)$', relative_path, re.IGNORECASE)
-                # Try team name pattern
                 name_match = re.search(r'mlb-([a-z0-9-]+(?:-[a-z0-9-]+)*)-logo\.(png|jpg|jpeg)$', relative_path, re.IGNORECASE)
-                # ****************************************
-                if id_match:
-                    parsed_entity_id_str = id_match.group(1)
-                    logger.info(f" -> Parsed logo ID: {parsed_entity_id_str}")
-                elif name_match:
-                    parsed_entity_id_str = name_match.group(1)
-                    logger.info(f" -> Parsed logo name: {parsed_entity_id_str}")
-                entity_name = parsed_entity_id_str # Use parsed ID/name as entity_name for logos
+                if name_match:
+                    parsed_entity_id_name = name_match.group(1)
+                    logger.info(f" -> Parsed logo name: {parsed_entity_id_name}")
+                else:
+                    logger.warning(f"Could not parse logo name from relative path: {relative_path}")
 
             elif image_type == 'headshot':
-                 # *** CORRECTED REGEX (no leading /) ***
-                 id_match = re.search(r'headshot_(\d+)\.(jpg|jpeg|png)$', relative_path, re.IGNORECASE)
-                 # ****************************************
-                 if id_match:
-                     parsed_entity_id_str = id_match.group(1)
-                     logger.info(f" -> Parsed headshot ID: {parsed_entity_id_str}")
-                     try:
-                         player_id_int = int(parsed_entity_id_str)
-                         entity_name = player_lookup.get(player_id_int, None)
-                         if not entity_name:
-                              logger.warning(f" -> Player name not found in lookup for ID: {player_id_int}")
-                         else:
-                              logger.info(f" -> Found player name: {entity_name}")
-                     except ValueError:
-                          logger.warning(f" -> Could not parse player ID as integer: {parsed_entity_id_str}")
-                 else: # Add else block here
-                      logger.warning(f"Could not parse headshot ID from relative path: {relative_path}")
+                 # MODIFIED REGEX: Use \w+ which matches letters (including Unicode in Py3), numbers, and underscore.
+                 # This robustly handles the output of the improved sanitize_filename.
+                 name_match = re.search(r'headshot_(\w+)\.(jpg|jpeg|png)$', relative_path, re.IGNORECASE)
+                 if name_match:
+                     parsed_entity_id_name = name_match.group(1) # e.g., "andres_gimenez"
+                     logger.info(f" -> Parsed headshot name: {parsed_entity_id_name}")
+                 else:
+                     # Keep the fallback check for older ID-only files if you might have them mixed in
+                     id_only_match = re.search(r'headshot_(\d+)\.(jpg|jpeg|png)$', relative_path, re.IGNORECASE)
+                     if id_only_match:
+                         logger.warning(f"Found ID-only headshot file: {relative_path}. Cannot determine player name from filename. Skipping.")
+                         parsed_entity_id_name = None
+                     else:
+                         logger.warning(f"Could not parse headshot name from relative path using expected patterns: {relative_path}")
 
+            # --- End Metadata Parsing ---
 
-            if not parsed_entity_id_str:
-                 # Log the relative path that failed matching
-                 logger.warning(f"Could not parse entity ID for type '{image_type}' from relative path: {relative_path} (Full URI: {image_uri})")
+            # --- Appending results remains the same ---
+            if parsed_entity_id_name:
+                results_list.append({
+                    "image_uri": image_uri, "image_type": image_type,
+                    "entity_id": parsed_entity_id_name, "entity_name": parsed_entity_id_name,
+                    "embedding": embedding_list, "last_updated": datetime.now(timezone.utc)
+                })
+                processed_count += 1
+            else:
+                 logger.warning(f"Skipping embedding for {image_uri} due to missing entity identifier from filename.")
 
-            results_list.append({
-                "image_uri": image_uri, "image_type": image_type,
-                "entity_id": parsed_entity_id_str, "entity_name": entity_name,
-                "embedding": embedding_list, "last_updated": datetime.now(timezone.utc)
-            })
-            processed_count += 1
-            # time.sleep(0.1)
-
+        # --- Error handling remains the same ---
         except PreconditionFailed as e:
              error_count += 1
              logger.error(f"PreconditionFailed error processing {image_uri}: {e}", exc_info=True if error_count <= max_errors_to_log else False)
-             if error_count == max_errors_to_log: logger.error("Further SDK errors will not log full traceback.")
         except Exception as e:
             error_count += 1
             logger.error(f"Error processing {image_uri}: {e}", exc_info=True if error_count <= max_errors_to_log else False)
-            if error_count == max_errors_to_log: logger.error("Further SDK errors will not log full traceback.")
 
         if processed_count > 0 and processed_count % 100 == 0:
              logger.info(f"Progress: Processed {processed_count} new {image_type} images...")
@@ -382,7 +369,7 @@ def generate_embeddings_sdk(gcs_bucket_name: str, gcs_prefix: str, image_type: s
     return results_list
 
 def load_embeddings_to_bq(results: List[Dict]):
-    """Loads the generated embedding data into BigQuery."""
+    # ... (implementation remains the same, uses EMBEDDING_TABLE_ID) ...
     if not results:
         logger.info("No new embeddings generated to load.")
         return
@@ -391,14 +378,10 @@ def load_embeddings_to_bq(results: List[Dict]):
     logger.info(f"Preparing to load {len(results)} new embeddings into {full_table_id}...")
 
     df = pd.DataFrame(results)
-
-    # Ensure correct data types for BQ schema
     df['last_updated'] = pd.to_datetime(df['last_updated'])
-    # BQ client library handles list-like columns (embeddings) correctly if they are lists/tuples
 
-    # Define BQ schema for load job (should match create_table schema)
     job_config = bigquery.LoadJobConfig(
-        schema=[
+        schema=[ # Ensure this matches setup_embedding_table_sdk schema
             bigquery.SchemaField("image_uri", "STRING", mode="REQUIRED"),
             bigquery.SchemaField("image_type", "STRING", mode="NULLABLE"),
             bigquery.SchemaField("entity_id", "STRING", mode="NULLABLE"),
@@ -406,26 +389,22 @@ def load_embeddings_to_bq(results: List[Dict]):
             bigquery.SchemaField("embedding", "FLOAT64", mode="REPEATED"),
             bigquery.SchemaField("last_updated", "TIMESTAMP", mode="NULLABLE"),
         ],
-        write_disposition="WRITE_APPEND", # Append new embeddings
+        write_disposition="WRITE_APPEND",
     )
 
     try:
         load_job = bq_client.load_table_from_dataframe(df, full_table_id, job_config=job_config)
         logger.info(f"Starting BigQuery load job {load_job.job_id}...")
-        load_job.result() # Wait for completion
+        load_job.result()
         logger.info(f"Successfully loaded {load_job.output_rows} rows into {full_table_id}.")
     except Exception as e:
         logger.error(f"Failed to load embeddings DataFrame to BigQuery: {e}", exc_info=True)
-        # Consider saving the DataFrame locally if BQ load fails
-        # df.to_csv("failed_embeddings_batch.csv", index=False)
-        # logger.info("Saved failed batch to failed_embeddings_batch.csv")
 
 
-# --- Vector Index and Search Functions (Keep as before, but use new table/index names) ---
+# --- Vector Index and Search Functions ---
 
 def setup_vector_index_sdk():
-    """Creates the Vector Index on the new SDK embedding table."""
-    # *** Uses new table/index names ***
+    # ... (implementation remains the same, uses EMBEDDING_TABLE_ID and VECTOR_INDEX_ID) ...
     embedding_table_fqn = f"`{GCP_PROJECT_ID}.{BQ_DATASET_ID}.{EMBEDDING_TABLE_ID}`"
     index_fqn = f"`{GCP_PROJECT_ID}.{BQ_DATASET_ID}`.{VECTOR_INDEX_ID}"
     index_check_sql = f"""
@@ -447,70 +426,95 @@ def setup_vector_index_sdk():
     execute_bq_query(create_index_sql)
     logger.info(f"Vector index {VECTOR_INDEX_ID} creation initiated (may take time to build).")
 
-import json # Make sure json is imported at the top of your script
+# In image_embedding_pipeline_name_only.py
+
+import json
+# ... other imports
+# In image_embedding_pipeline_name_only.py
+
+import json # Ensure json is imported
+# ... other imports
 
 def search_similar_images_sdk(
-    query_text: str, top_k: int = 1, filter_image_type: Optional[str] = None, filter_entity_id: Optional[str] = None 
+    query_text: str,
+    top_k: int = 1,
+    filter_image_type: Optional[str] = None,
+    filter_entity_id: Optional[str] = None,
+    filter_entity_name: Optional[str] = None
 ) -> List[Dict[str, Any]]:
-    """Performs vector search on the SDK embedding table using a text query.
-       Correctly formats the optional 'options' parameter for filtering.
     """
-    # *** Uses new table/index names ***
-    logger.info(f"Performing vector search on SDK table for: '{query_text}', top_k={top_k}, filter='{filter_image_type}'")
+    Performs vector search on the SDK embedding table using a text query.
+    Allows filtering by image_type, entity_id, and/or entity_name before vector search.
+    Correctly formats the options parameter as a SQL string literal containing JSON,
+    with inner single quotes escaped (' -> '').
+    """
+    logger.info(
+        f"Performing vector search on SDK table for: '{query_text}', top_k={top_k}, "
+        f"filter_type='{filter_image_type}', filter_id='{filter_entity_id}', filter_name='{filter_entity_name}'"
+    )
     embedding_table_ref = f"`{GCP_PROJECT_ID}.{BQ_DATASET_ID}.{EMBEDDING_TABLE_ID}`"
     results = []
+    vector_search_sql = "" # Initialize
 
     try:
-        # 1. Generate query embedding using SDK (with BQ fallback)
+        # 1. Generate query embedding (remains the same)
         logger.info("Generating embedding for search query...")
+        # ... (embedding generation code remains the same) ...
         query_embedding = None
         try:
-             query_response = multimodal_embedding_model.get_embeddings(
-                 contextual_text=query_text,
-                 dimension=EMBEDDING_DIMENSIONALITY,
-             )
-             query_embedding = query_response.text_embedding
-             if not query_embedding: raise ValueError("SDK returned no text embedding.")
-             logger.info("Query embedding generated via SDK.")
+            query_response = multimodal_embedding_model.get_embeddings(
+                contextual_text=query_text,
+                dimension=EMBEDDING_DIMENSIONALITY,
+            )
+            query_embedding = query_response.text_embedding
+            if not query_embedding: raise ValueError("SDK returned no text embedding.")
+            logger.info("Query embedding generated via SDK.")
         except Exception as query_emb_err:
-             logger.warning(f"Failed to get query embedding via SDK: {query_emb_err}. Trying BQ SQL fallback.")
-             try:
-                # Need BQ model ID for fallback - ensure it was created or handle error
-                bq_model_ref_fallback = f"`{GCP_PROJECT_ID}.{BQ_DATASET_ID}.mlb_multimodal_embedding_model`"
-                query_embedding_sql = f"""
-                SELECT ml_generate_embedding_result FROM ML.GENERATE_EMBEDDING(
-                    MODEL {bq_model_ref_fallback}, (SELECT '{query_text}' AS content)
-                ) WHERE ml_generate_embedding_status = 'OK' LIMIT 1;
-                """
-                embedding_result = execute_bq_query(query_embedding_sql)
-                if not embedding_result: raise ValueError("BQ SQL fallback failed to execute.")
-                query_embedding_list = list(embedding_result)
-                if not query_embedding_list: raise ValueError("BQ SQL fallback returned no result.")
-                query_embedding = query_embedding_list[0].ml_generate_embedding_result
-                logger.info("Query embedding generated via BQ SQL fallback.")
-             except Exception as fallback_err:
-                  logger.error(f"BQ SQL fallback for query embedding also failed: {fallback_err}")
-                  return [] # Cannot proceed
+            logger.error(f"Failed to get query embedding via SDK: {query_emb_err}")
+            return []
 
-        if not query_embedding: # Should not happen if logic above is correct, but safety check
-             logger.error("Failed to obtain query embedding through any method.")
-             return []
+        if not query_embedding:
+            logger.error("Failed to obtain query embedding.")
+            return []
 
         query_embedding_str = f"[{','.join(map(str, query_embedding))}]"
 
-
-        # 2. Perform Vector Search using BQ SQL - CORRECTED OPTIONS FORMATTING
-        options_str = "" # Initialize options string as empty
+        # 2. Build the raw SQL filter condition string (using single quotes)
+        filter_conditions = []
         if filter_image_type:
-            # Ensure the filter value is safe for SQL string literal
+            # Escape single quotes WITHIN the value (' -> '')
             safe_filter_value = filter_image_type.replace("'", "''")
-            # Construct the JSON string for the filter option value
-            # Note: The value inside the filter needs single quotes for SQL string comparison
-            filter_json_value = json.dumps({"filter": f"image_type='{safe_filter_value}'"})
-            # Format the options parameter correctly for SQL
-            options_str = f",\n                options => {json.dumps(filter_json_value)}" # Pass the JSON string as a SQL string literal
+            filter_conditions.append(f"image_type = '{safe_filter_value}'")
+        if filter_entity_id:
+            safe_filter_value = filter_entity_id.replace("'", "''")
+            filter_conditions.append(f"entity_id = '{safe_filter_value}'")
+        if filter_entity_name:
+            safe_filter_value = filter_entity_name.replace("'", "''")
+            filter_conditions.append(f"entity_name = '{safe_filter_value}'")
 
-        # Construct the final query
+        # 3. Construct Options SQL Part
+        options_sql_part = ""
+        if filter_conditions:
+            combined_filter_string = " AND ".join(filter_conditions)
+            logger.info(f"Applying filter condition: {combined_filter_string}")
+            # Example: entity_id = 'aaron_nola'
+            # Example: image_type = 'headshot' AND entity_id = 'bryce_harper'
+
+            # Escape the single quotes *within the combined filter string* for SQL nesting
+            # Replace ' -> ''
+            escaped_filter_string = combined_filter_string.replace("'", "''")
+            # Example: entity_id = ''aaron_nola''
+            # Example: image_type = ''headshot'' AND entity_id = ''bryce_harper''
+
+            # Manually construct the JSON string within the SQL literal single quotes
+            # Use double quotes for JSON keys/strings, use the escaped filter string
+            options_sql_literal = f"'{{\"filter\": \"{escaped_filter_string}\"}}'"
+            # Example result: '{"filter": "entity_id = ''aaron_nola''"}'
+            # Example result: '{"filter": "image_type = ''headshot'' AND entity_id = ''bryce_harper''"}'
+
+            options_sql_part = f",\n                options => {options_sql_literal}"
+
+        # 4. Construct the final query
         vector_search_sql = f"""
         SELECT base.image_uri, base.image_type, base.entity_id, base.entity_name, distance
         FROM VECTOR_SEARCH(
@@ -518,60 +522,50 @@ def search_similar_images_sdk(
                 'embedding',
                 (SELECT {query_embedding_str} AS embedding),
                 top_k => {top_k},
-                distance_type => 'COSINE'{options_str} -- Append the options string here
+                distance_type => 'COSINE'{options_sql_part} -- Options added here
             );
         """
-        # Log the query for debugging ONLY if needed, embeddings make it very long
         # logger.debug(f"Executing Vector Search SQL:\n{vector_search_sql}")
 
         search_results = execute_bq_query(vector_search_sql)
 
+        # ... rest of the function ...
         if search_results:
             results = [dict(row.items()) for row in search_results]
             logger.info(f"Vector search returned {len(results)} results.")
         else:
-            logger.warning("Vector search returned no results (check index status or query).")
+            logger.warning("Vector search returned no results.")
 
     except Exception as e:
-        # Log the failed SQL if an error occurs during execution
         logger.error(f"Error during vector search for '{query_text}': {e}", exc_info=True)
         try:
-            # Try to log the potentially problematic SQL (might not exist if error was earlier)
-            logger.error(f"Failed Vector Search SQL (if available):\n{vector_search_sql}")
+            logger.error(f"Failed Vector Search SQL:\n{vector_search_sql}")
         except NameError:
-             logger.error("Could not log the failed SQL.")
+             logger.error("Could not log the failed SQL (error occurred before construction).")
         return []
-
     return results
-
+# --- Main Execution Flow ---
+# (No changes needed in the main block's example calls)
 # --- Main Execution Flow ---
 if __name__ == "__main__":
-    logger.info("--- Starting MLB Image Embedding Pipeline (Vertex AI SDK Approach) ---")
+    logger.info("--- Starting MLB Image Embedding Pipeline (Name Only IDs) ---")
     full_start_time = time.time()
 
-    # # --- Step 0: Setup and Populate Player Metadata ---
+    # --- Step 0: (Optional) Setup and Populate Player Metadata ---
+    # Decide if you still need this table for other purposes.
     # try:
     #     logger.info("\n=== Step 0: Setting up Player Metadata Table ===")
-    #     meta_start_time = time.time()
     #     setup_player_metadata_table()
-    #     populate_player_metadata() # Run each time for freshness
-    #     logger.info(f"Player metadata setup/update took {time.time() - meta_start_time:.2f} seconds.")
-    #     # Load player metadata into a dictionary for faster lookups during embedding
-    #     logger.info("Loading player metadata into memory for lookups...")
-    #     player_lookup_query = f"SELECT player_id, player_name FROM `{GCP_PROJECT_ID}.{BQ_DATASET_ID}.{PLAYER_METADATA_TABLE_ID}`"
-    #     player_results = execute_bq_query(player_lookup_query)
-    #     player_lookup_dict = {row.player_id: row.player_name for row in player_results} if player_results else {}
-    #     logger.info(f"Loaded {len(player_lookup_dict)} player names into lookup dictionary.")
-
+    #     populate_player_metadata()
     # except Exception as e:
     #     logger.critical(f"Failed during Player Metadata setup: {e}. Aborting.", exc_info=True)
     #     exit(1)
 
-    # # --- Step 1: Setup BQ Embedding Table ---
+    # --- Step 1: Setup BQ Embedding Table ---
     # try:
     #     logger.info("\n=== Step 1: Setting up Target BigQuery Embedding Table ===")
     #     setup_start_time = time.time()
-    #     setup_embedding_table_sdk() # Use the SDK version
+    #     setup_embedding_table_sdk() # Creates the new name-only table
     #     logger.info(f"Target Embedding table setup took {time.time() - setup_start_time:.2f} seconds.")
     # except Exception as e:
     #     logger.critical(f"Failed during BigQuery embedding table setup: {e}. Aborting.", exc_info=True)
@@ -582,32 +576,26 @@ if __name__ == "__main__":
     #     logger.info("\n=== Step 2: Generating Embeddings via SDK and Loading to BigQuery ===")
     #     embed_start_time = time.time()
 
-    #     # Get URIs already in the target table to avoid reprocessing
     #     target_table_fqn = f"{GCP_PROJECT_ID}.{BQ_DATASET_ID}.{EMBEDDING_TABLE_ID}"
     #     existing_uris_set = get_existing_uris(target_table_fqn)
 
-    #     # Process Logos
+    #     # Process Logos (uses name as ID)
     #     logo_results = generate_embeddings_sdk(
     #         gcs_bucket_name=GCS_BUCKET_LOGOS,
     #         gcs_prefix=GCS_PREFIX_LOGOS,
     #         image_type='logo',
-    #         player_lookup=player_lookup_dict, # Not used for logos but pass anyway
     #         existing_uris=existing_uris_set
     #     )
 
-    #     # Process Headshots
+    #     # Process Headshots (uses name as ID)
     #     headshot_results = generate_embeddings_sdk(
-    #         gcs_bucket_name=GCS_BUCKET_HEADSHOTS,
+    #         gcs_bucket_name=GCS_BUCKET_HEADSHOTS, # Point to the name-only bucket
     #         gcs_prefix=GCS_PREFIX_HEADSHOTS,
     #         image_type='headshot',
-    #         player_lookup=player_lookup_dict,
     #         existing_uris=existing_uris_set
     #     )
 
-    #     # Combine results
     #     all_results = logo_results + headshot_results
-
-    #     # Load combined results to BigQuery
     #     load_embeddings_to_bq(all_results)
 
     #     logger.info(f"SDK Embedding generation and BQ load took {time.time() - embed_start_time:.2f} seconds.")
@@ -617,36 +605,57 @@ if __name__ == "__main__":
     #     logger.warning("Proceeding to index creation despite potential embedding errors.")
 
 
-    # # --- Step 3: Setup Vector Index (on the new table) ---
+    # # --- Step 3: Setup Vector Index ---
     # try:
-    #     logger.info("\n=== Step 3: Setting up Vector Index (SDK Table) ===")
+    #     logger.info("\n=== Step 3: Setting up Vector Index (Name Only Table) ===")
     #     index_start_time = time.time()
-    #     setup_vector_index_sdk() # Use the SDK version
+    #     setup_vector_index_sdk() # Creates index on the new name-only table
     #     logger.info(f"Vector index setup initiated took {time.time() - index_start_time:.2f} seconds (building happens async).")
     # except Exception as e:
     #     logger.error(f"Failed during vector index setup: {e}", exc_info=True)
 
-    # --- Step 4: Example Search (on the new table) ---
+    # --- Step 4: Example Search ---
     try:
-        logger.info("\n=== Step 4: Example Vector Search (SDK Table) ===")
+        logger.info("\n=== Step 4: Example Vector Search (Name Only Table) ===")
         search_start_time = time.time()
-        logger.info("Waiting 2 seconds before example search (index building takes time)...")
-        time.sleep(2)
+        logger.info("Waiting 15 seconds before example search (index building takes time)...")
+        time.sleep(15)
 
+        # --- Example 1: Logo Search (No change needed) ---
         search_query_logo = "Arizona Diamondbacks logo"
         logo_results = search_similar_images_sdk(search_query_logo, top_k=1)
         print(f"\nSearch Results for '{search_query_logo}':")
         print(json.dumps(logo_results, indent=2, default=str))
 
-        search_query_headshot = "Zack Wheeler  headshot 554430"
-        headshot_results = search_similar_images_sdk(search_query_headshot, top_k=3)
-        print(f"\nSearch Results for '{search_query_headshot}':")
-        print(json.dumps(headshot_results, indent=2, default=str))
 
-        logger.info(f"Example search execution took {time.time() - search_start_time:.2f} seconds (excluding wait time).")
+        # --- Example 3: Headshot Search Filtered by Specific Player Name (Entity ID) ---
+        # Use the *sanitized* name as stored in entity_id
+        player_entity_id_to_find = "aaron_nola"
+        search_query_specific_player = "pitcher throwing" # Query for visual similarity
+        specific_player_results = search_similar_images_sdk(
+            query_text=search_query_specific_player,
+            top_k=1, # Find the single best match for this specific player
+            filter_entity_id=player_entity_id_to_find # <-- FILTERING HERE
+        )
+        print(f"\nSpecific Player Search Results for '{search_query_specific_player}' (entity_id={player_entity_id_to_find}):")
+        # Expecting results only for aaron_nola (if his image exists and matches query)
+        print(json.dumps(specific_player_results, indent=2, default=str))
+
+        # --- Example 4: Search combining type and entity filter ---
+        search_query_bryce = "Bryce Harper headshot"
+        bryce_results = search_similar_images_sdk(
+            query_text=search_query_bryce,
+            top_k=2,
+            filter_image_type='headshot',
+            filter_entity_id='bryce_harper' # Use the sanitized name
+        )
+        print(f"\nCombined Filter Search Results for '{search_query_bryce}' (type=headshot, entity_id=bryce_harper):")
+        print(json.dumps(bryce_results, indent=2, default=str))
+
+
+        logger.info(f"Example search execution took {time.time() - search_start_time - 15:.2f} seconds (excluding wait time).")
     except Exception as e:
         logger.error(f"Failed during example search: {e}", exc_info=True)
 
-
-    logger.info(f"\n--- MLB Image Embedding Pipeline (SDK Approach) Finished ---")
+    logger.info(f"\n--- MLB Image Embedding Pipeline (Name Only IDs) Finished ---")
     logger.info(f"Total script execution time: {time.time() - full_start_time:.2f} seconds")
